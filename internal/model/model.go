@@ -1,0 +1,154 @@
+// Package model holds the types shared by discovery sources and the report.
+package model
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"sort"
+	"strings"
+)
+
+// Resource is an object that exists in the real infrastructure, as reported
+// by `terraform query` or by a plugin.
+type Resource struct {
+	Type string `json:"type"`
+	// AltTypes are other resource types that may manage the same object,
+	// such as the type's name in an older provider version or in another
+	// provider for the same platform. State under any of them counts.
+	AltTypes []string `json:"alt_types,omitempty"`
+	// AltIdentity overrides Identity for an alternative type whose state
+	// keys the same object differently.
+	AltIdentity map[string]map[string]any `json:"-"`
+	Identity    map[string]any            `json:"identity"`
+	DisplayName string                    `json:"display_name,omitempty"`
+	// ImportID is an optional legacy import ID. When set, generated import
+	// blocks use `id` instead of `identity`.
+	ImportID string `json:"import_id,omitempty"`
+	// RequiredKeys lists identity attributes that must be present and equal
+	// in state for the resource to count as managed. Nil means all keys.
+	RequiredKeys []string `json:"-"`
+	// AttributeKeys are the RequiredKeys that are also resource attributes,
+	// checked against state that has no identity; nil means the primary
+	// keys are derived from RequiredKeys (or "id", or all keys).
+	AttributeKeys []string `json:"-"`
+	// Provider is the local provider name used to list the resource, when it
+	// is not implied by the type prefix (import blocks then need it).
+	Provider string `json:"provider,omitempty"`
+	// UndeclaredProvider is the provider address when the root module does
+	// not declare the provider at all (only child modules do).
+	UndeclaredProvider string `json:"undeclared_provider,omitempty"`
+	// ImportNote is a comment for the resource's import block.
+	ImportNote string `json:"-"`
+	// ListAddress is the list block that found it (terraform query only).
+	ListAddress string `json:"list_address,omitempty"`
+	// Scope restricts which state instances may manage the object, for
+	// providers whose state does not record where an object lives (the
+	// Proxmox cluster). Nil means no restriction.
+	Scope *Scope `json:"-"`
+	// Source is the root module directory or plugin that reported it.
+	Source string `json:"source"`
+}
+
+// Key identifies a resource for de-duplication across sources.
+func (r Resource) Key() string {
+	var b strings.Builder
+	b.WriteString(r.Type)
+	for _, k := range SortedKeys(r.Identity) {
+		if v, ok := Canonical(r.Identity[k]); ok {
+			b.WriteString("\x00" + k + "=" + v)
+		}
+	}
+	return b.String()
+}
+
+// IdentityString renders the identity as "k=v, k=v" for humans.
+func (r Resource) IdentityString() string {
+	var parts []string
+	for _, k := range SortedKeys(r.Identity) {
+		if v, ok := Canonical(r.Identity[k]); ok {
+			parts = append(parts, k+"="+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Scalar returns the canonical string form of a JSON scalar decoded with
+// DecodeJSON. Nulls, objects and arrays are reported as not scalar.
+func Scalar(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case json.Number:
+		return t.String(), true
+	case bool:
+		if t {
+			return "true", true
+		}
+		return "false", true
+	default:
+		return "", false
+	}
+}
+
+// Canonical is Scalar for scalars and compact JSON (object keys sorted) for
+// lists and objects, so that any non-null value can be compared. Null is
+// reported as absent.
+func Canonical(v any) (string, bool) {
+	if s, ok := Scalar(v); ok {
+		return s, true
+	}
+	switch v.(type) {
+	case []any, map[string]any:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	}
+	return "", false
+}
+
+// SortedKeys returns map keys in a stable order.
+func SortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// DecodeJSON decodes data keeping numbers as json.Number, so identities
+// compare exactly regardless of size. data must hold one JSON value: a
+// second object on the same line (a plugin's error line without its
+// newline) would otherwise be dropped silently.
+func DecodeJSON(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("unexpected data after the JSON value")
+	}
+	return nil
+}
+
+// Scope tells which state instances can belong to the scanned place.
+type Scope struct {
+	// Attrs maps resource types to the state attribute holding the
+	// location, such as a Proxmox node.
+	Attrs map[string]string
+	// Values are the locations of the scanned place (its nodes).
+	Values map[string]bool
+	// Unverifiable marks objects whose state carries no location at all.
+	Unverifiable bool
+	// Trusted is the user's statement that every state given belongs to
+	// the scanned place. Locations in state only rule instances out (a node
+	// the place does not have); they cannot prove that an instance belongs,
+	// since node names repeat across clusters. Without Trusted, matches are
+	// unverified.
+	Trusted bool
+}

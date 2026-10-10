@@ -1,0 +1,311 @@
+// Package tf drives the terraform CLI: it reads state and provider schemas
+// from a root module and lists live resources with `terraform query`.
+package tf
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+
+	"github.com/5xxeu/tforphans/internal/proc"
+	"github.com/hashicorp/terraform-config-inspect/tfconfig"
+)
+
+// Runner runs terraform in one root module directory.
+type Runner struct {
+	Bin string
+	Dir string
+	// Workspace selects a workspace through TF_WORKSPACE, which leaves the
+	// module's selected workspace untouched. Empty means the selected one.
+	Workspace string
+	// Env is added to the environment of every command.
+	Env []string
+	// Isolated marks a generated root: the user's TF_DATA_DIR and
+	// TF_WORKSPACE must not reach it, so its data stays in its own
+	// directory.
+	Isolated bool
+}
+
+// Exec runs terraform with args and returns stdout and stderr.
+func (r Runner) Exec(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	out, stderr, err := r.run(ctx, args...)
+	if err != nil {
+		err = cmdError(args, stderr, err)
+	}
+	return out, stderr, err
+}
+
+func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	cmd := exec.CommandContext(ctx, r.Bin, args...)
+	// A wrapper given with -terraform may run terraform as its child.
+	proc.Group(cmd)
+	cmd.Dir = r.Dir
+	cmd.Env = append(Environ(os.Environ(), r.Isolated), "TF_IN_AUTOMATION=1")
+	if r.Workspace != "" {
+		cmd.Env = append(cmd.Env, "TF_WORKSPACE="+r.Workspace)
+	}
+	cmd.Env = append(cmd.Env, r.Env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func cmdError(args []string, stderr []byte, err error) error {
+	msg := strings.TrimSpace(string(stderr))
+	if msg == "" {
+		return fmt.Errorf("terraform %s: %w", strings.Join(args, " "), err)
+	}
+	return fmt.Errorf("terraform %s: %w\n%s", strings.Join(args, " "), err, msg)
+}
+
+// StatePull returns the raw state of r.Workspace.
+func (r Runner) StatePull(ctx context.Context) ([]byte, error) {
+	args := []string{"state", "pull", "-no-color"}
+	out, stderr, err := r.run(ctx, args...)
+	if err != nil {
+		return nil, cmdError(args, stderr, err)
+	}
+	return out, nil
+}
+
+// Schemas is the subset of `terraform providers schema -json` we use.
+type Schemas struct {
+	ProviderSchemas map[string]ProviderSchema `json:"provider_schemas"`
+}
+
+type ProviderSchema struct {
+	ListResourceSchemas     map[string]ListSchema     `json:"list_resource_schemas"`
+	ResourceIdentitySchemas map[string]IdentitySchema `json:"resource_identity_schemas"`
+	ResourceSchemas         map[string]struct {
+		Block struct {
+			Attributes map[string]json.RawMessage `json:"attributes"`
+		} `json:"block"`
+	} `json:"resource_schemas"`
+}
+
+type ListSchema struct {
+	Block struct {
+		Attributes map[string]struct {
+			Type     json.RawMessage `json:"type"`
+			Required bool            `json:"required"`
+		} `json:"attributes"`
+		BlockTypes map[string]struct {
+			MinItems int `json:"min_items"`
+		} `json:"block_types"`
+	} `json:"block"`
+}
+
+type IdentitySchema struct {
+	Attributes map[string]struct {
+		RequiredForImport bool `json:"required_for_import"`
+	} `json:"attributes"`
+}
+
+// ProvidersSchema returns the schemas of all providers the module uses. The
+// module must be initialized.
+func (r Runner) ProvidersSchema(ctx context.Context) (*Schemas, error) {
+	args := []string{"providers", "schema", "-json", "-no-color"}
+	out, stderr, err := r.run(ctx, args...)
+	if err != nil {
+		return nil, cmdError(args, stderr, err)
+	}
+	var s Schemas
+	if err := json.Unmarshal(out, &s); err != nil {
+		return nil, fmt.Errorf("decode provider schemas: %w", err)
+	}
+	return &s, nil
+}
+
+// IdentityKeys are, per resource type, the identity attributes required for
+// import (Required), and those of them that are also resource attributes
+// (Attribute), which are the ones state without an identity can be checked
+// against. azurerm identities, for example, carry subscription_id, which is
+// never an attribute.
+//
+// Two providers can define the same type (google and google-beta) with
+// different identities, so keys are kept per provider address; Required
+// and Attribute hold, per type, the union over all providers, for objects
+// whose provider is unknown: more keys can only make an object unmanaged,
+// never managed by mistake.
+type IdentityKeys struct {
+	Required   map[string][]string
+	Attribute  map[string][]string
+	ByProvider map[string]IdentityKeys
+}
+
+// For returns the keys of a type of the provider at an address, or the
+// union over providers when the address is "" or unknown.
+func (k IdentityKeys) For(provider, typ string) (required, attribute []string) {
+	if pk, ok := k.ByProvider[provider]; ok {
+		if r, ok := pk.Required[typ]; ok {
+			return r, pk.Attribute[typ]
+		}
+	}
+	return k.Required[typ], k.Attribute[typ]
+}
+
+func (s *Schemas) IdentityKeys() IdentityKeys {
+	k := IdentityKeys{Required: map[string][]string{}, Attribute: map[string][]string{}, ByProvider: map[string]IdentityKeys{}}
+	for addr, p := range s.ProviderSchemas {
+		pk := IdentityKeys{Required: map[string][]string{}, Attribute: map[string][]string{}}
+		k.ByProvider[addr] = pk
+		for typ, is := range p.ResourceIdentitySchemas {
+			required, attribute := []string{}, []string{}
+			attrs := p.ResourceSchemas[typ].Block.Attributes
+			for name, a := range is.Attributes {
+				if !a.RequiredForImport {
+					continue
+				}
+				required = append(required, name)
+				if _, ok := attrs[name]; ok {
+					attribute = append(attribute, name)
+				}
+			}
+			sort.Strings(required)
+			sort.Strings(attribute)
+			pk.Required[typ], pk.Attribute[typ] = required, attribute
+			k.Required[typ] = union(k.Required[typ], required)
+			k.Attribute[typ] = union(k.Attribute[typ], attribute)
+		}
+	}
+	return k
+}
+
+// union returns the sorted union of two key lists, never nil: an empty
+// AttributeKeys means "no key is an attribute", nil means "not known".
+func union(a, b []string) []string {
+	out := append(append([]string{}, a...), b...)
+	sort.Strings(out)
+	return slices.Compact(out)
+}
+
+// LocalNames maps provider addresses (registry.terraform.io/ns/type) to the
+// local names declared in the module's required_providers block.
+func LocalNames(dir string) (map[string]string, error) {
+	mod, diags := tfconfig.LoadModule(dir)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("read %s: %w", dir, diags.Err())
+	}
+	out := map[string]string{}
+	for name, req := range mod.RequiredProviders {
+		if req.Source != "" {
+			out[NormalizeSource(req.Source)] = name
+		}
+	}
+	return out, nil
+}
+
+// AliasOnly maps the local names of providers that the root module
+// configures only with aliases (provider "aws" { alias = "prod" }, no
+// provider "aws" block without one) to those aliases. A provider without
+// any provider block is not included: its default configuration reads
+// credentials from the environment, as the user intends.
+func AliasOnly(dir string) (map[string][]string, error) {
+	mod, diags := tfconfig.LoadModule(dir)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("read %s: %w", dir, diags.Err())
+	}
+	aliases := map[string][]string{}
+	plain := map[string]bool{}
+	for _, pc := range mod.ProviderConfigs {
+		if pc.Alias == "" {
+			plain[pc.Name] = true
+		} else {
+			aliases[pc.Name] = append(aliases[pc.Name], pc.Alias)
+		}
+	}
+	out := map[string][]string{}
+	for name, as := range aliases {
+		if !plain[name] {
+			sort.Strings(as)
+			out[name] = as
+		}
+	}
+	return out, nil
+}
+
+// NormalizeSource expands "ns/type" to "registry.terraform.io/ns/type".
+func NormalizeSource(src string) string {
+	src = strings.ToLower(src)
+	if strings.Count(src, "/") == 1 {
+		return "registry.terraform.io/" + src
+	}
+	return src
+}
+
+// localName resolves the name a list block's provider argument must use:
+// the root module's required_providers entry, the implicit hashicorp/<type>
+// mapping, or else a temporary name (local names allow letters, digits and
+// dashes, so the prefix cannot clash with a type-derived name).
+// used holds the local names taken so far, so that temporary names are
+// unique: ns1/foo and ns2/foo become tfo-ns1-foo and tfo-ns2-foo.
+func localName(addr string, declared map[string]string, used map[string]bool) (name string, temporary bool) {
+	if n, ok := declared[addr]; ok {
+		return n, false
+	}
+	parts := strings.Split(addr, "/")
+	if len(parts) == 3 && parts[0] == "registry.terraform.io" && parts[1] == "hashicorp" {
+		// The implicit name works unless the root gave it to another
+		// provider (google = { source = "hashicorp/google-beta" }).
+		taken := false
+		for a, n := range declared {
+			if n == parts[2] && a != addr {
+				taken = true
+			}
+		}
+		if !taken {
+			return parts[2], false
+		}
+	}
+	base := "tfo-" + nonLocal.ReplaceAllString(strings.ToLower(strings.Join(parts[1:], "-")), "-")
+	name = base
+	for i := 2; used[name]; i++ {
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	used[name] = true
+	return name, true
+}
+
+// nonLocal matches what a provider local name may not contain.
+var nonLocal = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// Environ filters the environment for terraform. TF_CLI_ARGS and
+// TF_CLI_ARGS_<command> are always dropped: they would add arguments to the
+// commands tforphans runs (TF_CLI_ARGS_apply="-state-out=prod.tfstate"
+// would make the data source scan write over a real state). For isolated
+// roots TF_DATA_DIR and TF_WORKSPACE are dropped too.
+func Environ(env []string, isolated bool) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		switch {
+		case name == "TF_CLI_ARGS", strings.HasPrefix(name, "TF_CLI_ARGS_"):
+		case isolated && (name == "TF_DATA_DIR" || name == "TF_WORKSPACE"):
+		default:
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// ConfigAddresses returns the <type>.<name> addresses of managed resources
+// declared in the module's own configuration (not in child modules).
+func ConfigAddresses(dir string) (map[string]bool, error) {
+	mod, diags := tfconfig.LoadModule(dir)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("read %s: %w", dir, diags.Err())
+	}
+	out := map[string]bool{}
+	for addr := range mod.ManagedResources {
+		out[addr] = true
+	}
+	return out, nil
+}

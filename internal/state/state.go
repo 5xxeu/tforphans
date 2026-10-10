@@ -1,0 +1,449 @@
+// Package state reads Terraform state and answers whether a live resource is
+// already managed by it.
+package state
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/5xxeu/tforphans/internal/model"
+)
+
+// Instance is one managed resource instance from a state file.
+type Instance struct {
+	Type       string
+	Address    string
+	Identity   map[string]any
+	Attributes map[string]any
+}
+
+type rawState struct {
+	Version   int `json:"version"`
+	Resources []struct {
+		Module    string `json:"module"`
+		Mode      string `json:"mode"`
+		Type      string `json:"type"`
+		Name      string `json:"name"`
+		Instances []struct {
+			IndexKey   any            `json:"index_key"`
+			Identity   map[string]any `json:"identity"`
+			Attributes map[string]any `json:"attributes"`
+		} `json:"instances"`
+	} `json:"resources"`
+}
+
+// Parse decodes a raw state file (format version 4, as written by Terraform
+// and returned by `terraform state pull`). Data sources are skipped. Empty
+// input is an empty state.
+func Parse(data []byte) ([]Instance, error) {
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, nil
+	}
+	var st rawState
+	if err := model.DecodeJSON(data, &st); err != nil {
+		return nil, fmt.Errorf("decode state: %w", err)
+	}
+	if st.Version != 4 {
+		return nil, fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)
+	}
+	var out []Instance
+	for _, r := range st.Resources {
+		if r.Mode != "managed" {
+			continue
+		}
+		addr := r.Type + "." + r.Name
+		if r.Module != "" {
+			addr = r.Module + "." + addr
+		}
+		for _, in := range r.Instances {
+			a := addr
+			switch k := in.IndexKey.(type) {
+			case nil:
+			case string:
+				a += fmt.Sprintf("[%q]", k)
+			default:
+				a += fmt.Sprintf("[%v]", k)
+			}
+			out = append(out, Instance{Type: r.Type, Address: a, Identity: in.Identity, Attributes: in.Attributes})
+		}
+	}
+	return out, nil
+}
+
+// Fetch reads a state source: "-" for stdin, an https URL (for example a
+// GitLab Terraform state address) or a local file. HTTP requests use
+// TF_HTTP_USERNAME and TF_HTTP_PASSWORD like Terraform's http backend, and
+// only over https. Plain http needs allowHTTP and never carries credentials.
+func Fetch(ctx context.Context, src string, allowHTTP bool) ([]byte, error) {
+	scheme := strings.ToLower(urlScheme(src))
+	switch {
+	case src == "-":
+		return io.ReadAll(os.Stdin)
+	case scheme == "https", scheme == "http":
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
+		if err != nil {
+			// The parse error quotes the URL, which may hold a password.
+			return nil, fmt.Errorf("invalid state URL %s", Redact(src))
+		}
+		// Credentials come from the URL's user info (Go would send it as
+		// Basic auth on its own) or from TF_HTTP_USERNAME/TF_HTTP_PASSWORD;
+		// either way they are sent explicitly and only over https.
+		if req.URL.User != nil {
+			pass, _ := req.URL.User.Password()
+			req.SetBasicAuth(req.URL.User.Username(), pass)
+			req.URL.User = nil
+		} else if u := os.Getenv("TF_HTTP_USERNAME"); u != "" {
+			req.SetBasicAuth(u, os.Getenv("TF_HTTP_PASSWORD"))
+		}
+		if req.URL.Scheme != "https" {
+			if req.Header.Get("Authorization") != "" {
+				return nil, fmt.Errorf("refusing to send credentials over %s; use https", req.URL.Scheme)
+			}
+			if !allowHTTP {
+				return nil, errors.New("refusing to read state over plain http, where it can be read and altered in transit; use https, or -allow-http")
+			}
+		}
+		resp, err := httpClient().Do(req)
+		if err != nil {
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				// The cause can quote another URL (a bad Location header).
+				return nil, fmt.Errorf("%s %s: %s", ue.Op, Redact(ue.URL), redactURLs(ue.Err.Error()))
+			}
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("GET %s: %s", Redact(src), resp.Status)
+		}
+		return io.ReadAll(resp.Body)
+	case scheme != "":
+		// Any other scheme://: reading it as a file would quote the
+		// whole string, credentials included, in the error.
+		return nil, fmt.Errorf("unsupported state URL %s: use https, a file or -", Redact(src))
+	default:
+		return os.ReadFile(src)
+	}
+}
+
+// urlScheme returns the scheme of a "scheme://..." source, in its own
+// letter case (schemes are case-insensitive), or "" for anything else.
+func urlScheme(src string) string {
+	scheme, _, ok := strings.Cut(src, "://")
+	if !ok || scheme == "" || !unicode.IsLetter(rune(scheme[0])) {
+		return ""
+	}
+	for _, r := range scheme {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '+' || r == '.' || r == '-') {
+			return ""
+		}
+	}
+	return scheme
+}
+
+// Redact removes credentials from a state source before it is printed: the
+// user info and the query (presigned URLs carry signatures there).
+func Redact(src string) string {
+	u, err := url.Parse(src)
+	if err != nil {
+		if strings.Contains(src, "://") {
+			return "<invalid URL>"
+		}
+		return src
+	}
+	if u.Scheme == "" && u.User == nil && u.RawQuery == "" {
+		return src
+	}
+	u.User = nil
+	if u.RawQuery != "" {
+		u.RawQuery = "REDACTED"
+	}
+	u.Fragment = ""
+	return u.String()
+}
+
+var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>]+`)
+
+// redactURLs applies Redact to every URL inside a message.
+func redactURLs(msg string) string {
+	return urlPattern.ReplaceAllStringFunc(msg, Redact)
+}
+
+// transport is replaced in tests.
+var transport http.RoundTripper = http.DefaultTransport
+
+// httpClient times out instead of hanging on a stalled backend.
+//
+// On redirects it never sends a Referer (Go would send the previous URL,
+// query and all, which for a presigned URL is the signature), never goes
+// from https to http (the state could be read or altered in transit, for
+// example to add fake managed resources), and sends the Authorization
+// header only back to the original host: Go itself keeps it on same-host
+// redirects and on redirects to subdomains. Plain http is followed only when
+// the request already was plain http, which needs -allow-http.
+func httpClient() *http.Client {
+	return &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			req.Header.Del("Referer")
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req.URL.Scheme != "https" && via[0].URL.Scheme == "https" {
+				return fmt.Errorf("refusing to follow a redirect from https to %s://%s", req.URL.Scheme, req.URL.Host)
+			}
+			if req.URL.Host != via[0].URL.Host {
+				req.Header.Del("Authorization")
+			}
+			return nil
+		},
+	}
+}
+
+// Index looks up state instances by type and attribute values.
+type Index struct {
+	byValue map[string][]*Instance // type \x00 key \x00 value
+	count   int
+	root    map[string]bool // resource addresses in root modules
+}
+
+func NewIndex() *Index {
+	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}}
+}
+
+// RootAddresses returns the <type>.<name> addresses that states already use
+// in root modules; new import blocks must not target them.
+func (ix *Index) RootAddresses() map[string]bool { return ix.root }
+
+// Len returns the number of indexed instances.
+func (ix *Index) Len() int { return ix.count }
+
+// Add indexes instances by every scalar identity and top-level attribute.
+func (ix *Index) Add(instances []Instance) {
+	for i := range instances {
+		in := &instances[i]
+		ix.count++
+		if !strings.HasPrefix(in.Address, "module.") {
+			addr, _, _ := strings.Cut(in.Address, "[")
+			ix.root[addr] = true
+		}
+		seen := map[string]bool{}
+		for i, m := range []map[string]any{in.Identity, in.Attributes} {
+			for k, v := range m {
+				// Identities can hold lists; short list or object
+				// attributes are indexed too, large ones would only cost
+				// memory. Scalars (long Azure IDs included) always are.
+				s, ok := model.Scalar(v)
+				if !ok {
+					if s, ok = model.Canonical(v); !ok || (i == 1 && len(s) > 256) {
+						continue
+					}
+				}
+				if s == "" {
+					continue
+				}
+				key := in.Type + "\x00" + k + "\x00" + s
+				if !seen[key] {
+					seen[key] = true
+					ix.byValue[key] = append(ix.byValue[key], in)
+				}
+			}
+		}
+	}
+}
+
+// Match is the result of looking a live object up in state.
+type Match struct {
+	Address string
+	Managed bool
+	// Verified is false when some identity key of the live object (an
+	// account, subscription or region) is missing on the state instance,
+	// from its identity or, for state without one, from its attributes: the
+	// object may belong to another account with an equal ID.
+	Verified bool
+}
+
+// Managed returns the address of the state instance that manages r.
+func (ix *Index) Managed(r model.Resource) (string, bool) {
+	m := ix.Match(r)
+	return m.Address, m.Managed
+}
+
+// Match looks r up, preferring a verified match over an unverified one.
+//
+// An instance matches when it has the same type and every identity attribute
+// of r that is also set on the instance has the same value; required keys
+// must be present. The instance's identity is used when state has one
+// (Terraform 1.12+ with an identity-aware provider), otherwise its
+// attributes, which covers older state and plugin results.
+func (ix *Index) Match(r model.Resource) Match {
+	tried := map[*Instance]bool{}
+	var best Match
+	for _, typ := range append([]string{r.Type}, r.AltTypes...) {
+		as := r
+		if id, ok := r.AltIdentity[typ]; ok {
+			as.Identity, as.RequiredKeys, as.AttributeKeys = id, nil, nil
+		}
+		for _, in := range ix.candidates(typ, as) {
+			if tried[in] {
+				continue
+			}
+			tried[in] = true
+			ok, verified := matches(as, in)
+			if ok && r.Scope != nil {
+				inScope, known := scopeCheck(r.Scope, typ, in)
+				if !inScope {
+					continue
+				}
+				verified = verified && known
+			}
+			switch {
+			case ok && verified:
+				return Match{Address: in.Address, Managed: true, Verified: true}
+			case ok && !best.Managed:
+				best = Match{Address: in.Address, Managed: true}
+			}
+		}
+	}
+	return best
+}
+
+func matches(r model.Resource, in *Instance) (ok, verified bool) {
+	// Attribute names only loosely follow identity names (AWS identities
+	// carry account_id, which is not an attribute), so with the attribute
+	// fallback a missing secondary key is tolerated; a conflicting value
+	// never is, and every primary key (the object's own ID, not its zone or
+	// account) has to be present and equal. When unsure this reports an
+	// object as unmanaged, never the other way round.
+	src, strict := in.Identity, true
+	if len(src) == 0 {
+		src, strict = in.Attributes, false
+	}
+	required, primary := keySets(r)
+	isRequired, isPrimary := map[string]bool{}, map[string]bool{}
+	for _, k := range required {
+		isRequired[k] = true
+	}
+	for _, k := range primary {
+		isPrimary[k] = true
+	}
+	equal, primaryEqual, missing := 0, 0, 0
+	for k, want := range r.Identity {
+		w, ok := model.Canonical(want)
+		if !ok {
+			continue
+		}
+		got, ok := model.Canonical(src[k])
+		if !ok {
+			if strict && isRequired[k] {
+				return false, false
+			}
+			missing++
+			continue
+		}
+		if got != w {
+			return false, false
+		}
+		equal++
+		if isPrimary[k] {
+			primaryEqual++
+		}
+	}
+	if strict {
+		// An identity in state that lacks a key of the live object (an
+		// account, a region) cannot confirm where the object lives.
+		return equal > 0, missing == 0
+	}
+	ok = primaryEqual > 0 && primaryEqual == len(isPrimary)
+	return ok, ok && missing == 0
+}
+
+// candidates returns the instances that can match r. A match has to equal
+// r on every required key (identity in state) or every primary key
+// (attributes), so the shortest list of one required key plus the shortest
+// of one primary key holds every possible match. Looking candidates up by
+// the first key instead (account_id in AWS identities) would compare each
+// object with every other object of its account.
+func (ix *Index) candidates(typ string, r model.Resource) []*Instance {
+	required, primary := keySets(r)
+	shortest := func(keys []string) []*Instance {
+		var best []*Instance
+		found := false
+		for _, k := range keys {
+			v, ok := model.Canonical(r.Identity[k])
+			if !ok {
+				continue
+			}
+			list := ix.byValue[typ+"\x00"+k+"\x00"+v]
+			if !found || len(list) < len(best) {
+				best, found = list, true
+			}
+		}
+		return best
+	}
+	a, b := shortest(required), shortest(primary)
+	if len(b) == 0 {
+		return a
+	}
+	if len(a) == 0 {
+		return b
+	}
+	out := slices.Clone(a)
+	seen := map[*Instance]bool{}
+	for _, in := range a {
+		seen[in] = true
+	}
+	for _, in := range b {
+		if !seen[in] {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// keySets returns the keys a match must equal: required ones when state
+// has an identity, primary ones when it is matched by attributes.
+func keySets(r model.Resource) (required, primary []string) {
+	required = r.RequiredKeys
+	if len(required) == 0 {
+		required = model.SortedKeys(r.Identity)
+	}
+	primary = r.RequiredKeys
+	if r.AttributeKeys != nil {
+		primary = r.AttributeKeys
+	} else if len(primary) == 0 {
+		if _, ok := r.Identity["id"]; ok {
+			primary = []string{"id"}
+		} else {
+			primary = required
+		}
+	}
+	return required, primary
+}
+
+// scopeCheck applies a model.Scope to a state instance: whether the instance
+// can belong to the scanned place at all, and whether that is known. A
+// location the place does not have rules the instance out; a location it
+// has proves nothing (node names repeat across clusters), so only the
+// user's statement (Trusted) makes the match verified.
+func scopeCheck(sc *model.Scope, typ string, in *Instance) (inScope, known bool) {
+	if !sc.Unverifiable {
+		if attr, ok := sc.Attrs[typ]; ok {
+			if v, ok := model.Scalar(in.Attributes[attr]); ok && !sc.Values[v] {
+				return false, false
+			}
+		}
+	}
+	return true, sc.Trusted
+}
