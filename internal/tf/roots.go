@@ -13,9 +13,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 // FindRoots returns the root module directories under dir: directories whose
@@ -214,15 +216,23 @@ var (
 
 // Import is an import block of the module's own configuration.
 type Import struct {
-	To string // <type>.<name>, without an instance key
-	// ID and Identity are the target object, when given as literals.
+	Dir string // the root module
+	// To is the <type>.<name> of a target in the root module itself, ""
+	// when the block imports into a child module.
+	To   string
+	Type string // the target's resource type
+	// Provider is the block's provider argument (vault.other), "" for the
+	// type's default provider configuration.
+	Provider string
+	// ID and Identity are the target object, when given as literals;
+	// Identity values are in model.Canonical form.
 	ID       string
 	Identity map[string]string
 }
 
 var (
 	importSchema = &hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "import"}}}
-	importAttrs  = &hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "to"}, {Name: "id"}, {Name: "identity"}}}
+	importAttrs  = &hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "to"}, {Name: "id"}, {Name: "identity"}, {Name: "provider"}}}
 )
 
 // ConfigImports returns the import blocks in the module's .tf and .tf.json
@@ -257,11 +267,17 @@ func ConfigImports(dir string) ([]Import, error) {
 			if !ok {
 				continue
 			}
-			target := importTarget(to.Expr, f.Bytes)
-			if target == "" {
+			module, typ, name := importTarget(to.Expr, f.Bytes)
+			if typ == "" {
 				continue
 			}
-			im := Import{To: target}
+			im := Import{Dir: dir, Type: typ}
+			if !module {
+				im.To = typ + "." + name
+			}
+			if a, ok := attrs.Attributes["provider"]; ok {
+				im.Provider = providerRef(a.Expr)
+			}
 			if a, ok := attrs.Attributes["id"]; ok {
 				if v, diags := a.Expr.Value(nil); !diags.HasErrors() && v.Type() == cty.String && v.IsKnown() && !v.IsNull() {
 					im.ID = v.AsString()
@@ -276,31 +292,94 @@ func ConfigImports(dir string) ([]Import, error) {
 	return out, nil
 }
 
-// resourceAddr matches <type>.<name>.
-var resourceAddr = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*\.[A-Za-z_][A-Za-z0-9_-]*$`)
+// ident matches a Terraform identifier.
+var ident = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 
-// importTarget returns the <type>.<name> an import block's to points at,
-// without its instance key, which may be an expression (each.key).
-func importTarget(expr hcl.Expression, src []byte) string {
-	if tr, diags := hcl.AbsTraversalForExpr(expr); !diags.HasErrors() && len(tr) >= 2 {
-		if name, ok := tr[1].(hcl.TraverseAttr); ok {
-			return tr.RootName() + "." + name.Name
+// importTarget returns the resource type and name an import block's to
+// points at, and whether that is inside a child module. Instance keys of
+// the resource and of module calls are dropped: they may be expressions
+// (each.key), which are read from the source text.
+func importTarget(expr hcl.Expression, src []byte) (module bool, typ, name string) {
+	var parts []string
+	if tr, diags := hcl.AbsTraversalForExpr(expr); !diags.HasErrors() {
+		for _, step := range tr {
+			switch s := step.(type) {
+			case hcl.TraverseRoot:
+				parts = append(parts, s.Name)
+			case hcl.TraverseAttr:
+				parts = append(parts, s.Name)
+			case hcl.TraverseIndex:
+				// An instance key.
+			default:
+				return false, "", ""
+			}
 		}
+	} else {
+		r := expr.Range()
+		if r.End.Byte > len(src) {
+			return false, "", ""
+		}
+		text := strings.Trim(strings.TrimSpace(string(src[r.Start.Byte:r.End.Byte])), `"`)
+		parts = strings.Split(dropIndexes(text), ".")
 	}
-	r := expr.Range()
-	if r.End.Byte > len(src) {
-		return ""
+	for len(parts) > 2 && parts[0] == "module" {
+		if !ident.MatchString(parts[1]) {
+			return false, "", ""
+		}
+		parts, module = parts[2:], true
 	}
-	text := strings.Trim(strings.TrimSpace(string(src[r.Start.Byte:r.End.Byte])), `"`)
-	addr, _, _ := strings.Cut(text, "[")
-	if !resourceAddr.MatchString(addr) {
-		return ""
+	if len(parts) != 2 || !ident.MatchString(parts[0]) || !ident.MatchString(parts[1]) {
+		return false, "", ""
 	}
-	return addr
+	return module, parts[0], parts[1]
 }
 
-// literalMap returns an object of literal scalars as strings, nil when the
-// expression is anything else.
+// dropIndexes removes the [...] keys from an address, nested brackets and
+// quoted strings included.
+func dropIndexes(s string) string {
+	var b strings.Builder
+	depth, quoted := 0, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quoted:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				quoted = false
+			}
+		case c == '"' && depth > 0:
+			quoted = true
+		case c == '[':
+			depth++
+		case c == ']' && depth > 0:
+			depth--
+		case depth == 0:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// providerRef returns an import block's provider reference (vault or
+// vault.other), "" when it is not one.
+func providerRef(expr hcl.Expression) string {
+	tr, diags := hcl.AbsTraversalForExpr(expr)
+	if diags.HasErrors() {
+		return ""
+	}
+	ref := tr.RootName()
+	if len(tr) == 2 {
+		if a, ok := tr[1].(hcl.TraverseAttr); ok {
+			ref += "." + a.Name
+		}
+	}
+	return ref
+}
+
+// literalMap returns an object of literal values, each in model.Canonical
+// form (lists and objects as compact JSON), nil when the expression is not
+// a wholly known object.
 func literalMap(expr hcl.Expression) map[string]string {
 	v, diags := expr.Value(nil)
 	if diags.HasErrors() || !v.IsWhollyKnown() || v.IsNull() || !(v.Type().IsObjectType() || v.Type().IsMapType()) {
@@ -311,16 +390,19 @@ func literalMap(expr hcl.Expression) map[string]string {
 		if el.IsNull() {
 			continue
 		}
-		switch el.Type() {
-		case cty.String:
-			out[k] = el.AsString()
-		case cty.Number:
-			out[k] = el.AsBigFloat().Text('f', -1)
-		case cty.Bool:
-			out[k] = fmt.Sprint(el.True())
-		default:
+		raw, err := ctyjson.Marshal(el, el.Type())
+		if err != nil {
 			return nil
 		}
+		var val any
+		if err := model.DecodeJSON(raw, &val); err != nil {
+			return nil
+		}
+		c, ok := model.Canonical(val)
+		if !ok {
+			return nil
+		}
+		out[k] = c
 	}
 	return out
 }

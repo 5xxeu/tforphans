@@ -36,6 +36,11 @@ type Resource struct {
 	// Provider is the local provider name used to list the resource, when it
 	// is not implied by the type prefix (import blocks then need it).
 	Provider string `json:"provider,omitempty"`
+	// ProviderSource is the address of the provider that listed the
+	// resource (registry.terraform.io/hashicorp/aws), "" when unknown (a
+	// plugin that does not say). State of another provider never manages
+	// it, except under AltTypes.
+	ProviderSource string `json:"provider_source,omitempty"`
 	// UndeclaredProvider is the provider address when the root module does
 	// not declare the provider at all (only child modules do).
 	UndeclaredProvider string `json:"undeclared_provider,omitempty"`
@@ -61,6 +66,38 @@ func (r Resource) Key() string {
 		}
 	}
 	return b.String()
+}
+
+// SameProvider reports whether two provider addresses can name the same
+// provider. An unknown address ("") matches any. Hosts that mirror one
+// namespace (the Terraform and OpenTofu registries) are ignored, a short
+// "aws" means hashicorp/aws, and providers known to share resource types
+// and objects (google-beta, the moved hashicorp/github) count as one.
+func SameProvider(a, b string) bool {
+	if a == "" || b == "" {
+		return true
+	}
+	return providerFamily(a) == providerFamily(b)
+}
+
+var providerAliases = map[string]string{
+	"hashicorp/google-beta": "hashicorp/google",
+	"hashicorp/github":      "integrations/github",
+}
+
+func providerFamily(addr string) string {
+	parts := strings.Split(strings.ToLower(addr), "/")
+	switch {
+	case len(parts) == 3 && (parts[0] == "registry.terraform.io" || parts[0] == "registry.opentofu.org"):
+		parts = parts[1:]
+	case len(parts) == 1:
+		parts = []string{"hashicorp", parts[0]}
+	}
+	f := strings.Join(parts, "/")
+	if a, ok := providerAliases[f]; ok {
+		return a
+	}
+	return f
 }
 
 // IdentityString renders the identity as "k=v, k=v" for humans.

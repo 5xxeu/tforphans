@@ -37,7 +37,7 @@ vault_mount:sys
 
 func TestImport(t *testing.T) {
 	var b bytes.Buffer
-	err := Import(&b, []model.Resource{
+	_, err := Import(&b, []model.Resource{
 		{Type: "aws_instance", DisplayName: "web 1", Identity: map[string]any{"id": "i-1", "region": "eu-north-1", "absent": nil}},
 		{Type: "aws_instance", DisplayName: "Web-1", Identity: map[string]any{"id": "i-2"}, Provider: "aws-eu"},
 		{Type: "vault_policy", DisplayName: "1st", ImportID: "1st", Identity: map[string]any{"id": "1st"}},
@@ -66,7 +66,7 @@ func TestImport(t *testing.T) {
 
 func TestImportGroupsBySource(t *testing.T) {
 	var b bytes.Buffer
-	err := Import(&b, []model.Resource{
+	_, err := Import(&b, []model.Resource{
 		{Type: "aws_instance", DisplayName: "a", Identity: map[string]any{"id": "i-1"}, Source: "infra/b"},
 		{Type: "aws_instance", DisplayName: "b", Identity: map[string]any{"id": "i-2"}, Source: "infra/a"},
 	}, nil)
@@ -80,7 +80,7 @@ func TestImportGroupsBySource(t *testing.T) {
 	}
 
 	b.Reset()
-	if err := Import(&b, []model.Resource{{Type: "t", Identity: map[string]any{"id": "x"}, Source: "."}}, nil); err != nil {
+	if _, err := Import(&b, []model.Resource{{Type: "t", Identity: map[string]any{"id": "x"}, Source: "."}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(b.String(), "# Found by") {
@@ -90,13 +90,16 @@ func TestImportGroupsBySource(t *testing.T) {
 
 func TestImportRejectsInjection(t *testing.T) {
 	var b bytes.Buffer
-	err := Import(&b, []model.Resource{
+	n, err := Import(&b, []model.Resource{
 		{Type: "aws_instance\nresource \"x\" \"y\" {}", Identity: map[string]any{"id": "i-1"}, Source: "a"},
 		{Type: "aws_instance", Identity: map[string]any{"id\" = 1 }\n#": "i-2"}, Source: "plugin\nresource \"evil\" \"x\" {}"},
 		{Type: "aws_s3_bucket", Identity: map[string]any{"bucket": "b"}, Source: "b"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("written = %d, want 2", n)
 	}
 	out := b.String()
 	if strings.Contains(out, "\nresource ") {
@@ -126,7 +129,7 @@ func TestCleanLines(t *testing.T) {
 func TestImportAvoidsTakenAddresses(t *testing.T) {
 	var b bytes.Buffer
 	reserved := map[string]bool{"aws_instance.web": true, "aws_instance.web_2": true}
-	if err := Import(&b, []model.Resource{{Type: "aws_instance", DisplayName: "web", Identity: map[string]any{"id": "i-new"}}}, reserved); err != nil {
+	if _, err := Import(&b, []model.Resource{{Type: "aws_instance", DisplayName: "web", Identity: map[string]any{"id": "i-new"}}}, reserved); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(b.String(), "to = aws_instance.web_3\n") {
@@ -139,7 +142,7 @@ func TestImportAvoidsTakenAddresses(t *testing.T) {
 
 func TestImportListIdentity(t *testing.T) {
 	var b bytes.Buffer
-	err := Import(&b, []model.Resource{{Type: "x_thing", DisplayName: "a",
+	_, err := Import(&b, []model.Resource{{Type: "x_thing", DisplayName: "a",
 		Identity: map[string]any{"ids": []any{"x", "${y}"}, "tags": map[string]any{"k": "v"}, "n": nil}}}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +163,7 @@ func TestImportListIdentity(t *testing.T) {
 
 func TestImportNameFromIdentity(t *testing.T) {
 	var b bytes.Buffer
-	if err := Import(&b, []model.Resource{{Type: "proxmox_virtual_environment_vm", DisplayName: "Сервер", Identity: map[string]any{"vm_id": "105"}, ImportID: "pve1/105"}}, nil); err != nil {
+	if _, err := Import(&b, []model.Resource{{Type: "proxmox_virtual_environment_vm", DisplayName: "Сервер", Identity: map[string]any{"vm_id": "105"}, ImportID: "pve1/105"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(b.String(), "to = proxmox_virtual_environment_vm.vm_id_105\n") {

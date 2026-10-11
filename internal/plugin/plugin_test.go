@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 1 || res[0].Type != "vault_policy" || res[0].RequiredKeys != nil || res[0].Source == "" {
+	if len(res) != 1 || res[0].Type != "vault_policy" || !slices.Equal(res[0].RequiredKeys, []string{"id"}) || res[0].Source == "" {
 		t.Errorf("res = %+v", res)
 	}
 	if len(warns) != 1 {
@@ -23,6 +24,8 @@ func TestRun(t *testing.T) {
 func TestRunErrors(t *testing.T) {
 	for _, cmd := range []string{
 		`echo '{"type":"x"}'`, // no identity
+		`echo '{"type":"x y","identity":{"id":"1"}}'`,
+		`echo '{"type":"x","provider":"a b","identity":{"id":"1"}}'`,
 		`echo 'not json'`,
 		`exit 3`,
 	} {

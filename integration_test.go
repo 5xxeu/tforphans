@@ -241,6 +241,16 @@ resource "fake_thing" "x" { name = var.name }
 		t.Errorf("selected workspace changed to %q", ws)
 	}
 
+	// A workspace whose state cannot be read does not lose the others.
+	write(t, filepath.Join(other, "terraform.tfstate.d", "prod", "terraform.tfstate"), "not json")
+	code, stdout, stderr = runTool("-types", "fake_thing", "-state-roots", tree)
+	if code != exitOrphans || !strings.Contains(stderr, "4 live, 2 managed, 0 ignored, 2 unmanaged; 2 states read") || !strings.Contains(stderr, "workspace prod") {
+		t.Fatalf("broken workspace: exit %d\n%s%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "other-prod") || strings.Contains(stdout, "other-default") {
+		t.Errorf("orphans with a broken workspace:\n%s", stdout)
+	}
+
 	// Without the tree, the other root's resources are unmanaged.
 	if _, stdout, _ := runTool("-types", "fake_thing"); !strings.Contains(stdout, "other-prod") {
 		t.Errorf("expected other-prod to be unmanaged without -state-roots:\n%s", stdout)
@@ -438,8 +448,28 @@ terraform {
 `)
 	write(t, filepath.Join(data, "thing", "x"), "")
 	t.Chdir(root)
+	// Both providers list x: for two provider sources these are two objects.
 	code, stdout, stderr := runTool("-types", "fake_thing")
-	if code != exitOrphans || strings.Count(stdout, "fake_thing") != 1 || !strings.Contains(stderr, "2 resource types queried") {
+	if code != exitOrphans || strings.Count(stdout, "fake_thing") != 2 || !strings.Contains(stderr, "2 resource types queried") {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+
+	// State of one provider does not manage the other provider's object.
+	write(t, filepath.Join(root, "main.tf"), `
+terraform {
+  required_providers {
+    fake  = { source = "example.com/fake/fake" }
+    fakeb = { source = "example.com/fake2/fake" }
+  }
+}
+resource "fake_thing" "x" {
+  provider = fake
+  name     = "x"
+}
+`)
+	terraform(t, root, "apply", "-auto-approve", "-no-color")
+	code, stdout, stderr = runTool("-types", "fake_thing", "-format", "json")
+	if code != exitOrphans || !strings.Contains(stderr, "2 live, 1 managed, 0 ignored, 1 unmanaged") || !strings.Contains(stdout, `"provider_source": "example.com/fake2/fake"`) {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }

@@ -398,14 +398,20 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		// An earlier adopt whose blocks are not applied yet: keep its
 		// addresses free and do not write a second block for its objects.
 		for _, im := range imports {
-			reserved[im.To] = true
+			if im.To != "" {
+				reserved[im.To] = true
+			}
+		}
+		roots := map[string]bool{}
+		for _, r := range o.roots {
+			roots[r] = true
 		}
 		n := len(orphans)
-		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports) })
+		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, roots) })
 		if n > len(orphans) {
 			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
 		}
-		err = adopt(o, orphans, reserved, stdout, stderr)
+		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
 	case o.format == "json":
 		err = report.JSON(stdout, orphans, sum)
 	default:
@@ -427,10 +433,16 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 }
 
 // hasImport reports whether an import block of the configuration already
-// targets r: same type and the same literal id or identity.
-func hasImport(r model.Resource, imports []tf.Import) bool {
+// targets r: same type, the same provider configuration, and the same
+// literal id or identity. An object listed by a root module only counts
+// blocks of that root; one found by -scan or a plugin has no root, and a
+// block of any root with its provider configuration counts.
+func hasImport(r model.Resource, imports []tf.Import, roots map[string]bool) bool {
 	for _, im := range imports {
-		if !strings.HasPrefix(im.To, r.Type+".") {
+		if im.Type != r.Type || roots[r.Source] && im.Dir != r.Source {
+			continue
+		}
+		if providerConfig(im.Provider, im.Type) != providerConfig(r.Provider, r.Type) {
 			continue
 		}
 		if im.ID != "" && im.ID == r.ImportID {
@@ -441,6 +453,15 @@ func hasImport(r model.Resource, imports []tf.Import) bool {
 		}
 	}
 	return false
+}
+
+// providerConfig names the provider configuration of a reference such as
+// vault.other; none means the default configuration of the type's prefix.
+func providerConfig(ref, typ string) string {
+	if ref == "" {
+		ref, _, _ = strings.Cut(typ, "_")
+	}
+	return ref
 }
 
 func identityEqual(live map[string]any, literal map[string]string) bool {
@@ -459,26 +480,36 @@ func identityEqual(live map[string]any, literal map[string]string) bool {
 }
 
 // adopt writes import blocks for the orphans to stdout or to a new file.
-func adopt(o *options, orphans []model.Resource, reserved map[string]bool, stdout, stderr io.Writer) error {
+// Objects that cannot be written as an import block are warnings.
+func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *report.Summary, stdout, stderr io.Writer) error {
 	if len(orphans) == 0 {
 		fmt.Fprintln(stderr, "Nothing to adopt.")
 		return nil
 	}
+	skipped := func(n int) {
+		if n < len(orphans) {
+			sum.Warnings = append(sum.Warnings, fmt.Sprintf("%d objects have no valid resource type or provider name; no import blocks written for them", len(orphans)-n))
+		}
+	}
 	if o.out == "" {
-		return report.Import(stdout, orphans, reserved)
+		n, err := report.Import(stdout, orphans, reserved)
+		skipped(n)
+		return err
 	}
 	f, err := os.OpenFile(o.out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
-	if err := report.Import(f, orphans, reserved); err != nil {
+	n, err := report.Import(f, orphans, reserved)
+	if err != nil {
 		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", len(orphans), o.out)
+	skipped(n)
+	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", n, o.out)
 	return nil
 }
 
@@ -577,8 +608,10 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			// A block without a provider argument uses the type's default
 			// provider, and so does an import block without one.
 			f.Provider = userLists[block].Provider
+			f.ProviderSource = userListProvider(f.Provider, f.Type, declared, schemas)
 			continue
 		}
+		f.ProviderSource = q.Source
 		switch {
 		case q.Temporary:
 			f.UndeclaredProvider = q.Source
@@ -610,7 +643,8 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 }
 
 // pullRoot reads the state of every workspace of a root module and returns
-// the instances and the number of states read.
+// the instances and the number of states read. A workspace that fails does
+// not stop the others: the instances read so far come back with the error.
 func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir}
 	workspaces, err := r.Workspaces(ctx)
@@ -618,19 +652,27 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, in
 		return nil, 0, err
 	}
 	var all []state.Instance
+	var errs []error
+	n := 0
 	for _, ws := range workspaces {
+		if ctx.Err() != nil {
+			return all, n, errors.Join(append(errs, ctx.Err())...)
+		}
 		r.Workspace = ws
 		raw, err := r.StatePull(ctx)
 		if err != nil {
-			return nil, 0, inWorkspace(ws, err)
+			errs = append(errs, inWorkspace(ws, err))
+			continue
 		}
 		insts, err := state.Parse(raw)
 		if err != nil {
-			return nil, 0, inWorkspace(ws, err)
+			errs = append(errs, inWorkspace(ws, err))
+			continue
 		}
 		all = append(all, insts...)
+		n++
 	}
-	return all, len(workspaces), nil
+	return all, n, errors.Join(errs...)
 }
 
 func inWorkspace(ws string, err error) error {
@@ -681,12 +723,12 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 			insts, n, err := pullStateRoot(ctx, o, d)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
-				sum.Warnings = append(sum.Warnings, fmt.Sprintf("state of %s not read, its resources may show as unmanaged: %v", d, err))
-				return
-			}
+			// The workspaces that were read still count.
 			idx.Add(insts)
 			sum.States += n
+			if err != nil {
+				sum.Warnings = append(sum.Warnings, fmt.Sprintf("state of %s not read in full, its resources may show as unmanaged: %v", d, err))
+			}
 		}()
 	}
 	wg.Wait()
@@ -707,16 +749,19 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 }
 
 // dedupe drops resources listed more than once, for example by two roots
-// that share a provider account.
+// that share a provider account. Equal types and identities from different
+// providers are different objects; an unknown provider (a plugin) is taken
+// for the same one.
 func dedupe(rs []model.Resource) []model.Resource {
-	seen := map[string]bool{}
+	seen := map[string][]string{} // key -> provider addresses kept
 	out := rs[:0]
 	for _, r := range rs {
 		k := r.Key()
-		if !seen[k] {
-			seen[k] = true
-			out = append(out, r)
+		if slices.ContainsFunc(seen[k], func(p string) bool { return model.SameProvider(p, r.ProviderSource) }) {
+			continue
 		}
+		seen[k] = append(seen[k], r.ProviderSource)
+		out = append(out, r)
 	}
 	return out
 }

@@ -21,8 +21,11 @@ import (
 
 // Instance is one managed resource instance from a state file.
 type Instance struct {
-	Type       string
-	Address    string
+	Type    string
+	Address string
+	// Provider is the provider address the instance belongs to, "" when
+	// state does not tell (legacy provider.aws references).
+	Provider   string
 	Identity   map[string]any
 	Attributes map[string]any
 }
@@ -34,6 +37,7 @@ type rawState struct {
 		Mode      string `json:"mode"`
 		Type      string `json:"type"`
 		Name      string `json:"name"`
+		Provider  string `json:"provider"`
 		Instances []struct {
 			IndexKey   any            `json:"index_key"`
 			Identity   map[string]any `json:"identity"`
@@ -74,10 +78,26 @@ func Parse(data []byte) ([]Instance, error) {
 			default:
 				a += fmt.Sprintf("[%v]", k)
 			}
-			out = append(out, Instance{Type: r.Type, Address: a, Identity: in.Identity, Attributes: in.Attributes})
+			out = append(out, Instance{Type: r.Type, Address: a, Provider: providerAddress(r.Provider), Identity: in.Identity, Attributes: in.Attributes})
 		}
 	}
 	return out, nil
+}
+
+// providerAddress extracts the provider address from a state reference
+// such as module.app.provider["registry.terraform.io/hashicorp/aws"].west.
+// Legacy references (provider.aws) and the legacy "-" namespace do not name
+// a provider source and give "".
+func providerAddress(ref string) string {
+	_, rest, ok := strings.Cut(ref, `provider["`)
+	if !ok {
+		return ""
+	}
+	addr, _, ok := strings.Cut(rest, `"]`)
+	if !ok || strings.Contains(addr, "/-/") {
+		return ""
+	}
+	return addr
 }
 
 // Fetch reads a state source: "-" for stdin, an https URL (for example a
@@ -300,6 +320,12 @@ func (ix *Index) Match(r model.Resource) Match {
 				continue
 			}
 			tried[in] = true
+			// AltTypes are declared equivalents, possibly of another
+			// provider (telmate's proxmox_vm_qemu); the type itself must
+			// come from the same provider.
+			if typ == r.Type && !model.SameProvider(r.ProviderSource, in.Provider) {
+				continue
+			}
 			ok, verified := matches(as, in)
 			if ok && r.Scope != nil {
 				inScope, known := scopeCheck(r.Scope, typ, in)
