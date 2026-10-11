@@ -869,11 +869,12 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Re
 						continue
 					}
 					res := model.Resource{
-						Type:        l.resourceType,
-						AltTypes:    a.AltTypes[l.resourceType],
-						Identity:    map[string]any{spec.Key: id},
-						DisplayName: displayName(item, id),
-						ImportID:    id,
+						Type:           l.resourceType,
+						ProviderSource: a.Provider,
+						AltTypes:       a.AltTypes[l.resourceType],
+						Identity:       map[string]any{spec.Key: id},
+						DisplayName:    displayName(item, id),
+						ImportID:       id,
 						// The object's own ID must match; the scope alone
 						// (zone_id, account_id) never makes it managed.
 						RequiredKeys: []string{spec.Key},

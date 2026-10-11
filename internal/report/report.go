@@ -132,7 +132,10 @@ func JSON(w io.Writer, orphans []model.Resource, s Summary) error {
 // reserved holds addresses (<type>.<name>) already used by state or
 // configuration; generated names avoid them, since importing into a taken
 // address either fails or binds the object to someone else's configuration.
-func Import(w io.Writer, orphans []model.Resource, reserved map[string]bool) error {
+//
+// It returns the number of blocks written: an object whose type or provider
+// is not a plain name is only noted in a comment.
+func Import(w io.Writer, orphans []model.Resource, reserved map[string]bool) (int, error) {
 	sources := map[string]bool{}
 	for _, r := range orphans {
 		sources[r.Source] = true
@@ -147,6 +150,7 @@ func Import(w io.Writer, orphans []model.Resource, reserved map[string]bool) err
 		used = map[string]bool{}
 	}
 	var b strings.Builder
+	written := 0
 	for i, r := range orphans {
 		// Types and identity keys come from providers and plugins; anything
 		// that is not a plain type name is not written as configuration.
@@ -188,9 +192,10 @@ func Import(w io.Writer, orphans []model.Resource, reserved map[string]bool) err
 			b.WriteString("  }\n")
 		}
 		b.WriteString("}\n\n")
+		written++
 	}
 	_, err := io.WriteString(w, b.String())
-	return err
+	return written, err
 }
 
 var (

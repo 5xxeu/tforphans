@@ -421,3 +421,48 @@ func TestMatchScales(t *testing.T) {
 		t.Error("nothing matched")
 	}
 }
+
+func TestMatchProvider(t *testing.T) {
+	insts, err := Parse([]byte(`{"version": 4, "resources": [
+  {"mode": "managed", "type": "foo_thing", "name": "a", "provider": "provider[\"registry.terraform.io/acme/foo\"]", "instances": [
+    {"identity": {"id": "42"}, "attributes": {"id": "42"}}
+  ]},
+  {"module": "module.m", "mode": "managed", "type": "google_compute_network", "name": "n", "provider": "module.m.provider[\"registry.terraform.io/hashicorp/google-beta\"].west", "instances": [
+    {"attributes": {"id": "net"}}
+  ]},
+  {"mode": "managed", "type": "proxmox_vm_qemu", "name": "vm", "provider": "provider[\"registry.terraform.io/telmate/proxmox\"]", "instances": [
+    {"attributes": {"vmid": 100}}
+  ]},
+  {"mode": "managed", "type": "aws_instance", "name": "old", "provider": "provider.aws", "instances": [
+    {"attributes": {"id": "i-1"}}
+  ]}
+]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if insts[0].Provider != "registry.terraform.io/acme/foo" || insts[1].Provider != "registry.terraform.io/hashicorp/google-beta" || insts[3].Provider != "" {
+		t.Fatalf("providers: %+v", insts)
+	}
+	ix := NewIndex()
+	ix.Add(insts)
+	for _, c := range []struct {
+		r    model.Resource
+		want bool
+	}{
+		{model.Resource{Type: "foo_thing", ProviderSource: "registry.terraform.io/acme/foo", Identity: map[string]any{"id": "42"}}, true},
+		{model.Resource{Type: "foo_thing", ProviderSource: "registry.opentofu.org/acme/foo", Identity: map[string]any{"id": "42"}}, true},
+		// Another provider's type of the same name is another object.
+		{model.Resource{Type: "foo_thing", ProviderSource: "registry.terraform.io/other/foo", Identity: map[string]any{"id": "42"}}, false},
+		{model.Resource{Type: "foo_thing", Identity: map[string]any{"id": "42"}}, true},
+		{model.Resource{Type: "google_compute_network", ProviderSource: "registry.terraform.io/hashicorp/google", Identity: map[string]any{"id": "net"}}, true},
+		// AltTypes may belong to another provider.
+		{model.Resource{Type: "proxmox_virtual_environment_vm", ProviderSource: "registry.terraform.io/bpg/proxmox", AltTypes: []string{"proxmox_vm_qemu"},
+			AltIdentity: map[string]map[string]any{"proxmox_vm_qemu": {"vmid": json.Number("100")}}, Identity: map[string]any{"vm_id": "100"}}, true},
+		// Legacy state does not name the provider source.
+		{model.Resource{Type: "aws_instance", ProviderSource: "registry.terraform.io/hashicorp/aws", Identity: map[string]any{"id": "i-1"}}, true},
+	} {
+		if _, got := ix.Managed(c.r); got != c.want {
+			t.Errorf("%s from %q: managed %v, want %v", c.r.Type, c.r.ProviderSource, got, c.want)
+		}
+	}
+}

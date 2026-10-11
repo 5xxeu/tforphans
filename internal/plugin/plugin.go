@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/proc"
@@ -58,6 +59,14 @@ func Run(ctx context.Context, command, name string) ([]model.Resource, []error, 
 	return res, warns, nil
 }
 
+// typeName is a Terraform resource type name, providerRef a provider
+// configuration reference (vault, vault.other); import blocks are written
+// from them.
+var (
+	typeName    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+	providerRef = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]*(\.[a-zA-Z_][a-zA-Z0-9_-]*)?$`)
+)
+
 // Parse decodes plugin output.
 func Parse(out []byte, source string) ([]model.Resource, []error, error) {
 	var res []model.Resource
@@ -80,11 +89,18 @@ func Parse(out []byte, source string) ([]model.Resource, []error, error) {
 		if l.Type == "" || len(l.Identity) == 0 {
 			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"type" and "identity" are required`))
 		}
+		if !typeName.MatchString(l.Type) || l.Provider != "" && !providerRef.MatchString(l.Provider) {
+			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"type" or "provider" is not a valid name`))
+		}
 		l.Resource.Source = source
 		if l.Unverified {
 			l.Resource.Scope = &model.Scope{Unverifiable: true}
 		}
-		l.Resource.RequiredKeys = nil
+		// The protocol: every key given must be present and equal in state,
+		// attributes included (built-in sources tolerate a missing account
+		// key there, plugins do not).
+		l.Resource.RequiredKeys = model.SortedKeys(l.Identity)
+		l.Resource.AttributeKeys = nil
 		res = append(res, l.Resource)
 	}
 	return res, warns, sc.Err()

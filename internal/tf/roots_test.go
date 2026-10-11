@@ -145,6 +145,20 @@ import {
   to       = aws_s3_bucket.b[each.key]
   id       = each.key
 }
+import {
+  to       = vault_policy.list
+  provider = vault.other
+  identity = { ids = ["x", 2], meta = { a = true } }
+}
+import {
+  to = module.app.vault_policy.ci
+  id = "ci"
+}
+import {
+  for_each = toset(["a"])
+  to       = module.app[each.key].module.db["x.y"].vault_mount.m[each.key]
+  id       = "kv"
+}
 `), 0o644)
 	os.WriteFile(filepath.Join(dir, "more.tf.json"), []byte(`{"import": [{"to": "vault_policy.ci", "id": "ci"}]}`), 0o644)
 	got, err := ConfigImports(dir)
@@ -153,9 +167,18 @@ import {
 	}
 	var lines []string
 	for _, im := range got {
-		lines = append(lines, fmt.Sprintf("%s id=%s identity=%v", im.To, im.ID, im.Identity))
+		if im.Dir != dir {
+			t.Errorf("%s: dir %q", im.Type, im.Dir)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s provider=%s id=%s identity=%v", im.To, im.Type, im.Provider, im.ID, im.Identity))
 	}
-	want := "aws_instance.web id=i-1 identity=map[]\nfake_thing.a id= identity=map[id:x n:5]\naws_s3_bucket.b id= identity=map[]\nvault_policy.ci id=ci identity=map[]"
+	want := `aws_instance.web aws_instance provider= id=i-1 identity=map[]
+fake_thing.a fake_thing provider= id= identity=map[id:x n:5]
+aws_s3_bucket.b aws_s3_bucket provider= id= identity=map[]
+vault_policy.list vault_policy provider=vault.other id= identity=map[ids:["x",2] meta:{"a":true}]
+ vault_policy provider= id=ci identity=map[]
+ vault_mount provider= id=kv identity=map[]
+vault_policy.ci vault_policy provider= id=ci identity=map[]`
 	if strings.Join(lines, "\n") != want {
 		t.Errorf("got:\n%s", strings.Join(lines, "\n"))
 	}

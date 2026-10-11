@@ -44,6 +44,9 @@ For every root module directory:
 Every listed resource is then compared by
 [resource identity](https://developer.hashicorp.com/terraform/plugin/framework/resources/identity)
 with all states that were read: the roots' own states plus any `-state`.
+A state instance counts only when it belongs to the provider that listed the
+object (by provider source; google and google-beta count as one): two
+providers can define a type of the same name for different objects.
 State written before identities existed (or by providers without them) is
 matched by attributes instead; every key of the object's own ID has to
 match. Old state often lacks the account or subscription (AWS `account_id`
@@ -119,7 +122,9 @@ workspaces with `terraform state pull`. Terraform does the reading, so any
 backend works: S3, GCS, azurerm, GitLab/http, HCP Terraform. Up to 8 roots
 are read in parallel. A root that is not initialized, or whose state cannot
 be read, is reported as a warning (an error with `-strict`), because its
-resources may then show up as unmanaged. `-init` runs `terraform init` in
+resources may then show up as unmanaged. A workspace that fails does not
+drop the others: their states still count, and the warning names the
+workspace. `-init` runs `terraform init` in
 uninitialized roots first; it creates `.terraform` there and may write a
 lock file, so it is opt-in. A shared `TF_PLUGIN_CACHE_DIR` makes it fast.
 
@@ -206,9 +211,12 @@ blocks keep that block's provider (an alias such as `aws.other_account`). `-o` n
 existing file. Resource names avoid addresses that the states or the root
 modules' configuration already use (`web` becomes `web_2`), so an import
 never lands on someone else's resource block. Import blocks already in a root
-module (an earlier `adopt` not applied yet) keep their addresses, and
-objects they target (same type and literal `id` or `identity`) are not
-written again. With several roots or plugins the blocks are grouped under
+module (an earlier `adopt` not applied yet, also into child modules) keep
+their addresses, and objects they target are not written again: same type,
+same provider configuration (`provider = vault.other` is not the default
+one), the same literal `id` or `identity`, and, for objects listed by a root
+module, a block in that root. Objects found by `-scan` or a plugin have no
+root, so a block in any root with their provider configuration counts. With several roots or plugins the blocks are grouped under
 `# Found by <source>` comments: each group belongs in its own root module.
 Narrow down what to adopt with `-types` or the ignore file, and review
 `generated.tf` before applying.
@@ -325,6 +333,11 @@ A plugin is any command that prints one JSON object per line:
   they are compared with the instance's attributes, so `{"id": ...}` with the
   value the provider stores as `id` is usually enough. All keys must match.
 - `import_id`: optional; import blocks then use `id = ...`.
+- `provider`: optional provider configuration for the import block
+  (`vault.other`); `provider_source`: optional provider address
+  (`registry.terraform.io/hashicorp/vault`), so that state of another
+  provider with a type of the same name does not match. A `type` or
+  `provider` that is not a valid name makes the plugin fail.
 - `error` lines are reported as warnings (errors with `-strict`).
 - `unverified`: optional, `true` when state cannot confirm where the object
   lives (Vault state does not record the Vault address, so a policy `ci`
