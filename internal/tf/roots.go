@@ -1,8 +1,8 @@
 package tf
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"math/big"
@@ -139,22 +139,53 @@ func (r Runner) Workspaces(ctx context.Context) ([]string, error) {
 		}
 		return nil, cmdError(args, stderr, err)
 	}
-	return parseWorkspaces(string(out)), nil
+	return parseWorkspaces(string(out))
 }
 
-// parseWorkspaces reads `terraform workspace list`. Lines that are not a
-// workspace name (notices of wrappers or remote backends) are skipped. A
-// name is what terraform accepts: unchanged by URL path escaping (so
-// "_prod" and "a+b" are names, text with spaces is not).
-func parseWorkspaces(out string) []string {
-	var ws []string
-	sc := bufio.NewScanner(strings.NewReader(out))
-	for sc.Scan() {
-		if name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(sc.Text()), "*")); name != "" && url.PathEscape(name) == name {
-			ws = append(ws, name)
+// workspaceLine is a line of the list: "* name" for the selected
+// workspace, "  name" for the others.
+var workspaceLine = regexp.MustCompile(`^(\*| ) (\S+)$`)
+
+// parseWorkspaces reads `terraform workspace list`. Backends and wrappers
+// print other text to the same stream, such as warnings that -no-color
+// renders without their frame, so a word wrapped onto its own line
+// ("instead.") must never pass for a workspace: pulling the state of a
+// workspace that does not exist makes some backends (S3) write an empty
+// one. Only the block of list lines that holds the selected workspace
+// counts, and a name is what terraform accepts: unchanged by URL path
+// escaping (so "_prod" and "a+b" are names, text with spaces is not).
+func parseWorkspaces(out string) ([]string, error) {
+	var block, ws []string
+	selected := 0
+	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+	for _, line := range append(lines, "") {
+		m := workspaceLine.FindStringSubmatch(line)
+		if m != nil && url.PathEscape(m[2]) == m[2] {
+			block = append(block, m[0])
+			continue
 		}
+		// The end of a block of list lines.
+		n := 0
+		for _, l := range block {
+			if l[0] == '*' {
+				n++
+			}
+		}
+		if n > 0 {
+			if ws != nil {
+				return nil, errors.New("unexpected output of terraform workspace list: more than one list")
+			}
+			for _, l := range block {
+				ws = append(ws, l[2:])
+			}
+			selected = n
+		}
+		block = nil
 	}
-	return ws
+	if selected != 1 {
+		return nil, errors.New("unexpected output of terraform workspace list: no single selected workspace (* name)")
+	}
+	return ws, nil
 }
 
 // UserList is one of the user's own list blocks.

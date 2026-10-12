@@ -39,7 +39,11 @@ For every root module directory:
    the file is removed.
 3. `terraform state pull` gives the module's state, for every workspace
    (selected through `TF_WORKSPACE`, so the module's selected workspace
-   stays as it is).
+   stays as it is). Workspaces are taken only from the list lines of
+   `terraform workspace list` (`* name`, `  name`), never from other text
+   such as backend warnings: pulling a workspace that does not exist makes
+   some backends (S3) write an empty state. `-current-workspace` skips the
+   list and reads only the selected workspace.
 
 Every listed resource is then compared by
 [resource identity](https://developer.hashicorp.com/terraform/plugin/framework/resources/identity)
@@ -51,10 +55,15 @@ State written before identities existed (or by providers without them) is
 matched by attributes instead; every key of the object's own ID has to
 match. Old state often lacks the account or subscription (AWS `account_id`
 is no attribute), and so can an identity, so such a match cannot tell an
-IAM role `ci` in one account from a role `ci` in another. These matches are counted and reported
-as unverified (an error with `-strict`); `terraform apply -refresh-only`
-with a current provider records identities in state and makes them
-verifiable. Whatever matches nothing is reported.
+IAM role `ci` in one account from a role `ci` in another. An empty value in
+a listed identity (google lists some objects with `project = ""`) is
+unknown too. These matches are counted and reported as unverified (an error
+with `-strict`), and a note says how many state instances have no identity;
+`terraform apply -refresh-only` with a current provider records identities
+in state and makes them verifiable (it writes the state, so it needs write
+access). The boot disk of a managed `google_compute_instance` counts as
+managed by it; disks attached with `attached_disk` do not, since they may
+be created elsewhere. Whatever matches nothing is reported.
 
 ## Install
 
@@ -83,8 +92,15 @@ aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024,
 (Illustrative output.)
 
 Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
-With `-strict`, incomplete coverage (a failed list query or a plugin error)
-is also an error, which suits CI.
+A run that queried no resource type at all is an error too, since it could
+not have found anything (for example a provider version without list
+resources; the error names such providers). With `-strict`, incomplete
+coverage (a failed list query or a plugin error) is also an error, which
+suits CI.
+
+Queries that did not list everything are summed up by cause: missing
+argument, permission denied, truncated, not found, API not enabled, other.
+Messages are cut to one line; `-v` prints each failed query.
 
 ### Resources in modules
 
@@ -127,6 +143,8 @@ drop the others: their states still count, and the warning names the
 workspace. `-init` runs `terraform init` in
 uninitialized roots first; it creates `.terraform` there and may write a
 lock file, so it is opt-in. A shared `TF_PLUGIN_CACHE_DIR` makes it fast.
+Reading a root needs working credentials for its backend (S3, GCS, ...);
+a root whose backend rejects them is skipped with a warning.
 
 States can also be given one by one:
 
@@ -154,10 +172,34 @@ tforphans -arg region=eu-north-1,eu-central-1,us-east-1
 tforphans -arg location=global,europe-north1   # google
 ```
 
+An argument can be limited to some types with `TYPE_GLOB:`, and then wins
+over the same argument without one for those types. Google Compute
+instances, disks and snapshots need a zone, which the list config does not
+require (the query fails with "Cannot determine zone" unless the provider
+block sets one), so the first scan of a GCP project usually needs:
+
+```sh
+tforphans -arg location=global,europe-west1 \
+  -arg "google_compute_*:zone=$(gcloud compute zones list --filter='region:europe-west1' --format='value(name)' | paste -sd, -)"
+```
+
 Types whose list config has a required argument that no `-arg` supplies (for
 example `rest_api_id` for API Gateway children) are skipped, because one
 invalid list block makes Terraform reject the whole query. `-v` lists them
 with the reason.
+
+When a root uses both `google` and `google-beta`, a type both can list is
+queried once, through the provider the root declares, preferring `google`.
+Types whose lists reach beyond what a root manages (`google_project` lists
+every project the credentials can see) are skipped unless `-types` names
+them exactly. `-v` shows, per root, which projects and accounts the results
+came from.
+
+A root pinned to an older Terraform (`required_version = "= 1.10.5"`)
+refuses `terraform query`; `-ignore-required-version` lifts the root
+module's constraint for each command with a temporary
+`zz_tforphans_<pid>_version_override.tf` (child modules' constraints still
+apply).
 
 For anything more specific (provider aliases, other accounts, filters), put
 your own `list` blocks in a `*.tfquery.hcl` file in the root module. They run
@@ -182,9 +224,12 @@ tforphans -print-query      # show the generated .tfquery.hcl and exit
 ### Ignoring known resources
 
 `.tforphans-ignore` in the working directory (or `-ignore FILE`)
-holds `TYPE_GLOB[:NAME_GLOB]` lines. `*` matches any characters. The name
-glob is tried against the display name, the import ID and every identity
-value:
+holds `TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...]` lines. `*` matches any
+characters. The name glob is tried against the display name, the import ID
+and every identity value. Each `KEY=GLOB` must match as well: an identity
+key (`project=prod-*`), or `attr.` and a path into the resource's
+attributes (`attr.labels.goog-gke-node=*`), which tforphans then fetches for
+that rule's types (`include_resource`, slower):
 
 ```
 # AWS-managed service roles
@@ -193,7 +238,17 @@ aws_iam_role:AWSServiceRole*
 aws_s3_bucket:platform-*
 # everything of a type
 aws_default_vpc
+# one project only
+google_compute_disk name=pvc-* project=data-prod
 ```
+
+`-ignore-preset gcp-system` adds built-in rules for objects that Google
+Cloud and GKE create on their own: GKE nodes, their disks and persistent
+volume disks (by GKE labels and `gke-`/`pvc-` names), GKE and load balancer
+firewall rules and addresses, default service accounts, and App Engine,
+Cloud Functions and Cloud Build buckets. See
+[the preset](internal/report/presets/gcp-system.ignore) and check what it
+hides before relying on it.
 
 ### Bringing orphans under Terraform: `tforphans adopt`
 
@@ -225,7 +280,12 @@ Narrow down what to adopt with `-types` or the ignore file, and review
 `-strict` on incomplete coverage); the plain command is the one for CI
 checks.
 
-`-format json` prints the orphans together with the coverage summary.
+`-format json` prints the orphans together with the coverage summary: counts
+per type (`summary.by_type`), skipped types, failed queries with their
+`category`. Every orphan has the same keys. `-include-attrs
+labels,creation_timestamp` adds those attributes to each orphan (to see how
+old an object is, or who owns it). `-format summary` prints only a table of
+counts per type, types with unmanaged objects first.
 
 ## Providers without list support: plural data sources
 
@@ -362,7 +422,8 @@ per run with its own states and `-plugin-cluster-states`.
 
 ## Security
 
-- tforphans only reads. It runs `terraform providers schema`, `state pull`,
+- tforphans only reads. It runs `terraform providers schema`, `state pull`
+  (only for workspaces `workspace list` printed as list lines),
   `workspace list`, `query`, and `apply -refresh-only` on a temporary root
   that holds nothing but data sources; it never plans or applies your
   configuration. `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are not passed
@@ -377,7 +438,9 @@ per run with its own states and `-plugin-cluster-states`.
   from https to http is refused). There is no
   telemetry. State contents are kept in memory and never printed.
 - Files it writes: a temporary `zz_tforphans_<pid>.tfquery.hcl` (and
-  `zz_tforphans_<pid>_override.tf` when a provider is declared only in child modules)
+  `zz_tforphans_<pid>_override.tf` when a provider is declared only in child
+  modules, `zz_tforphans_<pid>_version_override.tf` with
+  `-ignore-required-version`)
   next to your configuration, removed after the run, and a temporary
   directory for data source scans, removed as well. A run killed with
   SIGKILL can leave them behind.
@@ -405,7 +468,15 @@ per run with its own states and `-plugin-cluster-states`.
   reported as not fully listed, since there may be more; so is one of your
   blocks whose limit is an expression.
 - Some providers list objects they create implicitly (default VPCs, managed
-  roles, auto-created records). Put them in the ignore file.
+  roles, auto-created records). Put them in the ignore file, or use a
+  preset (`-ignore-preset gcp-system`).
+- An API that is not enabled in a GCP project fails its queries ("API not
+  enabled"); this still counts as incomplete coverage for `-strict`, since
+  objects created before the API was disabled cannot be ruled out. Exclude
+  the types of APIs you never use with `-exclude-types`.
+- The temporary files are written next to the configuration; there is no
+  separate work directory, and a provider version cannot be overridden for
+  the run (the root's installed providers are used).
 - Terragrunt is not supported yet: generated backends live in
   `.terragrunt-cache`, which `-state-roots` skips. Pass such states with
   `-state` or run tforphans in the generated directories.

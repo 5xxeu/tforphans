@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,15 +260,25 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	  "registry.terraform.io/hashicorp/google": {"list_resource_schemas": {"google_compute_network": {"block": {}}}},
 	  "registry.terraform.io/hashicorp/google-beta": {"list_resource_schemas": {"google_compute_network": {"block": {}}}}
 	}}`), &s)
+	// Both list the same objects: one query, through google.
 	p := BuildPlan(&s, nil, PlanOptions{})
-	if len(p.Queries) != 2 || p.Queries[0].Address() == p.Queries[1].Address() {
+	if len(p.Queries) != 1 || p.Queries[0].Provider != "google" {
 		t.Fatalf("queries %+v", p.Queries)
 	}
-	hcl := string(p.HCL(10))
-	for _, want := range []string{`"tfo_google_google_compute_network"`, `"tfo_google-beta_google_compute_network"`} {
-		if !strings.Contains(hcl, want) {
-			t.Errorf("HCL lacks %s:\n%s", want, hcl)
-		}
+	if len(p.Skipped) != 1 || !strings.Contains(p.Skipped[0].Reason, "listed through google") {
+		t.Errorf("skipped %+v", p.Skipped)
+	}
+	if hcl := string(p.HCL(10)); !strings.Contains(hcl, `"tfo_google_google_compute_network"`) {
+		t.Errorf("HCL:\n%s", hcl)
+	}
+	// Two providers of different families both list the type.
+	var s2 Schemas
+	json.Unmarshal([]byte(`{"provider_schemas": {
+	  "registry.terraform.io/acme/foo": {"list_resource_schemas": {"foo_thing": {"block": {}}}},
+	  "registry.terraform.io/other/foo": {"list_resource_schemas": {"foo_thing": {"block": {}}}}
+	}}`), &s2)
+	if p := BuildPlan(&s2, nil, PlanOptions{}); len(p.Queries) != 2 {
+		t.Errorf("different providers: %+v", p.Queries)
 	}
 }
 
@@ -305,11 +316,13 @@ func TestImplicitNameTaken(t *testing.T) {
 	for _, q := range p.Queries {
 		got[q.Provider] = q.Type
 	}
-	if _, ok := got["google"]; !ok {
+	if _, ok := got["google"]; !ok || len(p.Queries) != 1 {
 		t.Errorf("google-beta lost its declared name: %+v", p.Queries)
 	}
-	if p.Declare["tfo-hashicorp-google"] != "registry.terraform.io/hashicorp/google" {
-		t.Errorf("hashicorp/google needs a temporary name: %v", p.Declare)
+	// hashicorp/google lists the same objects through a temporary name
+	// only; the root's own provider is queried instead.
+	if len(p.Declare) != 0 {
+		t.Errorf("temporary names %v", p.Declare)
 	}
 }
 
@@ -331,5 +344,84 @@ func TestRunCancelWrapper(t *testing.T) {
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("returned after %v", d)
+	}
+}
+
+func TestPlanOptIn(t *testing.T) {
+	var s Schemas
+	json.Unmarshal([]byte(`{"provider_schemas": {
+	  "registry.terraform.io/hashicorp/google": {"list_resource_schemas": {"google_project": {"block": {}}, "google_compute_network": {"block": {}}}}
+	}}`), &s)
+	types := func(p Plan) []string {
+		var out []string
+		for _, q := range p.Queries {
+			out = append(out, q.Type)
+		}
+		return out
+	}
+	p := BuildPlan(&s, nil, PlanOptions{})
+	if got := types(p); !slices.Equal(got, []string{"google_compute_network"}) || len(p.Skipped) != 1 || !strings.Contains(p.Skipped[0].Reason, "-types") {
+		t.Errorf("default: %v, skipped %+v", got, p.Skipped)
+	}
+	if got := types(BuildPlan(&s, nil, PlanOptions{Include: glob.CompileList([]string{"google_*"})})); !slices.Equal(got, []string{"google_compute_network"}) {
+		t.Errorf("a wildcard is no opt-in: %v", got)
+	}
+	if got := types(BuildPlan(&s, nil, PlanOptions{Include: glob.CompileList([]string{"google_project"})})); !slices.Equal(got, []string{"google_project"}) {
+		t.Errorf("named: %v", got)
+	}
+}
+
+func TestScopedArg(t *testing.T) {
+	a, err := ParseArg("google_compute_*:zone=z1,z2")
+	if err != nil || a.Types != "google_compute_*" || a.Name != "zone" || len(a.Values) != 2 {
+		t.Fatalf("%+v %v", a, err)
+	}
+	for _, bad := range []string{":zone=a", "zone", "x:=a"} {
+		if _, err := ParseArg(bad); err == nil {
+			t.Errorf("%q: no error", bad)
+		}
+	}
+	var s Schemas
+	json.Unmarshal([]byte(`{"provider_schemas": {"registry.terraform.io/hashicorp/google": {"list_resource_schemas": {
+	  "google_compute_disk": {"block": {"attributes": {"zone": {"type": "string", "optional": true}, "location": {"type": "string", "optional": true}}}},
+	  "google_storage_bucket": {"block": {"attributes": {"zone": {"type": "string", "optional": true}, "location": {"type": "string", "optional": true}}}}
+	}}}}`), &s)
+	global, _ := ParseArg("zone=all-z")
+	loc, _ := ParseArg("location=eu")
+	p := BuildPlan(&s, nil, PlanOptions{Args: []Arg{global, a, loc}})
+	got := map[string]string{}
+	for _, q := range p.Queries {
+		var parts []string
+		for _, arg := range q.Args {
+			parts = append(parts, arg.Name+"="+strings.Join(arg.Values, ","))
+		}
+		got[q.Type] = strings.Join(parts, " ")
+	}
+	if got["google_compute_disk"] != "zone=z1,z2 location=eu" || got["google_storage_bucket"] != "zone=all-z location=eu" {
+		t.Errorf("args %v", got)
+	}
+}
+
+func TestClassify(t *testing.T) {
+	for _, c := range []struct{ msg, cat string }{
+		{"Error: API Error: googleapi: Error 403: Cloud Run Admin API has not been used in project 123 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/run.googleapis.com/overview?project=123 then retry.\nDetails:\n[\n  {\n    \"@type\": \"type.googleapis.com/google.rpc.ErrorInfo\",\n    \"reason\": \"SERVICE_DISABLED\"\n  }\n]", FailAPIOff},
+		{"API Error: Cannot determine zone: set in this resource, or set provider-level zone.", FailMissingArg},
+		{"googleapi: Error 403: Required 'compute.disks.list' permission for 'projects/p', forbidden", FailDenied},
+		{"operation error EC2: DescribeInstances, StatusCode: 403, api error UnauthorizedOperation", FailDenied},
+		{"returned 100 results, its limit; there may be more", FailTruncated},
+		{"googleapi: Error 404: Requested entity was not found.", FailNotFound},
+		{"did not finish", FailOther},
+	} {
+		f := Failure{Message: c.msg}
+		f.Classify()
+		if f.Category != c.cat {
+			t.Errorf("%.60q: category %q, want %q", c.msg, f.Category, c.cat)
+		}
+		if strings.Contains(f.Message, "\n") || strings.Contains(f.Message, "@type") || len(f.Message) > 303 {
+			t.Errorf("message not shortened: %q", f.Message)
+		}
+	}
+	if got := OneLine(strings.Repeat("ж", 200), 11); got != "жжжжж..." {
+		t.Errorf("cut %q", got)
 	}
 }

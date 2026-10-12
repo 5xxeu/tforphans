@@ -1,0 +1,34 @@
+# Objects that Google Cloud and GKE create on their own. Rules use identity
+# keys and labels, not names alone, so that a project or a user object with
+# a similar name is not hidden. Built from one large project's results;
+# check what it hides with -ignore-preset and -v before relying on it.
+
+# GKE nodes and their disks, persistent volume disks
+google_compute_instance attr.labels.goog-gke-node=*
+google_compute_instance attr.labels.goog-k8s-cluster-name=*
+google_compute_disk attr.labels.goog-gke-node=*
+google_compute_disk attr.labels.goog-k8s-cluster-name=*
+google_compute_disk name=gke-*
+google_compute_disk name=pvc-*
+google_compute_instance_group_manager name=gke-*
+google_compute_instance_template name=gke-*
+
+# Firewall rules, addresses and health checks of GKE and its load balancers
+google_compute_firewall name=gke-*
+google_compute_firewall name=k8s-*
+google_compute_address name=sca-auto-addr-*
+google_compute_health_check name=k8s-*
+google_compute_backend_service name=k8s-*
+google_compute_forwarding_rule name=k8s-*
+google_compute_target_pool name=k8s-*
+
+# Default service accounts
+google_service_account email=*-compute@developer.gserviceaccount.com
+google_service_account email=*@appspot.gserviceaccount.com
+
+# Buckets of App Engine, Cloud Functions and Cloud Build
+google_storage_bucket name=*.appspot.com
+google_storage_bucket name=gcf-sources-*
+google_storage_bucket name=gcf-v2-sources-*
+google_storage_bucket name=gcf-v2-uploads-*
+google_storage_bucket name=*_cloudbuild

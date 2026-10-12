@@ -3,12 +3,14 @@ package report
 
 import (
 	"bufio"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -19,8 +21,12 @@ import (
 	"github.com/5xxeu/tforphans/internal/tf"
 )
 
-// Ignore holds rules of the form TYPE_GLOB[:NAME_GLOB]. NAME_GLOB is matched
-// against the display name, the import ID and every identity value.
+// Ignore holds rules of the form TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...].
+// NAME_GLOB is matched against the display name, the import ID and every
+// identity value. Each KEY=GLOB must hold too: KEY is an identity key
+// (project=prod-*), or attr. and a path into the resource's attributes
+// (attr.labels.goog-gke-node=*), which tforphans then fetches for the
+// rule's types.
 type Ignore struct {
 	rules []ignoreRule
 }
@@ -28,7 +34,17 @@ type Ignore struct {
 type ignoreRule struct {
 	typ, name glob.Pattern
 	hasName   bool
+	conds     []ignoreCond
 }
+
+type ignoreCond struct {
+	attr bool     // a path into attributes, not an identity key
+	path []string // identity key, or attribute path
+	val  glob.Pattern
+}
+
+// condition matches a trailing KEY=GLOB word.
+var condition = regexp.MustCompile(`^(attr\.)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_.-]+)?)=(\S*)$`)
 
 // LoadIgnore reads an ignore file. A missing optional file is an empty rule
 // set.
@@ -47,38 +63,125 @@ func LoadIgnore(path string, optional bool) (*Ignore, error) {
 func ParseIgnore(r io.Reader) (*Ignore, error) {
 	ig := &Ignore{}
 	sc := bufio.NewScanner(r)
-	for sc.Scan() {
+	for n := 1; sc.Scan(); n++ {
 		l := strings.TrimSpace(sc.Text())
 		if l == "" || strings.HasPrefix(l, "#") {
 			continue
 		}
-		typ, name, hasName := strings.Cut(l, ":")
-		ig.rules = append(ig.rules, ignoreRule{typ: glob.Compile(strings.TrimSpace(typ)), name: glob.Compile(strings.TrimSpace(name)), hasName: hasName})
+		// Conditions are the trailing KEY=GLOB words; a display name glob
+		// before them may hold spaces.
+		words := strings.Fields(l)
+		var conds []ignoreCond
+		for len(words) > 1 {
+			m := condition.FindStringSubmatch(words[len(words)-1])
+			if m == nil {
+				break
+			}
+			c := ignoreCond{attr: m[1] != "", path: []string{m[2]}, val: glob.Compile(m[3])}
+			if c.attr {
+				c.path = strings.Split(m[2], ".")
+			} else if strings.Contains(m[2], ".") {
+				return nil, fmt.Errorf("line %d: %s: identity keys have no path; attribute paths start with attr.", n, words[len(words)-1])
+			}
+			conds = append([]ignoreCond{c}, conds...)
+			words = words[:len(words)-1]
+		}
+		typ, name, hasName := strings.Cut(strings.Join(words, " "), ":")
+		ig.rules = append(ig.rules, ignoreRule{typ: glob.Compile(strings.TrimSpace(typ)), name: glob.Compile(strings.TrimSpace(name)), hasName: hasName, conds: conds})
 	}
 	return ig, sc.Err()
 }
 
-func (ig *Ignore) Match(r model.Resource) bool {
+//go:embed presets/*.ignore
+var presets embed.FS
+
+// Presets lists the built-in ignore presets.
+func Presets() []string {
+	entries, _ := presets.ReadDir("presets")
+	var out []string
+	for _, e := range entries {
+		out = append(out, strings.TrimSuffix(e.Name(), ".ignore"))
+	}
+	return out
+}
+
+// Preset returns a built-in ignore preset by name.
+func Preset(name string) (*Ignore, error) {
+	data, err := presets.ReadFile("presets/" + name + ".ignore")
+	if err != nil || strings.ContainsAny(name, "/.") {
+		return nil, fmt.Errorf("unknown ignore preset %q (have %s)", name, strings.Join(Presets(), ", "))
+	}
+	return ParseIgnore(strings.NewReader(string(data)))
+}
+
+// Merge adds the rules of other.
+func (ig *Ignore) Merge(other *Ignore) { ig.rules = append(ig.rules, other.rules...) }
+
+// Attributes returns the top-level attributes that rules for typ look at,
+// which have to be fetched (include_resource) for the type.
+func (ig *Ignore) Attributes(typ string) []string {
+	var out []string
 	for _, rule := range ig.rules {
-		if !rule.typ.Match(r.Type) {
+		if !rule.typ.Match(typ) {
 			continue
 		}
-		if !rule.hasName {
-			return true
-		}
-		cands := []string{r.DisplayName, r.ImportID}
-		for _, v := range r.Identity {
-			if s, ok := model.Scalar(v); ok {
-				cands = append(cands, s)
-			}
-		}
-		for _, c := range cands {
-			if c != "" && rule.name.Match(c) {
-				return true
+		for _, c := range rule.conds {
+			if c.attr && !slices.Contains(out, c.path[0]) {
+				out = append(out, c.path[0])
 			}
 		}
 	}
+	return out
+}
+
+func (ig *Ignore) Match(r model.Resource) bool {
+	for _, rule := range ig.rules {
+		if rule.typ.Match(r.Type) && rule.matchName(r) && rule.matchConds(r) {
+			return true
+		}
+	}
 	return false
+}
+
+func (rule ignoreRule) matchName(r model.Resource) bool {
+	if !rule.hasName {
+		return true
+	}
+	cands := []string{r.DisplayName, r.ImportID}
+	for _, v := range r.Identity {
+		if s, ok := model.Scalar(v); ok {
+			cands = append(cands, s)
+		}
+	}
+	for _, c := range cands {
+		if c != "" && rule.name.Match(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func (rule ignoreRule) matchConds(r model.Resource) bool {
+	for _, c := range rule.conds {
+		var v any = r.Identity
+		if c.attr {
+			v = r.Attributes
+		}
+		for _, p := range c.path {
+			m, ok := v.(map[string]any)
+			if !ok {
+				return false
+			}
+			if v, ok = m[p]; !ok {
+				return false
+			}
+		}
+		s, ok := model.Scalar(v)
+		if !ok || !c.val.Match(s) {
+			return false
+		}
+	}
+	return true
 }
 
 // Summary describes how complete the scan was.
@@ -97,6 +200,52 @@ type Summary struct {
 	Warnings   []string     `json:"warnings,omitempty"`
 	// Notes are hints that do not make coverage incomplete.
 	Notes []string `json:"notes,omitempty"`
+	// NoList are providers whose installed version has no list resources.
+	NoList []string `json:"providers_without_list,omitempty"`
+	// ByType counts the live objects of each type by outcome.
+	ByType map[string]*TypeCount `json:"by_type"`
+}
+
+type TypeCount struct {
+	Live    int `json:"live"`
+	Managed int `json:"managed"`
+	Ignored int `json:"ignored"`
+	Orphans int `json:"orphans"`
+}
+
+// SummaryTable prints the counts per type, types with orphans first, and
+// the types that were not fully listed.
+func SummaryTable(w io.Writer, s Summary) error {
+	types := slices.Collect(maps.Keys(s.ByType))
+	sort.Slice(types, func(i, j int) bool {
+		a, b := s.ByType[types[i]], s.ByType[types[j]]
+		if a.Orphans != b.Orphans {
+			return a.Orphans > b.Orphans
+		}
+		return types[i] < types[j]
+	})
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprintln(tw, "TYPE\tLIVE\tMANAGED\tIGNORED\tUNMANAGED\t")
+	for _, t := range types {
+		c := s.ByType[t]
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t\n", Clean(t), c.Live, c.Managed, c.Ignored, c.Orphans)
+	}
+	fmt.Fprintf(tw, "total\t%d\t%d\t%d\t%d\t\n", s.Live, s.Managed, s.Ignored, s.Orphans)
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	var failed []string
+	for _, f := range s.Failed {
+		if !slices.Contains(failed, f.Type) {
+			failed = append(failed, f.Type)
+		}
+	}
+	if len(failed) > 0 {
+		slices.Sort(failed)
+		_, err := fmt.Fprintf(w, "\nnot fully listed (%d): %s\n", len(failed), Clean(strings.Join(failed, ", ")))
+		return err
+	}
+	return nil
 }
 
 func Text(w io.Writer, orphans []model.Resource) error {

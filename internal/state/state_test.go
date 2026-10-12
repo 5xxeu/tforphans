@@ -466,3 +466,76 @@ func TestMatchProvider(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchEmptyValue: google lists some objects with an empty project; the
+// value is unknown, so the object matches by its other keys, unverified.
+func TestMatchEmptyValue(t *testing.T) {
+	insts, err := Parse([]byte(`{"version": 4, "resources": [
+  {"mode": "managed", "type": "google_compute_disk", "name": "d", "instances": [
+    {"attributes": {"id": "projects/p1/zones/z1/disks/data", "name": "data", "zone": "z1", "project": "p1"}}
+  ]},
+  {"mode": "managed", "type": "google_compute_instance", "name": "vm", "instances": [
+    {"identity": {"name": "vm", "zone": "z1", "project": "p1"}, "attributes": {"name": "vm"}}
+  ]}
+]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex()
+	ix.Add(insts)
+	keys := []string{"name", "project", "zone"}
+	for _, c := range []struct {
+		r             model.Resource
+		managed, veri bool
+	}{
+		{model.Resource{Type: "google_compute_disk", RequiredKeys: keys, AttributeKeys: keys,
+			Identity: map[string]any{"name": "data", "zone": "z1", "project": ""}}, true, false},
+		{model.Resource{Type: "google_compute_disk", RequiredKeys: keys, AttributeKeys: keys,
+			Identity: map[string]any{"name": "data", "zone": "z1", "project": "p1"}}, true, true},
+		{model.Resource{Type: "google_compute_disk", RequiredKeys: keys, AttributeKeys: keys,
+			Identity: map[string]any{"name": "data", "zone": "z2", "project": ""}}, false, false},
+		{model.Resource{Type: "google_compute_instance", RequiredKeys: keys,
+			Identity: map[string]any{"name": "vm", "zone": "z1", "project": ""}}, true, false},
+		// Nothing known but the empty value: no match.
+		{model.Resource{Type: "google_compute_disk", RequiredKeys: []string{"project"}, Identity: map[string]any{"project": ""}}, false, false},
+	} {
+		m := ix.Match(c.r)
+		if m.Managed != c.managed || m.Verified != c.veri {
+			t.Errorf("%s %v: got %+v", c.r.Type, c.r.Identity, m)
+		}
+	}
+}
+
+func TestMatchBootDisk(t *testing.T) {
+	insts, err := Parse([]byte(`{"version": 4, "resources": [
+  {"mode": "managed", "type": "google_compute_instance", "name": "vm", "instances": [
+    {"attributes": {"name": "vm", "zone": "z1", "project": "p1",
+      "boot_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/vm"}],
+      "attached_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/data"}]}}
+  ]}
+]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex()
+	ix.Add(insts)
+	disk := func(name, zone, project string) model.Resource {
+		return model.Resource{Type: "google_compute_disk", Identity: map[string]any{"name": name, "zone": zone, "project": project}}
+	}
+	for _, c := range []struct {
+		r             model.Resource
+		managed, veri bool
+	}{
+		{disk("vm", "z1", "p1"), true, true},
+		{disk("vm", "z1", ""), true, false},
+		{disk("vm", "z1", "p2"), false, false},
+		{disk("vm", "z2", "p1"), false, false},
+		// An attached disk may be someone else's.
+		{disk("data", "z1", "p1"), false, false},
+	} {
+		m := ix.Match(c.r)
+		if m.Managed != c.managed || m.Verified != c.veri || c.managed && m.Address != "google_compute_instance.vm.boot_disk" {
+			t.Errorf("%v: got %+v", c.r.Identity, m)
+		}
+	}
+}

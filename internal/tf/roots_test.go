@@ -52,9 +52,38 @@ func TestFindRoots(t *testing.T) {
 }
 
 func TestParseWorkspaces(t *testing.T) {
-	got := parseWorkspaces("  default\n* prod\n\n  staging\n  _blue\n  -x\n  a+b@c~d\n[WARN] a newer version is available\n")
-	if want := []string{"default", "prod", "staging", "_blue", "-x", "a+b@c~d"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v", got)
+	got, err := parseWorkspaces("  default\n* prod\n  staging\n  _blue\n  -x\n  a+b@c~d\n\n[WARN] a newer version is available\n")
+	if want := []string{"default", "prod", "staging", "_blue", "-x", "a+b@c~d"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, %v", got, err)
+	}
+	// A backend warning without its frame (-no-color) before the list:
+	// "instead." on its own line is no workspace.
+	got, err = parseWorkspaces(`
+Warning: Deprecated Parameter
+
+  on main.tf line 4, in terraform:
+   4:     dynamodb_table = "locks"
+
+The parameter "dynamodb_table" is deprecated. Use parameter "use_lockfile"
+instead.
+
+* default
+  prod
+
+`)
+	if want := []string{"default", "prod"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("after a warning: got %v, %v", got, err)
+	}
+	for _, out := range []string{
+		"",
+		"instead.\n",
+		"  default\n  prod\n",   // nothing selected
+		"* default\n\n* prod\n", // two lists
+		"* default\n* prod\n",   // two selected
+	} {
+		if got, err := parseWorkspaces(out); err == nil {
+			t.Errorf("%q: got %v, want an error", out, got)
+		}
 	}
 }
 

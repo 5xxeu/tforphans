@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/5xxeu/tforphans/internal/model"
 )
@@ -16,9 +17,71 @@ import (
 // Failure is a list block that reported an error, so its type was not fully
 // listed.
 type Failure struct {
-	Address string
-	Type    string
-	Message string
+	Address string `json:"address"`
+	Type    string `json:"type"`
+	// Category groups failures by cause (see Classify); set by Classify.
+	Category string `json:"category,omitempty"`
+	Message  string `json:"message"`
+}
+
+// Failure categories.
+const (
+	FailMissingArg = "missing argument"
+	FailAPIOff     = "API not enabled"
+	FailDenied     = "permission denied"
+	FailNotFound   = "not found"
+	FailTruncated  = "truncated"
+	FailOther      = "other"
+)
+
+// Classify sets the category of f and shortens its message to one line:
+// providers return whole API error bodies (a GCP SERVICE_DISABLED error
+// carries JSON with activation URLs), which drown the summary.
+func (f *Failure) Classify() {
+	m := strings.ToLower(f.Message)
+	has := func(subs ...string) bool {
+		for _, s := range subs {
+			if strings.Contains(m, s) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has("service_disabled", "has not been used in project", "api has not been enabled", "it is disabled. enable it"):
+		f.Category = FailAPIOff
+	case has("cannot determine zone", "cannot determine region", "missing required argument", "is required", "must be set"):
+		f.Category = FailMissingArg
+	case has("permission_denied", "permission denied", "accessdenied", "access denied", "unauthorized", "forbidden", "error 403", "statuscode: 403"):
+		f.Category = FailDenied
+	case has("its limit", "max_items", "there may be more"):
+		f.Category = FailTruncated
+	case has("not_found", "not found", "error 404", "statuscode: 404"):
+		f.Category = FailNotFound
+	default:
+		f.Category = FailOther
+	}
+	f.Message = OneLine(f.Message, 300)
+}
+
+// OneLine joins the lines of msg, drops a trailing JSON body and cuts the
+// result to max bytes at a rune boundary.
+func OneLine(msg string, max int) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	// "...: googleapi: Error 403: ..., Details: [ { "@type": ... } ]"
+	for _, marker := range []string{" Details: [", " details: [", " {\"", " [{"} {
+		if i := strings.Index(msg, marker); i > 0 {
+			msg = strings.TrimRight(msg[:i], " ,:;")
+		}
+	}
+	if len(msg) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "..."
+	}
+	return msg
 }
 
 type QueryResult struct {
@@ -116,10 +179,11 @@ type queryMessage struct {
 		Address string `json:"address"`
 	} `json:"list_start"`
 	ListResourceFound *struct {
-		Address      string         `json:"address"`
-		DisplayName  string         `json:"display_name"`
-		Identity     map[string]any `json:"identity"`
-		ResourceType string         `json:"resource_type"`
+		Address        string         `json:"address"`
+		DisplayName    string         `json:"display_name"`
+		Identity       map[string]any `json:"identity"`
+		ResourceType   string         `json:"resource_type"`
+		ResourceObject map[string]any `json:"resource_object"`
 	} `json:"list_resource_found"`
 	ListComplete *struct {
 		Address      string `json:"address"`
@@ -185,6 +249,7 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 				DisplayName:   f.DisplayName,
 				RequiredKeys:  required,
 				AttributeKeys: attribute,
+				Attributes:    f.ResourceObject,
 				ListAddress:   f.Address,
 				Source:        source,
 			})

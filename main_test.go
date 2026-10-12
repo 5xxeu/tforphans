@@ -23,8 +23,8 @@ func TestParseFlags(t *testing.T) {
 	if err != nil || o.adopt || o.roots[0] != "./adopt" {
 		t.Fatalf("./adopt as root: %+v, %v", o, err)
 	}
-	o, err = parseFlags([]string{"-arg", "region=a,b", "-arg", "zone=z", "-arg", "region=b,c"}, io.Discard)
-	if err != nil || fmt.Sprint(o.args) != "[{region [a b c]} {zone [z]}]" {
+	o, err = parseFlags([]string{"-arg", "region=a,b", "-arg", "zone=z", "-arg", "region=b,c", "-arg", "google_*:zone=y"}, io.Discard)
+	if err != nil || fmt.Sprint(o.args) != "[{ region [a b c]} { zone [z]} {google_* zone [y]}]" {
 		t.Errorf("repeated -arg names: %v, %v", o.args, err)
 	}
 	for _, argv := range [][]string{
