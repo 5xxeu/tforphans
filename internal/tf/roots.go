@@ -213,7 +213,7 @@ func UserLists(dir string) (map[string]UserList, error) {
 	out := map[string]UserList{}
 	p := hclparse.NewParser()
 	for _, path := range files {
-		if strings.HasPrefix(filepath.Base(path), "zz_tforphans_") {
+		if name := filepath.Base(path); strings.HasPrefix(name, "zz_tforphans_") || IgnoredFile(name) {
 			continue
 		}
 		f, diags := p.ParseHCLFile(path)

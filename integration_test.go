@@ -597,10 +597,18 @@ exec %q "$@"
 	}
 	os.Remove("mine.tfquery.hcl")
 
-	// Nothing queried is an error, not "nothing found".
+	// Nothing queried is an error, not "nothing found"; so is a user's list
+	// block that runs no instance.
 	if code, _, stderr := runTool("-types", "no_such_type"); code != exitError || !strings.Contains(stderr, "no resource types were queried") {
 		t.Errorf("nothing queried: exit %d\n%s", code, stderr)
 	}
+	write(t, "empty.tfquery.hcl", "list \"fake_thing\" \"none\" {\n  provider = fake\n  for_each = {}\n}\n")
+	write(t, ".backup.tfquery.hcl", "this is not { valid hcl")
+	if code, _, stderr := runTool("-types", "no_such_type"); code != exitError || !strings.Contains(stderr, "no resource types were queried") {
+		t.Errorf("empty user block: exit %d\n%s", code, stderr)
+	}
+	os.Remove("empty.tfquery.hcl")
+	os.Remove(".backup.tfquery.hcl")
 
 	// A root pinned to an older Terraform.
 	write(t, filepath.Join(root, "versions.tf"), "terraform {\n  required_version = \"= 1.10.5\"\n}\n")

@@ -333,6 +333,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += res.Listed
+		sum.Ran += res.Listed
 		sum.Skipped = append(sum.Skipped, res.Skipped...)
 		// Import blocks need the provider's local name in that root when it
 		// is not the type prefix (cf = { source = "cloudflare/cloudflare" }).
@@ -701,6 +702,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
+	sum.Ran += res.Started
 	sum.Failed = append(sum.Failed, res.Failed...)
 	// Import blocks have to use the provider configuration the object was
 	// listed with: ours for generated blocks, the block's own (possibly an
@@ -979,9 +981,8 @@ func printScopes(w io.Writer, live []model.Resource) {
 // query or data source scan listed a type, and no plugin ran. To a CI job exit 0 would mean that
 // nothing is unmanaged.
 func nothingChecked(o *options, s report.Summary) bool {
-	// Scans count the types they listed in Queried; a plugin is a check of
-	// its own.
-	return s.Queried == 0 && len(o.plugins) == 0 && !o.printQuery
+	// A plugin is a check of its own.
+	return s.Ran == 0 && len(o.plugins) == 0 && !o.printQuery
 }
 
 func printSummary(w io.Writer, o *options, s report.Summary) {

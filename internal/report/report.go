@@ -189,15 +189,19 @@ type Summary struct {
 	States int `json:"states"`
 	// Unverified counts objects matched by ID only: state without
 	// identity could not confirm their account or subscription.
-	Unverified int          `json:"unverified_matches"`
-	Live       int          `json:"live"`
-	Managed    int          `json:"managed"`
-	Ignored    int          `json:"ignored"`
-	Orphans    int          `json:"orphans"`
-	Queried    int          `json:"queried_types"`
-	Skipped    []tf.Skip    `json:"skipped_types,omitempty"`
-	Failed     []tf.Failure `json:"failed_queries,omitempty"`
-	Warnings   []string     `json:"warnings,omitempty"`
+	Unverified int `json:"unverified_matches"`
+	Live       int `json:"live"`
+	Managed    int `json:"managed"`
+	Ignored    int `json:"ignored"`
+	Orphans    int `json:"orphans"`
+	Queried    int `json:"queried_types"`
+	// Ran counts list block instances that started and types that scans
+	// listed: what was actually checked, unlike Queried, which counts
+	// blocks (a block with for_each = {} runs nothing).
+	Ran      int          `json:"-"`
+	Skipped  []tf.Skip    `json:"skipped_types,omitempty"`
+	Failed   []tf.Failure `json:"failed_queries,omitempty"`
+	Warnings []string     `json:"warnings,omitempty"`
 	// Notes are hints that do not make coverage incomplete.
 	Notes []string `json:"notes,omitempty"`
 	// NoList are providers whose installed version has no list resources.
