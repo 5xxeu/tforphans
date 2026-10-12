@@ -688,9 +688,10 @@ IDs the provider takes (`transit_-_default` for a BGP group).
 # over ssh (keys from your agent or ~/.ssh/config), one device per run
 tforphans -no-query -state-roots junos/fw1 \
   -plugin 'python3 examples/plugins/junos.py --ssh admin@fw1' -plugin-cluster-states
-# or from a saved configuration
-ssh admin@fw1 'show configuration | display json | no-more' > fw1.json
+# or from a saved configuration (it holds secrets: keep it private)
+(umask 077; ssh admin@fw1 'show configuration | display json | no-more' > fw1.json)
 tforphans -no-query -state-roots junos/fw1 -plugin 'python3 examples/plugins/junos.py fw1.json'
+rm fw1.json
 ```
 
 Junos state does not record the device, so every object is `unverified`:

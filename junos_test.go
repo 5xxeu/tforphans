@@ -52,6 +52,7 @@ func TestJunosPlugin(t *testing.T) {
 	for name, doc := range map[string]string{
 		"rpc-error": `{"rpc-error":{"error-message":"permission denied"}}`,
 		"layout":    `{"configuration":{"policy-options":{"prefix-list":[{"name":"p1"}]},"protocols":[{}]}}`,
+		"null":      `{"configuration":{"interfaces":null,"applications":{"application":[{"name":"p1"}]}}}`,
 		"name":      `{"configuration":{"security":{"zones":{"security-zone":[{"name":{"x":1}}]}}}}`,
 	} {
 		f := filepath.Join(t.TempDir(), "conf.json")

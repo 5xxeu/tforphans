@@ -66,10 +66,11 @@ def fail(msg):
 
 
 def section(node, key):
-    """node[key] as an object; absent is empty, any other type an error."""
-    v = node.get(key)
-    if v is None:
+    """node[key] as an object; absent is empty, any other type (null too)
+    an error."""
+    if key not in node:
         return {}
+    v = node[key]
     if not isinstance(v, dict):
         raise Shape(key)
     return v
@@ -77,10 +78,10 @@ def section(node, key):
 
 def items(node, key):
     """Named list elements of node[key]; Junos JSON uses lists, but one
-    element may come as an object."""
-    v = node.get(key)
-    if v is None:
+    element may come as an object. Absent is empty, null an error."""
+    if key not in node:
         return []
+    v = node[key]
     if isinstance(v, dict):
         v = [v]
     if not isinstance(v, list) or not all(isinstance(e, dict) and "name" in e for e in v):
