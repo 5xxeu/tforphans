@@ -86,13 +86,31 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 	})
 	// A terragrunt.hcl that may be a parent is one when roots lie below it;
 	// otherwise it is a unit (its configuration may be all generated).
+	// Deepest first: whether a candidate is a parent depends on the ones
+	// below it (an absolute path below is always longer; "a" below "." is
+	// not, as written).
+	slices.SortFunc(maybe, func(a, b string) int { return len(absPath(b)) - len(absPath(a)) })
 	for _, m := range maybe {
-		if !slices.ContainsFunc(roots, func(r string) bool { return strings.HasPrefix(r, m+string(filepath.Separator)) }) {
+		if !slices.ContainsFunc(roots, func(r string) bool { return below(m, r) }) {
 			roots = append(roots, m)
 		}
 	}
 	sort.Strings(roots)
 	return roots, unread, err
+}
+
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
+}
+
+// below reports whether path lies inside dir (not dir itself); both come
+// from one walk, so they are relative or absolute alike (dir may be ".").
+func below(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Unread is a directory FindRoots could not tell a root or not, and why.

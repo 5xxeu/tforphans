@@ -234,6 +234,23 @@ func TestFindRootsUnreadable(t *testing.T) {
 	}
 }
 
+// A legacy parent above units that are all generated, walked from ".":
+// the units are found first, the parent is no unit.
+func TestTerragruntParentFromDot(t *testing.T) {
+	dir := t.TempDir()
+	gen := "remote_state {\n  backend = \"s3\"\n}\ngenerate \"main\" {\n  path = \"main.tf\"\n  contents = \"\"\n}\n"
+	for _, name := range []string{"terragrunt.hcl", "live/terragrunt.hcl", "live/app/terragrunt.hcl", "live/db/terragrunt.hcl", "x/terragrunt.hcl"} {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(gen), 0o644)
+	}
+	t.Chdir(dir)
+	got, unread, err := FindRoots(".", true)
+	want := []string{filepath.Join("live", "app"), filepath.Join("live", "db"), "x"}
+	if err != nil || len(unread) != 0 || !reflect.DeepEqual(got, want) {
+		t.Errorf("%v %v %v", got, unread, err)
+	}
+}
+
 func TestTerragruntUnits(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
