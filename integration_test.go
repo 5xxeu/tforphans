@@ -258,7 +258,7 @@ resource "fake_thing" "x" { name = var.name }
 	if !strings.Contains(stdout, "stray") || strings.Contains(stdout, "other-") {
 		t.Errorf("orphans:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "uninit not read") || !strings.Contains(stderr, "pass -init") {
+	if !strings.Contains(stderr, "uninit: not initialized") || !strings.Contains(stderr, "pass -init") {
 		t.Errorf("uninitialized root not reported:\n%s", stderr)
 	}
 	if code, _, _ := runTool("-types", "fake_thing", "-state-roots", tree, "-strict"); code != exitError {
@@ -744,8 +744,8 @@ func TestIntegrationUninitializedRoot(t *testing.T) {
 	write(t, filepath.Join(data, "thing", "a"), "")
 	t.Chdir(filepath.Dir(root))
 	code, stdout, stderr := runTool("-types", "fake_thing", "broken", "backend", "root")
-	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken is not initialized") ||
-		!strings.Contains(stderr, "backend is not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
+	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken: not initialized") ||
+		!strings.Contains(stderr, "backend: not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
 		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	if code, _, _ := runTool("-types", "fake_thing", "-strict", "broken", "backend", "root"); code != exitError {

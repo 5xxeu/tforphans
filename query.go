@@ -36,8 +36,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		if initialized || o.init {
 			return false
 		}
-		sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
-		sum.Warnings = append(sum.Warnings, fmt.Sprintf("%s is not initialized: not queried and its state not read, so its objects may show as unmanaged and its providers' objects are missing (run terraform init there, or pass -init): %v", root, err))
+		u := report.NewUnreadState(root, err)
+		u.Error = "not initialized, so not queried either (run terraform init there, or pass -init): " + u.Error
+		sum.UnreadStates = append(sum.UnreadStates, u)
 		return true
 	}
 	if o.noQuery {
@@ -182,6 +183,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		sum.Checks = append(sum.Checks, tf.Check{Type: d.Type, Scope: rootScope, Root: root, Provider: local})
 	}
 	sum.Ran += res.Started
+	for i := range res.Failed {
+		res.Failed[i].Root = root
+	}
 	sum.Failed = append(sum.Failed, res.Failed...)
 	// Import blocks have to use the provider configuration the object was
 	// listed with: ours for generated blocks, the block's own (possibly an

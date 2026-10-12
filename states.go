@@ -98,8 +98,10 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 		if err != nil {
 			return nil, fmt.Errorf("-state-roots %s: %w", tree, err)
 		}
-		if len(unread) > 0 {
-			sum.Warnings = append(sum.Warnings, fmt.Sprintf("-state-roots %s: %d directories could not be read (permission denied), root modules there were not read: %s", tree, len(unread), strings.Join(firstN(unread, 5), ", ")))
+		// A root there may manage what is found: like an unread state
+		// (adopt refuses, coverage is incomplete).
+		for _, u := range unread {
+			sum.UnreadStates = append(sum.UnreadStates, report.UnreadState{Root: u, Error: "directory could not be read (permission denied)"})
 		}
 		for _, d := range found {
 			abs, err := filepath.Abs(d)
@@ -135,7 +137,6 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 			sum.States += n
 			if err != nil {
 				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(d, err))
-				sum.Warnings = append(sum.Warnings, fmt.Sprintf("state of %s not read in full, its resources may show as unmanaged: %v", d, err))
 			}
 		}()
 	}

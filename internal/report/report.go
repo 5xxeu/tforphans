@@ -364,6 +364,18 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			addReason(entry(sk.Type, scope), GapPrefix+sk.Reason)
 			continue
 		}
+		// A disabled API in one root says nothing about another root
+		// that listed the type: it keeps a row of its own.
+		if sk.Reason == tf.FailAPIOff && sk.Root != "" {
+			c := entry(sk.Type, "root "+sk.Root)
+			if c.Status == Complete {
+				c.Status = Skipped
+			}
+			if !slices.Contains(c.Reasons, sk.Reason) {
+				c.Reasons = append(c.Reasons, sk.Reason)
+			}
+			continue
+		}
 		if types[sk.Type] && !isSkipped[sk.Type] {
 			continue
 		}

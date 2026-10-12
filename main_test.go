@@ -201,3 +201,24 @@ func TestMaxRoots(t *testing.T) {
 		t.Errorf("exit %d\n%s", code, stderr.String())
 	}
 }
+
+// A directory under -state-roots that cannot be read may hold a root that
+// manages what was found: adopt writes nothing, like for an unread state.
+func TestAdoptUnreadableDir(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	os.MkdirAll(locked, 0o755)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Skip(err)
+	}
+	defer os.Chmod(locked, 0o755)
+	if _, err := os.ReadDir(locked); err == nil {
+		t.Skip("permissions are not enforced here (root)")
+	}
+	plugin := `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci"}'`
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"adopt", "-no-query", "-plugin", plugin, "-state-roots", dir}, &stdout, &stderr)
+	if code != exitError || stdout.Len() != 0 || !strings.Contains(stderr.String(), "not writing import blocks") {
+		t.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+}

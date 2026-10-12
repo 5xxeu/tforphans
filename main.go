@@ -610,14 +610,14 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, f := range sum.Failed {
 			if f.Category == tf.FailAPIOff {
 				sum.APIOff++
-				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true})
+				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
 				continue
 			}
 			counting = append(counting, f)
 		}
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, sum.Checks, skipped, counting)
-	sum.Complete = !nothingChecked(o, sum) && len(counting) == 0 && len(sum.Warnings) == 0 &&
+	sum.Complete = !nothingChecked(o, sum) && len(counting) == 0 && len(sum.Warnings) == 0 && len(sum.UnreadStates) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)", n, idx.Len()))

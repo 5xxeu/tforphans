@@ -269,6 +269,8 @@ func TestBuildCoverage(t *testing.T) {
 		{Type: "net", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
 		{Type: "net2", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
 		{Type: "rs", Reason: "no zone was listed to read it in", Kind: "zone"},
+		// Root b's API is off; zone a of the same type was read elsewhere.
+		{Type: "rec", Reason: tf.FailAPIOff, Excluded: true, Root: "b"},
 	}
 	checks := []tf.Check{
 		{Type: "rec", Scope: "zone a"}, {Type: "rec", Scope: "zone b"}, {Type: "rec", Scope: "zone d"},
@@ -296,6 +298,7 @@ func TestBuildCoverage(t *testing.T) {
 		"net/root prod incomplete [skipped: provider google-beta is configured only with aliases] 0/0/0/0",
 		"net2/ complete [] 0/0/0/0",
 		"none/ complete [] 0/0/0/0",
+		"rec/root b skipped [API not enabled] 0/0/0/0",
 		"rec/zone a complete [] 2/2/0/0",
 		"rec/zone b complete [] 1/0/0/1",
 		"rec/zone c incomplete [permission denied] 0/0/0/0",

@@ -204,7 +204,7 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		}
 		gaps = append(gaps, fmt.Sprintf("%d states not read: %s", n, report.Clean(strings.Join(firstN(which, 5), "; "))))
 	}
-	if n := len(s.Warnings) - len(s.UnreadStates); n > 0 {
+	if n := len(s.Warnings); n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d other warnings", n))
 	}
 	if len(gaps) == 0 {
