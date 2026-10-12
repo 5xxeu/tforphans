@@ -288,10 +288,11 @@ State must be raw state (`terraform state pull`), not `terraform show -json`.
 
 ### Terragrunt
 
-`-terragrunt` makes `-state-roots` read Terragrunt units too: directories
-whose `terragrunt.hcl` has a `terraform` block or an `include`, such as
-`live/prod/app` under a `root.hcl`, or sits next to `.tf` files of its
-own. Each unit's state is read with
+`-terragrunt` makes `-state-roots` read Terragrunt units too: every
+directory with a `terragrunt.hcl`, such as `live/prod/app` under a
+`root.hcl`, except a parent: one with no `terraform` block, no `include`
+and no `.tf` files of its own, with units below it (a legacy top-level
+`terragrunt.hcl`). Each unit's state is read with
 `terragrunt run -- state pull` (Terragrunt 0.73 or newer in `PATH`; tested
 with 1.1.6), which renders the backend the unit's configuration describes,
 so remote state blocks, `generate` and includes all work. Terragrunt

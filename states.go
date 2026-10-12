@@ -94,11 +94,11 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 		if !o.terragrunt {
 			break
 		}
-		unit, err := tf.IsTerragruntUnit(r)
+		kind, err := tf.TerragruntKind(r)
 		if err != nil {
 			return nil, fmt.Errorf("root %s: %w", r, err)
 		}
-		if unit {
+		if kind != tf.TerragruntNone {
 			return nil, fmt.Errorf("root %s is a Terragrunt unit: terraform query does not run in units, give its directory to -state-roots only", r)
 		}
 	}
@@ -167,10 +167,12 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 	// on its own. One state (units do not use workspaces), never refreshed.
 	unit := false
 	if o.terragrunt {
-		var err error
-		if unit, err = tf.IsTerragruntUnit(dir); err != nil {
+		kind, err := tf.TerragruntKind(dir)
+		if err != nil {
 			return nil, 0, err
 		}
+		// FindRoots kept only the parents with no units below.
+		unit = kind != tf.TerragruntNone
 	}
 	if unit {
 		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir)

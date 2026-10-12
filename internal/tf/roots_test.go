@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -273,5 +274,17 @@ func TestTerragruntUnits(t *testing.T) {
 	}
 	if got, unread, _ := FindRoots(dir, false); len(got) != 1 || len(unread) != 0 {
 		t.Errorf("without -terragrunt it is a terraform root: %v %v", got, unread)
+	}
+	// A unit whose configuration is all generated (fresh checkout) is a
+	// unit: no units lie below it. A link to a missing file is unread.
+	os.MkdirAll(filepath.Join(dir, "gen"), 0o755)
+	os.WriteFile(filepath.Join(dir, "gen", "terragrunt.hcl"), []byte("remote_state {\n  backend = \"s3\"\n}\ngenerate \"main\" {\n  path = \"main.tf\"\n  contents = \"\"\n}\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "link"), 0o755)
+	if err := os.Symlink(filepath.Join(dir, "missing.hcl"), filepath.Join(dir, "link", "terragrunt.hcl")); err != nil {
+		t.Skip(err)
+	}
+	got, unread, err = FindRoots(dir, true)
+	if err != nil || !slices.Contains(got, filepath.Join(dir, "gen")) || slices.Contains(got, dir) || len(unread) != 2 || !strings.HasSuffix(unread[1].Path, "link") {
+		t.Errorf("generated unit, dangling link: %v %v %v", got, unread, err)
 	}
 }

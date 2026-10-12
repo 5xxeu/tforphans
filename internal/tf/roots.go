@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,7 +33,7 @@ import (
 // of non-default workspaces (terraform.tfstate.d) marks its parent as a
 // root and is not walked into.
 //
-// With units, a Terragrunt unit (see IsTerragruntUnit) counts as a root too;
+// With units, a Terragrunt unit (see TerragruntKind) counts as a root too;
 // its .terragrunt-cache is hidden and not walked into.
 //
 // Directories below dir that cannot be read (permission denied), and with
@@ -40,6 +41,7 @@ import (
 // unread instead of failing the walk: a tree such as a home directory has
 // some, and a root there may manage what is found.
 func FindRoots(dir string, units bool) (roots []string, unread []Unread, err error) {
+	var maybe []string
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
@@ -66,18 +68,29 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 			// Checked even in a terraform root: a broken terragrunt.hcl
 			// there must not leave the old terraform state standing in for
 			// the unit's.
-			unit, err := IsTerragruntUnit(path)
+			kind, err := TerragruntKind(path)
 			if err != nil {
 				unread = append(unread, Unread{path, err.Error()})
 				return nil
 			}
-			ok = ok || unit
+			if kind == TerragruntMaybe && !ok {
+				maybe = append(maybe, path)
+				return nil
+			}
+			ok = ok || kind != TerragruntNone
 		}
 		if ok {
 			roots = append(roots, path)
 		}
 		return nil
 	})
+	// A terragrunt.hcl that may be a parent is one when roots lie below it;
+	// otherwise it is a unit (its configuration may be all generated).
+	for _, m := range maybe {
+		if !slices.ContainsFunc(roots, func(r string) bool { return strings.HasPrefix(r, m+string(filepath.Separator)) }) {
+			roots = append(roots, m)
+		}
+	}
 	sort.Strings(roots)
 	return roots, unread, err
 }
@@ -589,45 +602,50 @@ func majorMinor(v string) (major, minor int, ok bool) {
 	return major, minor, err1 == nil && err2 == nil
 }
 
-// IsTerragruntUnit reports a directory whose terragrunt.hcl deploys a module:
-// it has a terraform block (source), includes a parent configuration, or
-// sits next to .tf files of its own (a unit with only remote_state). A
-// parent such as a legacy top-level terragrunt.hcl with only remote_state
-// and no .tf files is no unit. No terragrunt.hcl is no unit; one that
-// cannot be read or parsed is an error, not a missing unit.
-func IsTerragruntUnit(dir string) (bool, error) {
+// Kinds of a directory's terragrunt.hcl.
+const (
+	TerragruntNone  = iota // no terragrunt.hcl
+	TerragruntUnit         // deploys a module
+	TerragruntMaybe        // a unit, or a parent of units
+)
+
+// TerragruntKind tells what a directory's terragrunt.hcl is. A terraform
+// block (source), an include of a parent, or .tf files next to it make a
+// unit. Without them it may still be one (remote_state with generate, in a
+// fresh checkout) or a parent such as a legacy top-level terragrunt.hcl:
+// FindRoots takes it for a parent only when units lie below it. A
+// terragrunt.hcl that exists but cannot be read or parsed (a dangling link
+// too) is an error, not a missing unit.
+func TerragruntKind(dir string) (int, error) {
 	name := filepath.Join(dir, "terragrunt.hcl")
-	src, err := os.ReadFile(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+	if _, err := os.Lstat(name); errors.Is(err, fs.ErrNotExist) {
+		return TerragruntNone, nil
 	}
+	src, err := os.ReadFile(name)
 	if err != nil {
-		return false, fmt.Errorf("terragrunt.hcl could not be read: %w", err)
+		return TerragruntNone, fmt.Errorf("terragrunt.hcl could not be read: %w", err)
 	}
 	f, diags := hclparse.NewParser().ParseHCL(src, name)
 	if diags.HasErrors() {
-		d := diags.Errs()[0]
-		return false, fmt.Errorf("terragrunt.hcl could not be parsed: %s", d.Error())
+		return TerragruntNone, fmt.Errorf("terragrunt.hcl could not be parsed: %s", diags.Errs()[0].Error())
 	}
-	body, ok := f.Body.(*hclsyntax.Body)
-	if !ok {
-		return false, nil
-	}
-	for _, b := range body.Blocks {
-		if b.Type == "terraform" || b.Type == "include" {
-			return true, nil
+	if body, ok := f.Body.(*hclsyntax.Body); ok {
+		for _, b := range body.Blocks {
+			if b.Type == "terraform" || b.Type == "include" {
+				return TerragruntUnit, nil
+			}
 		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false, fmt.Errorf("terragrunt.hcl: directory could not be read: %w", err)
+		return TerragruntNone, fmt.Errorf("terragrunt.hcl: directory could not be read: %w", err)
 	}
 	for _, e := range entries {
 		if n := e.Name(); !e.IsDir() && (strings.HasSuffix(n, ".tf") || strings.HasSuffix(n, ".tf.json")) {
-			return true, nil
+			return TerragruntUnit, nil
 		}
 	}
-	return false, nil
+	return TerragruntMaybe, nil
 }
 
 // TerragruntStatePull reads the state of a Terragrunt unit with terragrunt,
