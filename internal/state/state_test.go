@@ -508,7 +508,7 @@ func TestMatchEmptyValue(t *testing.T) {
 
 func TestMatchBootDisk(t *testing.T) {
 	insts, err := Parse([]byte(`{"version": 4, "resources": [
-  {"mode": "managed", "type": "google_compute_instance", "name": "vm", "instances": [
+  {"mode": "managed", "type": "google_compute_instance", "name": "vm", "provider": "provider[\"registry.terraform.io/hashicorp/google\"]", "instances": [
     {"attributes": {"name": "vm", "zone": "z1", "project": "p1",
       "boot_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/vm", "initialize_params": [{"image": "debian-12"}]}],
       "attached_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/data"}]}}
@@ -543,5 +543,17 @@ func TestMatchBootDisk(t *testing.T) {
 		if m.Managed != c.managed || m.Verified != c.veri || c.managed && m.Address != "google_compute_instance.vm.boot_disk" {
 			t.Errorf("%v: got %+v", c.r.Identity, m)
 		}
+	}
+	// A plugin result marked unverified stays unverified; another
+	// provider's disk is not owned.
+	r := disk("vm", "z1", "p1")
+	r.Scope = &model.Scope{Unverifiable: true}
+	if m := ix.Match(r); !m.Managed || m.Verified {
+		t.Errorf("unverifiable scope: %+v", m)
+	}
+	r = disk("vm", "z1", "p1")
+	r.ProviderSource = "registry.terraform.io/acme/google"
+	if m := ix.Match(r); m.Managed {
+		t.Errorf("other provider: %+v", m)
 	}
 }

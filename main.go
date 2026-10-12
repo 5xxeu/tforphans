@@ -380,6 +380,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	live = slices.DeleteFunc(live, func(r model.Resource) bool {
 		return len(o.include) > 0 && !o.include.Match(r.Type) || o.exclude.Match(r.Type)
 	})
+	scopes := slices.Clone(live) // every source's results, for -v
 	live = dedupe(live)
 	var orphans []model.Resource
 	sum.ByType = map[string]*report.TypeCount{}
@@ -483,7 +484,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	printSummary(stderr, o, sum)
 	if o.verbose {
-		printScopes(stderr, live)
+		printScopes(stderr, scopes)
 	}
 	if nothingChecked(o, sum) {
 		msg := "no resource types were queried, so nothing could be found"
@@ -674,10 +675,18 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	// Whole objects are large; keep the attributes asked for.
+	// Whole objects are large; keep the attributes asked for. Generated
+	// blocks ask for them; the user's own blocks do only with their own
+	// include_resource = true.
+	noAttrs := map[string]bool{}
 	for i := range res.Found {
 		f := &res.Found[i]
 		if f.Attributes == nil {
+			block, _, _ := strings.Cut(f.ListAddress, "[")
+			if _, generated := byAddress[block]; !generated && len(o.wantedAttrs(f.Type)) > 0 && !noAttrs[block] {
+				noAttrs[block] = true
+				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs or attr. ignore rules", root, block))
+			}
 			continue
 		}
 		keep := map[string]any{}

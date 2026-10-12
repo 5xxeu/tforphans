@@ -463,4 +463,29 @@ provider "aws" {}
 	if _, ok := got["aws"]; !ok {
 		t.Error("empty block missing")
 	}
+
+	// Spaces inside strings count; an override file makes a block unequal.
+	dir = t.TempDir()
+	os.WriteFile(filepath.Join(dir, "providers.tf"), []byte(`
+provider "google" {
+  project = trimspace(file("project  id.txt")) # two spaces
+}
+provider "google-beta" {
+  project = trimspace(file("project id.txt"))
+}
+provider "aws" {
+  region = "a"
+}
+provider "awsx" {
+  region = "a"
+}
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "x_override.tf"), []byte(`provider "awsx" { profile = "other" }`), 0o644)
+	got, _ = ProviderConfigs(dir)
+	if got["google"] == got["google-beta"] {
+		t.Errorf("string contents ignored: %q", got)
+	}
+	if got["aws"] == got["awsx"] {
+		t.Errorf("override ignored: %q", got)
+	}
 }

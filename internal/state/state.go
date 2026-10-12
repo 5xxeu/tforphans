@@ -236,12 +236,12 @@ type Index struct {
 	byValue    map[string][]*Instance // type \x00 key \x00 value
 	count      int
 	noIdentity int
-	owned      map[string]string // type \x00 owned-object key -> parent address
-	root       map[string]bool   // resource addresses in root modules
+	owned      map[string]ownedBy // type \x00 owned-object key
+	root       map[string]bool    // resource addresses in root modules
 }
 
 func NewIndex() *Index {
-	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string]string{}}
+	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string]ownedBy{}}
 }
 
 // RootAddresses returns the <type>.<name> addresses that states already use
@@ -268,7 +268,7 @@ func (ix *Index) Add(instances []Instance) {
 				continue
 			}
 			for _, ref := range o.refs(in.Attributes) {
-				ix.owned[child+"\x00"+ref] = in.Address + "." + o.what
+				ix.owned[child+"\x00"+ref] = ownedBy{in, o.what}
 			}
 		}
 		if !strings.HasPrefix(in.Address, "module.") {
@@ -362,15 +362,35 @@ func (ix *Index) Match(r model.Resource) Match {
 	if !best.Managed {
 		if o, ok := owners[r.Type]; ok {
 			full, short := o.key(r.Identity)
-			if addr, ok := ix.owned[r.Type+"\x00"+full]; ok && full != "" {
-				return Match{Address: addr, Managed: true, Verified: true}
-			}
-			if addr, ok := ix.owned[r.Type+"\x00"+short]; ok && short != "" {
-				return Match{Address: addr, Managed: true}
+			for _, k := range []string{full, short} {
+				by, ok := ix.owned[r.Type+"\x00"+k]
+				if !ok || k == "" {
+					continue
+				}
+				// The parent must pass the checks a state instance of the
+				// object would: its provider and the object's scope.
+				if !model.SameProvider(r.ProviderSource, by.parent.Provider) {
+					continue
+				}
+				verified := k == full
+				if r.Scope != nil {
+					inScope, known := scopeCheck(r.Scope, by.parent.Type, by.parent)
+					if !inScope {
+						continue
+					}
+					verified = verified && known
+				}
+				return Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified}
 			}
 		}
 	}
 	return best
+}
+
+// ownedBy is the managed instance that owns an object (see owners).
+type ownedBy struct {
+	parent *Instance
+	what   string
 }
 
 // owner describes objects that a managed resource of another type creates

@@ -229,7 +229,9 @@ characters. The name glob is tried against the display name, the import ID
 and every identity value. Each `KEY=GLOB` must match as well: an identity
 key (`project=prod-*`), or `attr.` and a path into the resource's
 attributes (`attr.labels.goog-gke-node=*`), which tforphans then fetches for
-that rule's types (`include_resource`, slower) but does not print:
+that rule's types (`include_resource`, slower) but does not print. Your
+own list blocks need `include_resource = true` for that (a note says so),
+and results of `-scan` and plugins have no attributes:
 
 ```
 # AWS-managed service roles

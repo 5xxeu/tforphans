@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math/big"
 	"net/url"
 	"os"
@@ -444,18 +445,20 @@ var (
 	aliasSchema    = &hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "alias"}}}
 )
 
-// ProviderConfigs returns, per local name, the source text of the root
-// module's default provider configuration (the provider block without an
-// alias), with whitespace collapsed; a provider without one is absent,
-// which is the same configuration as an empty block. Two names with equal
-// text configure the same account and project. A block in a .tf.json file
-// gets a text of its own that equals nothing, since it cannot be compared.
+// ProviderConfigs returns, per local name, the root module's default
+// provider configuration (the provider block without an alias) as its HCL
+// tokens, so that only layout and comments are ignored; a provider without
+// one is absent, which is the same configuration as an empty block. Two
+// names with equal text configure the same account and project. A block
+// that cannot be compared (in a .tf.json file, or changed by an override
+// file) gets a text of its own that equals nothing.
 func ProviderConfigs(dir string) (map[string]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	out := map[string]string{}
+	overridden := map[string]string{}
 	p := hclparse.NewParser()
 	for _, e := range entries {
 		name := e.Name()
@@ -472,20 +475,43 @@ func ProviderConfigs(dir string) (map[string]string, error) {
 		if f == nil {
 			continue
 		}
+		base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".tf")
+		override := base == "override" || strings.HasSuffix(base, "_override")
 		content, _, _ := f.Body.PartialContent(providerSchema)
 		for i, b := range content.Blocks {
 			attrs, _, _ := b.Body.PartialContent(aliasSchema)
 			if _, aliased := attrs.Attributes["alias"]; aliased {
 				continue
 			}
-			text := fmt.Sprintf("json %s %d", path, i)
+			unique := fmt.Sprintf("unique %s %d", path, i)
+			if override {
+				overridden[b.Labels[0]] = unique
+				continue
+			}
+			text := unique
 			if body, ok := b.Body.(*hclsyntax.Body); ok {
+				// The body's range includes its braces.
 				r := body.SrcRange
-				text = strings.Join(strings.Fields(string(f.Bytes[r.Start.Byte:r.End.Byte])), " ")
-				text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "{"), "}"))
+				text = configTokens(f.Bytes[r.Start.Byte+1 : r.End.Byte-1])
 			}
 			out[b.Labels[0]] = text
 		}
 	}
+	maps.Copy(out, overridden)
 	return out, nil
+}
+
+// configTokens renders HCL source as its tokens without newlines and
+// comments; string contents stay as they are.
+func configTokens(src []byte) string {
+	tokens, _ := hclsyntax.LexConfig(src, "", hcl.InitialPos)
+	var parts []string
+	for _, t := range tokens {
+		switch t.Type {
+		case hclsyntax.TokenNewline, hclsyntax.TokenComment, hclsyntax.TokenEOF:
+			continue
+		}
+		parts = append(parts, string(t.Bytes))
+	}
+	return strings.Join(parts, "\x00")
 }

@@ -590,6 +590,13 @@ exec %q "$@"
 	}
 	os.Remove(".tforphans-ignore")
 
+	// The user's own list block without include_resource: a note.
+	write(t, "mine.tfquery.hcl", "list \"fake_thing\" \"mine\" {\n  provider = fake\n}\n")
+	if code, _, stderr := runTool("-types", "fake_thing", "-include-attrs", "id"); code != exitOrphans || !strings.Contains(stderr, "list.fake_thing.mine has no include_resource") {
+		t.Errorf("user block without include_resource: exit %d\n%s", code, stderr)
+	}
+	os.Remove("mine.tfquery.hcl")
+
 	// Nothing queried is an error, not "nothing found".
 	if code, _, stderr := runTool("-types", "no_such_type"); code != exitError || !strings.Contains(stderr, "no resource types were queried") {
 		t.Errorf("nothing queried: exit %d\n%s", code, stderr)
