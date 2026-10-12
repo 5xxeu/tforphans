@@ -546,7 +546,7 @@ func TestRemoveStale(t *testing.T) {
 	goneOverride := filepath.Join(dir, "zz_tforphans_99999999_override.tf")
 	os.WriteFile(gone, nil, 0o644)
 	os.WriteFile(goneOverride, nil, 0o644)
-	if err := removeStale(dir); err != nil {
+	if err := RemoveStale(dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(gone); err == nil {
@@ -558,7 +558,7 @@ func TestRemoveStale(t *testing.T) {
 	// The parent process (the test runner) is alive: its files stay.
 	busy := filepath.Join(dir, fmt.Sprintf("zz_tforphans_%d.tfquery.hcl", os.Getppid()))
 	os.WriteFile(busy, nil, 0o644)
-	if err := removeStale(dir); err == nil {
+	if err := RemoveStale(dir); err == nil {
 		t.Error("files of a running process removed")
 	}
 	if _, err := os.Stat(busy); err != nil {

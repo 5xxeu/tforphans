@@ -130,7 +130,10 @@ func isolate(blocks []block, why string, probe prober) (keep []block, failed []f
 			}
 		}
 		if len(bad) == 0 && len(culprits) == 0 {
-			return nil, nil, fmt.Errorf("%s; reading the data sources in parts did not reproduce it", why)
+			// Not repeated: read everything again. A crash that keeps
+			// coming back runs into the probe budget, after which every
+			// suspect is reported.
+			return blocks, nil, nil
 		}
 		for i := range candidates {
 			if !slices.ContainsFunc(culprits, func(c block) bool { return c.addr() == candidates[i].addr() }) {

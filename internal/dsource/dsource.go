@@ -290,7 +290,9 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	}
 	listed := map[string]bool{}
 	for _, b := range blocks {
-		if b.hidden || b.scope != nil && len(b.exclude) > 0 && instances[b.addr()] == 0 {
+		// A scoped block left with no instance (every zone failed, or
+		// -scan-scope names none that exists) listed nothing.
+		if b.hidden || b.scope != nil && (len(b.exclude) > 0 || len(b.only) > 0) && instances[b.addr()] == 0 {
 			continue
 		}
 		for _, l := range b.listings {
@@ -307,6 +309,11 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		return nil, fmt.Errorf("%s: %w", a.Name, err)
 	}
 	res.Failed = append(res.Failed, cut...)
+	missing, err := unknownScopes(stateData, blocks, a, opt.Scope)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.Name, err)
+	}
+	res.Failed = append(res.Failed, missing...)
 
 	res.Resources, err = extract(stateData, blocks, a, sch, opt.Scope)
 	if err != nil {
@@ -896,6 +903,32 @@ func truncated(stateData []byte, blocks []block, a Adapter) ([]tf.Failure, error
 		}
 		for _, l := range b.listings {
 			out = append(out, tf.Failure{Address: b.addr(), Type: l.resourceType, Message: note(b) + b.parent + " returned its max_items; parents beyond it were not read"})
+		}
+	}
+	return out, nil
+}
+
+// unknownScopes reports -scan-scope values that name no parent the scan
+// read: a typo would otherwise look like a zone without objects.
+func unknownScopes(stateData []byte, blocks []block, a Adapter, limit map[string][]string) ([]tf.Failure, error) {
+	var out []tf.Failure
+	for _, sc := range a.Scopes {
+		vals := limit[sc.Arg]
+		addr := "data." + sc.Parent + ".all"
+		if len(vals) == 0 || !slices.ContainsFunc(blocks, func(b block) bool { return b.addr() == addr }) {
+			continue
+		}
+		ids, err := parentIDs(stateData, addr, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vals {
+			if found, err := parentIDs(stateData, addr, []string{v}); err != nil {
+				return nil, err
+			} else if len(found) == 0 {
+				out = append(out, tf.Failure{Address: "-scan-scope " + sc.Arg + "=" + v, Type: strings.TrimSuffix(sc.Parent, "s"),
+					Message: fmt.Sprintf("not found: no %s with this ID or name among the %d %s listed", strings.TrimSuffix(sc.Arg, "_id"), len(ids), addr)})
+			}
 		}
 	}
 	return out, nil

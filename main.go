@@ -686,6 +686,11 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 // scanRoot adds the root's state to idx and returns the live resources its
 // providers list.
 func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, sum *report.Summary, stdout io.Writer) ([]model.Resource, error) {
+	// Leftovers of a killed run must go before the configuration is read:
+	// its provider override would count as a declaration.
+	if err := tf.RemoveStale(root); err != nil {
+		return nil, err
+	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion}
 	if !r.Initialized() && o.init {
 		if err := r.Init(ctx); err != nil {
@@ -973,6 +978,9 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 }
 
 func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
+	if err := tf.RemoveStale(dir); err != nil {
+		return nil, 0, err
+	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
 	if !r.Initialized() {
 		if !o.init {

@@ -185,6 +185,22 @@ resource "fake_thing" "x" {
 	if left, _ := filepath.Glob("zz_tforphans_*"); len(left) > 0 {
 		t.Errorf("temporary files left behind: %v", left)
 	}
+
+	// A run killed with SIGKILL left its provider override behind: the next
+	// run removes it before reading the configuration and still works.
+	_, printed, _ := runTool("-print-query", "-types", "fake_thing")
+	override, _, _ := strings.Cut(strings.SplitN(printed, "\n", 2)[1], "list ")
+	if !strings.Contains(override, "required_providers") {
+		t.Fatalf("no provider declaration in -print-query:\n%s", printed)
+	}
+	write(t, "zz_tforphans_99999999_override.tf", override)
+	write(t, "zz_tforphans_99999999.tfquery.hcl", "")
+	if code, _, stderr := runTool("adopt", "-types", "fake_thing"); code != exitOK || !strings.Contains(stderr, "5 live, 4 managed") {
+		t.Errorf("after a killed run: exit %d\n%s", code, stderr)
+	}
+	if left, _ := filepath.Glob("zz_tforphans_*"); len(left) > 0 {
+		t.Errorf("leftovers kept: %v", left)
+	}
 }
 
 // TestIntegrationStateRoots checks that states found under -state-roots,

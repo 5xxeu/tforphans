@@ -141,6 +141,14 @@ func TestIntegrationScanScope(t *testing.T) {
 	if _, _, stderr := runTool("-no-query", "-scan", "fake", "-allow-unpinned"); !strings.Contains(stderr, "-scan lists whole accounts") {
 		t.Errorf("no hint:\n%s", stderr)
 	}
+	// A zone that does not exist is a gap, not an empty zone.
+	code, out, stderr = scanJSON(t, "-scan-scope", "zone_id=typo.example")
+	if code != exitOK || len(out.Summary.Failed) != 1 || out.Summary.Failed[0].Category != "not found" || !strings.Contains(out.Summary.Failed[0].Address, "typo.example") {
+		t.Errorf("unknown zone: exit %d %+v\n%s", code, out.Summary.Failed, stderr)
+	}
+	if code, _, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-scan-scope", "zone_id=typo.example", "-strict"); code != exitError {
+		t.Errorf("unknown zone with -strict: exit %d", code)
+	}
 	// No value: that scope is not read (its types are skipped), and no
 	// zone is listed either.
 	code, out, stderr = scanJSON(t, "-scan-scope", "zone_id=", "-v")

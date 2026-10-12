@@ -110,10 +110,27 @@ func TestIsolateParent(t *testing.T) {
 	}
 }
 
+// TestIsolateNotReproduced: a crash that does not happen again keeps every
+// block for another full read; one that always comes back on the full set
+// ends, through the budget, with the suspects reported.
 func TestIsolateNotReproduced(t *testing.T) {
 	blocks := []block{{dsType: "cloudflare_zones", label: "all"}, {dsType: "cloudflare_images", label: "all"}}
-	if _, _, err := isolate(blocks, "", func([]block) (bool, []byte, error) { return false, nil, nil }); err == nil {
-		t.Error("a crash no part repeats must be an error")
+	keep, failed, err := isolate(blocks, "", func([]block) (bool, []byte, error) { return false, nil, nil })
+	if err != nil || len(keep) != 2 || len(failed) != 0 {
+		t.Errorf("keep %v failed %v err %v", keep, failed, err)
+	}
+	probe := budget(func(set []block) (bool, []byte, error) { return len(set) == 2, nil, nil }, 6, nil)
+	for range 10 {
+		keep, failed, err = isolate(blocks, "", probe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(failed) > 0 {
+			break
+		}
+	}
+	if len(keep) != 0 || len(failed) != 2 {
+		t.Errorf("after the budget: keep %v failed %v", keep, failed)
 	}
 }
 

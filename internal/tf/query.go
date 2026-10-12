@@ -123,10 +123,10 @@ func writeTemp(path string, data []byte) error {
 	return f.Close()
 }
 
-// removeStale removes the temporary files of tforphans runs whose process
+// RemoveStale removes the temporary files of tforphans runs whose process
 // no longer exists (killed before it could clean up), and fails when a
 // running one still has files in dir.
-func removeStale(dir string) error {
+func RemoveStale(dir string) error {
 	stale, _ := filepath.Glob(filepath.Join(dir, "zz_tforphans_*"))
 	var busy []string
 	for _, path := range stale {
@@ -160,7 +160,7 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	// Files left by a run that was killed would clash with this one (same
 	// labels) or keep changing the configuration. Those of a process that
 	// is gone are removed; another run still working here is an error.
-	if err := removeStale(r.Dir); err != nil {
+	if err := RemoveStale(r.Dir); err != nil {
 		return nil, err
 	}
 	base := filepath.Join(r.Dir, fmt.Sprintf("zz_tforphans_%d", os.Getpid()))
