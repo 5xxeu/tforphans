@@ -510,8 +510,12 @@ func TestMatchBootDisk(t *testing.T) {
 	insts, err := Parse([]byte(`{"version": 4, "resources": [
   {"mode": "managed", "type": "google_compute_instance", "name": "vm", "instances": [
     {"attributes": {"name": "vm", "zone": "z1", "project": "p1",
-      "boot_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/vm"}],
+      "boot_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/vm", "initialize_params": [{"image": "debian-12"}]}],
       "attached_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/data"}]}}
+  ]},
+  {"mode": "managed", "type": "google_compute_instance", "name": "byo", "instances": [
+    {"attributes": {"name": "byo", "zone": "z1", "project": "p1",
+      "boot_disk": [{"source": "https://www.googleapis.com/compute/v1/projects/p1/zones/z1/disks/handmade", "initialize_params": []}]}}
   ]}
 ]}`))
 	if err != nil {
@@ -532,6 +536,8 @@ func TestMatchBootDisk(t *testing.T) {
 		{disk("vm", "z2", "p1"), false, false},
 		// An attached disk may be someone else's.
 		{disk("data", "z1", "p1"), false, false},
+		// So may a boot disk the instance did not create.
+		{disk("handmade", "z1", "p1"), false, false},
 	} {
 		m := ix.Match(c.r)
 		if m.Managed != c.managed || m.Verified != c.veri || c.managed && m.Address != "google_compute_instance.vm.boot_disk" {

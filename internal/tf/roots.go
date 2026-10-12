@@ -16,6 +16,7 @@ import (
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
@@ -436,4 +437,55 @@ func literalMap(expr hcl.Expression) map[string]string {
 		out[k] = c
 	}
 	return out
+}
+
+var (
+	providerSchema = &hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "provider", LabelNames: []string{"name"}}}}
+	aliasSchema    = &hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "alias"}}}
+)
+
+// ProviderConfigs returns, per local name, the source text of the root
+// module's default provider configuration (the provider block without an
+// alias), with whitespace collapsed; a provider without one is absent,
+// which is the same configuration as an empty block. Two names with equal
+// text configure the same account and project. A block in a .tf.json file
+// gets a text of its own that equals nothing, since it cannot be compared.
+func ProviderConfigs(dir string) (map[string]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	p := hclparse.NewParser()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || strings.HasPrefix(name, "zz_tforphans_") || !(strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		var f *hcl.File
+		if strings.HasSuffix(name, ".tf") {
+			f, _ = p.ParseHCLFile(path)
+		} else {
+			f, _ = p.ParseJSONFile(path)
+		}
+		if f == nil {
+			continue
+		}
+		content, _, _ := f.Body.PartialContent(providerSchema)
+		for i, b := range content.Blocks {
+			attrs, _, _ := b.Body.PartialContent(aliasSchema)
+			if _, aliased := attrs.Attributes["alias"]; aliased {
+				continue
+			}
+			text := fmt.Sprintf("json %s %d", path, i)
+			if body, ok := b.Body.(*hclsyntax.Body); ok {
+				r := body.SrcRange
+				text = strings.Join(strings.Fields(string(f.Bytes[r.Start.Byte:r.End.Byte])), " ")
+				text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "{"), "}"))
+			}
+			out[b.Labels[0]] = text
+		}
+	}
+	return out, nil
 }

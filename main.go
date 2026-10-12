@@ -617,8 +617,12 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
+	configs, err := tf.ProviderConfigs(root)
+	if err != nil {
+		return nil, err
+	}
 	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly,
-		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 }})
+		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 }, ProviderConfigs: configs})
 	sum.Skipped = append(sum.Skipped, plan.Skipped...)
 	for _, n := range plan.Notes {
 		sum.Notes = append(sum.Notes, root+": "+n)

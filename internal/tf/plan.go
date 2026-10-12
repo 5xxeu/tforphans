@@ -91,6 +91,9 @@ type PlanOptions struct {
 	AliasOnly map[string][]string
 	// IncludeResource tells which types need their attributes; nil: none.
 	IncludeResource func(resourceType string) bool
+	// ProviderConfigs are the root's default provider configurations by
+	// local name (see ProviderConfigs).
+	ProviderConfigs map[string]string
 }
 
 // OptIn are list-capable types whose lists reach far beyond what a root
@@ -172,32 +175,37 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 			}
 		}
 	}
-	p.dropTwins()
+	p.dropTwins(opt.ProviderConfigs)
 	return p
 }
 
 // dropTwins keeps one query per type among providers that list the same
-// objects (google and google-beta): both would report every object, under
-// identities that need not be equal. A provider the root declares wins over
-// one only child modules use, then the one the family is named after
-// (google over google-beta).
-func (p *Plan) dropTwins() {
-	keep := map[string]int{} // type \x00 family -> index in kept
+// objects (google and google-beta) when the root configures them alike:
+// both would report every object, under identities that need not be equal.
+// Configured differently (another project), both are queried.
+func (p *Plan) dropTwins(configs map[string]string) {
+	keep := map[string]int{} // type \x00 family \x00 configuration -> index in kept
 	var kept []Query
 	for _, q := range p.Queries {
+		cfg := ""
+		if !q.Temporary {
+			cfg = configs[q.Provider]
+		}
 		fam := model.ProviderFamily(q.Source)
-		k := q.Type + "\x00" + fam
+		k := q.Type + "\x00" + fam + "\x00" + cfg
 		i, seen := keep[k]
 		if !seen {
 			keep[k] = len(kept)
 			kept = append(kept, q)
 			continue
 		}
+		// Equal configurations scan the same place; a name the root has
+		// needs no temporary declaration, then google beats google-beta.
 		drop, cur := q, kept[i]
 		if !q.Temporary && cur.Temporary || q.Temporary == cur.Temporary && isFamilyName(q.Source, fam) && !isFamilyName(cur.Source, fam) {
 			drop, kept[i] = cur, q
 		}
-		p.Skipped = append(p.Skipped, Skip{drop.Type, fmt.Sprintf("listed through %s, which lists the same objects as %s", kept[i].Provider, drop.Provider)})
+		p.Skipped = append(p.Skipped, Skip{drop.Type, fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Provider, drop.Provider)})
 	}
 	p.Queries = kept
 	for local := range p.Declare {

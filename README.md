@@ -243,12 +243,21 @@ google_compute_disk name=pvc-* project=data-prod
 ```
 
 `-ignore-preset gcp-system` adds built-in rules for objects that Google
-Cloud and GKE create on their own: GKE nodes, their disks and persistent
-volume disks (by GKE labels and `gke-`/`pvc-` names), GKE and load balancer
-firewall rules and addresses, default service accounts, and App Engine,
-Cloud Functions and Cloud Build buckets. See
-[the preset](internal/report/presets/gcp-system.ignore) and check what it
-hides before relying on it.
+Cloud and GKE create on their own, by marks a user cannot give their own
+objects: GKE nodes and disks by their reserved `goog-` labels, default
+service accounts and App Engine buckets in Google's own domains. See
+[the preset](internal/report/presets/gcp-system.ignore). Other system
+objects are known only by name (`gke-*` and `k8s-*` firewall rules and load
+balancer parts, `gcf-sources-*` and `*_cloudbuild` buckets), and anyone who
+can create such an object can choose that name, so the preset leaves them
+out. Add them to your own ignore file if that risk is acceptable, ideally
+scoped to a project:
+
+```
+google_compute_firewall name=gke-* project=my-gke-project
+google_compute_firewall name=k8s-* project=my-gke-project
+google_storage_bucket name=gcf-sources-*
+```
 
 ### Bringing orphans under Terraform: `tforphans adopt`
 

@@ -271,6 +271,15 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	if hcl := string(p.HCL(10)); !strings.Contains(hcl, `"tfo_google_google_compute_network"`) {
 		t.Errorf("HCL:\n%s", hcl)
 	}
+	// Configured for different projects, both are queried.
+	p = BuildPlan(&s, nil, PlanOptions{ProviderConfigs: map[string]string{"google": `project = "a"`, "google-beta": `project = "b"`}})
+	if len(p.Queries) != 2 {
+		t.Errorf("different configurations: %+v", p.Queries)
+	}
+	p = BuildPlan(&s, nil, PlanOptions{ProviderConfigs: map[string]string{"google": `project = var.p`, "google-beta": `project = var.p`}})
+	if len(p.Queries) != 1 {
+		t.Errorf("equal configurations: %+v", p.Queries)
+	}
 	// Two providers of different families both list the type.
 	var s2 Schemas
 	json.Unmarshal([]byte(`{"provider_schemas": {
@@ -423,5 +432,35 @@ func TestClassify(t *testing.T) {
 	}
 	if got := OneLine(strings.Repeat("ж", 200), 11); got != "жжжжж..." {
 		t.Errorf("cut %q", got)
+	}
+}
+
+func TestProviderConfigs(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "providers.tf"), []byte(`
+provider "google" {
+  project = var.project
+  region  = "europe-west1"
+}
+provider "google-beta" {
+  project =   var.project
+  region  = "europe-west1"
+}
+provider "google" {
+  alias   = "other"
+  project = "x"
+}
+provider "aws" {}
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "x.tf.json"), []byte(`{"provider": {"azurerm": {"features": {}}}}`), 0o644)
+	got, err := ProviderConfigs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["google"] == "" || got["google"] != got["google-beta"] || got["aws"] != "" || got["azurerm"] == "" {
+		t.Errorf("configs %q", got)
+	}
+	if _, ok := got["aws"]; !ok {
+		t.Error("empty block missing")
 	}
 }

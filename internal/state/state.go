@@ -374,9 +374,10 @@ func (ix *Index) Match(r model.Resource) Match {
 }
 
 // owner describes objects that a managed resource of another type creates
-// and owns, which therefore have no state of their own: the boot disk of a
-// google_compute_instance is created and deleted with it. Disks attached
-// with attached_disk are not owned: they may be managed, or not, elsewhere.
+// and owns, which therefore have no state of their own: a boot disk that a
+// google_compute_instance creates from initialize_params. A boot disk given
+// as source, and disks attached with attached_disk, are not owned: they are
+// made, and may be managed or not, elsewhere.
 type owner struct {
 	parent string
 	what   string // the parent's attribute, for the reported address
@@ -398,6 +399,11 @@ var owners = map[string]owner{
 			list, _ := attrs["boot_disk"].([]any)
 			for _, b := range list {
 				m, _ := b.(map[string]any)
+				// Only a disk the instance created from initialize_params is
+				// owned by it; one given as source was made elsewhere.
+				if params, _ := m["initialize_params"].([]any); len(params) == 0 {
+					continue
+				}
 				src, _ := m["source"].(string)
 				// A self link: .../projects/P/zones/Z/disks/N.
 				if i := strings.Index(src, "projects/"); i >= 0 {
