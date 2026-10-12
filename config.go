@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,8 +68,8 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 		if key == "roots" {
 			if len(o.roots) == 0 {
 				for _, v := range vals {
-					p := configPath(dir, v)
-					if err := inside(p, explicit); err != nil {
+					p, err := inside(configPath(dir, v), explicit)
+					if err != nil {
 						return fmt.Errorf("%s: roots: %w", path, err)
 					}
 					o.roots = append(o.roots, p)
@@ -93,11 +92,16 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			return fmt.Errorf("%s: %s takes true or false", path, key)
 		}
 		for _, v := range vals {
-			if slices.Contains(configPathKeys, key) && !strings.Contains(v, "://") && v != "-" && (key != "terraform" || strings.ContainsRune(v, '/')) {
-				v = configPath(dir, v)
-				if err := inside(v, explicit); err != nil {
+			// Only state takes a URL or - (stdin); for the other keys
+			// "x://y" is a path like any other.
+			isPath := slices.Contains(configPathKeys, key) && (key != "terraform" || strings.ContainsRune(v, '/')) &&
+				(key != "state" || !strings.Contains(v, "://") && v != "-")
+			if isPath {
+				p, err := inside(configPath(dir, v), explicit)
+				if err != nil {
 					return fmt.Errorf("%s: %s: %w", path, key, err)
 				}
+				v = p
 			}
 			if err := fs.Set(key, v); err != nil {
 				return fmt.Errorf("%s: %s: %w", path, key, err)
@@ -108,45 +112,35 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 }
 
 // inside keeps the paths of a config file read on its own within the
-// current directory, symbolic links resolved: the file comes with the
-// repository and may choose among its roots, not reach other directories
-// (another checkout's states, a home directory). A file given with
-// -config may point anywhere.
-func inside(p string, explicit bool) error {
+// current directory: the file comes with the repository and may choose
+// among its roots, not reach other directories (another checkout's states,
+// a home directory). The path must exist; it is resolved as the operating
+// system would (a link before .. counts), and the resolved path is used.
+// A file given with -config may point anywhere.
+func inside(p string, explicit bool) (string, error) {
 	if explicit {
-		return nil
+		return p, nil
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", err
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return err
+		return "", err
 	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return err
+	if cwd, err = filepath.EvalSymlinks(cwd); err != nil {
+		return "", err
 	}
-	if real, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = real
+	// A relative result is relative to the current directory.
+	if !filepath.IsAbs(real) {
+		real = filepath.Join(cwd, real)
 	}
-	// A path that does not exist yet: resolve its longest existing part,
-	// which may be a link out.
-	for rest := ""; ; {
-		real, err := filepath.EvalSymlinks(abs)
-		if err == nil {
-			abs = filepath.Join(real, rest)
-			break
-		}
-		parent := filepath.Dir(abs)
-		if !errors.Is(err, fs.ErrNotExist) || parent == abs {
-			return fmt.Errorf("%s: %w", p, err)
-		}
-		rest = filepath.Join(filepath.Base(abs), rest)
-		abs = parent
-	}
-	rel, err := filepath.Rel(cwd, abs)
+	rel, err := filepath.Rel(cwd, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("%s is outside the current directory; only a file given with -config may point there", p)
+		return "", fmt.Errorf("%s is outside the current directory; only a file given with -config may point there", p)
 	}
-	return nil
+	return rel, nil
 }
 
 // configValues turns a scalar or a list of scalars into flag values.
@@ -179,7 +173,8 @@ func configValues(v any) ([]string, error) {
 func configPath(dir, p string) string {
 	if rest, ok := strings.CutPrefix(p, "~/"); ok {
 		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, rest)
+			// Not Join: cleaning would fold a link before .. away.
+			return home + string(filepath.Separator) + rest
 		}
 	}
 	if filepath.IsAbs(p) || dir == "" {

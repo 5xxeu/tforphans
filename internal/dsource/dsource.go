@@ -312,10 +312,15 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			continue
 		}
 		for _, l := range b.listings {
+			// No parent to read it in (no zone): nothing was listed, and
+			// an empty parent list may be a token that sees none.
+			if b.scope != nil && len(keys) == 0 {
+				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: fmt.Sprintf("no %s was listed to read it in (the credentials may see none)", strings.TrimSuffix(b.scope.Arg, "_id"))})
+				continue
+			}
 			listed[l.resourceType] = true
-			// Each scope read counts, also one without objects of the
-			// type; a scoped block without instances had nothing to read.
-			if b.scope == nil || len(keys) == 0 {
+			// Each scope read counts, also one without objects of the type.
+			if b.scope == nil {
 				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType})
 				continue
 			}

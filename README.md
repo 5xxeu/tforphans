@@ -152,8 +152,8 @@ repeats a flag; `roots` lists the root modules:
 ```yaml
 roots: [.]
 state-roots:
-  - ~/work/infrastructure
-  - ../platform
+  - stacks
+  - teams/platform
 scan: [cloudflare]
 scan-scope: [state]
 ignore-preset: [cloudflare-system]
@@ -165,8 +165,9 @@ format: summary
 The command line wins: a flag given there replaces the file's value, lists
 included (`-scan proxmox` replaces `scan: [cloudflare]`). Relative paths are
 relative to the file, `~/` is the home directory. `-config FILE` reads
-another file (one per audit: `cloudflare.yaml`, `aws.yaml`), `-no-config`
-ignores `.tforphans.yaml`. Credentials stay in the environment, as without
+another file (one per audit: `cloudflare.yaml`, `aws.yaml`), which may
+also point outside the current directory (`state-roots:
+[~/work/infrastructure]`); `-no-config` ignores `.tforphans.yaml`. Credentials stay in the environment, as without
 a file.
 
 `.tforphans.yaml` is read on its own, so it may come with someone else's
@@ -178,8 +179,9 @@ than they are (a state file of its own counts as proof of management):
 `include-attrs`, `o`, `state`, `proxmox-cluster-states`,
 `plugin-cluster-states` and `allow-incomplete` are accepted only from a
 file given with `-config`. Its `roots`, `state-roots` and `ignore` must
-stay within the current directory (symbolic links resolved): no `..`,
-absolute paths or `~/` leading out of it. The `plan:` line names the
+exist and stay within the current directory, resolved as the system does
+(symbolic links included): no `..`, absolute paths or `~/` leading out of
+it. The `plan:` line names the
 config file read. These limits are no sandbox: like the repository itself,
 whose roots, states and `.tforphans-ignore` decide the result anyway, the
 file can still choose which of its roots and `-state-roots` are read. Run

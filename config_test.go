@@ -30,11 +30,14 @@ limit: 5
 	if err := os.WriteFile(defaultConfigFile, []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for _, d := range []string{"infra", "teams", "org", "tree"} {
+		os.Mkdir(d, 0o755)
+	}
 	o, err := parseFlags(nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.roots, []string{"infra"}) || !slices.Equal(o.stateRoots, []string{"teams", "./org/../tree"}) ||
+	if !slices.Equal(o.roots, []string{"infra"}) || !slices.Equal(o.stateRoots, []string{"teams", "tree"}) ||
 		!slices.Equal(o.scans, []string{"cloudflare"}) || !o.scopeState || !o.strict || o.format != "summary" || o.limit != 5 ||
 		!o.exclude.Match("cloudflare_api_token") || !o.exclude.Match("cloudflare_account_member") || o.configFile != defaultConfigFile {
 		t.Errorf("from the file: %+v", o)
@@ -87,19 +90,10 @@ func TestConfigRejected(t *testing.T) {
 		"scan: {cloudflare: true}\n":            "want a value",
 		"limit: lots\n":                         "limit: parse error",
 		"scan: [cloudflare\n":                   "yaml",
-		"state-roots: [../teams]\n":             "outside the current directory",
-		"state-roots: [/abs/tree]\n":            "outside the current directory",
-		"roots: [~/infra]\n":                    "outside the current directory",
-		"ignore: ../ignore.txt\n":               "outside the current directory",
-		"state-roots: [out/inner]\n":            "outside the current directory",
 	} {
 		dir := t.TempDir()
 		t.Chdir(dir)
 		os.WriteFile(defaultConfigFile, []byte(conf), 0o644)
-		// A link out of the directory (a cloned repository may have one).
-		if err := os.Symlink(t.TempDir(), "out"); err != nil && strings.Contains(conf, "out/") {
-			continue // no symbolic links here (Windows without the right)
-		}
 		if _, err := parseFlags([]string{"adopt"}, io.Discard); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v, want %q", conf, err, want)
 		}
@@ -141,5 +135,48 @@ func TestTerraformPath(t *testing.T) {
 		if o.terraformBin != want {
 			t.Errorf("%s: %s, want %s", args, o.terraformBin, want)
 		}
+	}
+}
+
+// Paths of a file read on its own stay within the current directory, as
+// the system resolves them: a link before .. and "x://" count.
+func TestConfigInside(t *testing.T) {
+	base := t.TempDir()
+	repo, outside := filepath.Join(base, "repo"), filepath.Join(base, "outside")
+	for _, d := range []string{filepath.Join(repo, "x:"), filepath.Join(repo, "in"), filepath.Join(outside, "sub"), filepath.Join(outside, "target"), filepath.Join(outside, "teams")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Skip(err) // no colon in names (Windows)
+		}
+	}
+	write := func(p, s string) { os.WriteFile(p, []byte(s), 0o644) }
+	write(filepath.Join(outside, "ignore"), "")
+	if err := os.Symlink(filepath.Join(outside, "sub"), filepath.Join(repo, "jump")); err != nil {
+		t.Skip(err)
+	}
+	os.Symlink(outside, filepath.Join(repo, "out"))
+	t.Chdir(repo)
+	for conf, want := range map[string]string{
+		"state-roots: [../outside/teams]\n":            "outside the current directory",
+		"state-roots: [" + outside + "/teams]\n":       "outside the current directory",
+		"roots: [jump/../target]\n":                    "outside the current directory",
+		"state-roots: [\"x://../../outside/teams\"]\n": "outside the current directory",
+		"ignore: out/ignore\n":                         "outside the current directory",
+		"roots: [missing]\n":                           "no such file",
+	} {
+		write(defaultConfigFile, conf)
+		if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", conf, err, want)
+		}
+	}
+	// Inside is fine, and the resolved path is used.
+	write(defaultConfigFile, "roots: [./in/../in]\nstate-roots: [x:/../in]\n")
+	if o, err := parseFlags(nil, io.Discard); err != nil || !slices.Equal(o.roots, []string{"in"}) || !slices.Equal(o.stateRoots, []string{"in"}) {
+		t.Errorf("inside: %+v, %v", o, err)
+	}
+	// A file given with -config may point anywhere.
+	os.Remove(defaultConfigFile)
+	write("audit.yaml", "roots: [jump/../target]\n")
+	if _, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil {
+		t.Errorf("-config: %v", err)
 	}
 }

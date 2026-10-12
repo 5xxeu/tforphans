@@ -235,3 +235,19 @@ resource "fake_thing" "a" { name = "a" }
 		t.Errorf("-refresh fallback: exit %d\n%s", code, stderr)
 	}
 }
+
+// TestIntegrationScanNoZones: with no zone listed, records were not read in
+// any: coverage is incomplete and -strict fails, not a clean audit.
+func TestIntegrationScanNoZones(t *testing.T) {
+	root := scanSetup(t)
+	t.Chdir(root)
+	data := os.Getenv("FAKE_DIR")
+	if err := os.RemoveAll(filepath.Join(data, "zone")); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(data, "zone"), 0o755)
+	code, out, stderr := scanJSON(t, "-types", "fake_record", "-strict", "-v")
+	if code != exitError || out.Summary.Complete || !strings.Contains(stderr, "no zone was listed to read it in") {
+		t.Errorf("exit %d, complete %v\n%s", code, out.Summary.Complete, stderr)
+	}
+}
