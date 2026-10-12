@@ -280,6 +280,16 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	if len(p.Queries) != 1 {
 		t.Errorf("equal configurations: %+v", p.Queries)
 	}
+	// Only google-beta takes the project argument: both are queried.
+	var s3 Schemas
+	json.Unmarshal([]byte(`{"provider_schemas": {
+	  "registry.terraform.io/hashicorp/google": {"list_resource_schemas": {"google_compute_network": {"block": {}}}},
+	  "registry.terraform.io/hashicorp/google-beta": {"list_resource_schemas": {"google_compute_network": {"block": {"attributes": {"project": {"type": "string", "optional": true}}}}}}
+	}}`), &s3)
+	project, _ := ParseArg("project=p2")
+	if p := BuildPlan(&s3, nil, PlanOptions{Args: []Arg{project}}); len(p.Queries) != 2 {
+		t.Errorf("different arguments: %+v", p.Queries)
+	}
 	// Two providers of different families both list the type.
 	var s2 Schemas
 	json.Unmarshal([]byte(`{"provider_schemas": {

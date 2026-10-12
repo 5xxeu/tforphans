@@ -874,17 +874,28 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 // dedupe drops resources listed more than once, for example by two roots
 // that share a provider account. Equal types and identities from different
 // providers are different objects; an unknown provider (a plugin) is taken
-// for the same one.
+// for the same one. Attributes of the dropped copies are kept: one copy may
+// come from a list block that did not ask for them.
 func dedupe(rs []model.Resource) []model.Resource {
-	seen := map[string][]string{} // key -> provider addresses kept
+	seen := map[string][]int{} // key -> indexes in out
 	out := rs[:0]
 	for _, r := range rs {
 		k := r.Key()
-		if slices.ContainsFunc(seen[k], func(p string) bool { return model.SameProvider(p, r.ProviderSource) }) {
+		i := slices.IndexFunc(seen[k], func(j int) bool { return model.SameProvider(out[j].ProviderSource, r.ProviderSource) })
+		if i < 0 {
+			seen[k] = append(seen[k], len(out))
+			out = append(out, r)
 			continue
 		}
-		seen[k] = append(seen[k], r.ProviderSource)
-		out = append(out, r)
+		kept := &out[seen[k][i]]
+		for a, v := range r.Attributes {
+			if kept.Attributes == nil {
+				kept.Attributes = map[string]any{}
+			}
+			if _, ok := kept.Attributes[a]; !ok {
+				kept.Attributes[a] = v
+			}
+		}
 	}
 	return out
 }

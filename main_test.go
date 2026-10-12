@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -132,5 +133,17 @@ func TestPluginKeysAllRequired(t *testing.T) {
 	bad := `printf '%s\n' '{"type":"vault policy","identity":{"id":"x"}}'`
 	if code := run(context.Background(), []string{"adopt", "-no-query", "-state", statePath, "-plugin", bad}, &stdout, &stderr); code != exitError || stdout.Len() > 0 {
 		t.Errorf("invalid type: exit %d\n%s%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestDedupeKeepsAttributes(t *testing.T) {
+	id := map[string]any{"id": "1"}
+	withAttrs := model.Resource{Type: "t", Identity: id, Attributes: map[string]any{"labels": map[string]any{"a": "b"}}}
+	plain := model.Resource{Type: "t", Identity: id}
+	for _, order := range [][]model.Resource{{plain, withAttrs}, {withAttrs, plain}} {
+		got := dedupe(slices.Clone(order))
+		if len(got) != 1 || got[0].Attributes["labels"] == nil {
+			t.Errorf("got %+v", got)
+		}
 	}
 }

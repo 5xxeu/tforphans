@@ -182,17 +182,25 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 // dropTwins keeps one query per type among providers that list the same
 // objects (google and google-beta) when the root configures them alike:
 // both would report every object, under identities that need not be equal.
-// Configured differently (another project), both are queried.
+// Configured differently (another project), or given other -arg values,
+// both are queried.
 func (p *Plan) dropTwins(configs map[string]string) {
-	keep := map[string]int{} // type \x00 family \x00 configuration -> index in kept
+	keep := map[string]int{} // type, family, configuration, args -> index in kept
 	var kept []Query
 	for _, q := range p.Queries {
 		cfg := ""
 		if !q.Temporary {
 			cfg = configs[q.Provider]
 		}
+		// Arguments too: a provider whose schema lacks one (-arg
+		// project=...) lists another place than the one that takes it.
+		var args []string
+		for _, a := range q.Args {
+			args = append(args, a.Name+"="+strings.Join(a.Values, ","))
+		}
+		sort.Strings(args)
 		fam := model.ProviderFamily(q.Source)
-		k := q.Type + "\x00" + fam + "\x00" + cfg
+		k := q.Type + "\x00" + fam + "\x00" + cfg + "\x00" + strings.Join(args, "\x00")
 		i, seen := keep[k]
 		if !seen {
 			keep[k] = len(kept)
