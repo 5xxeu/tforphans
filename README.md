@@ -60,9 +60,14 @@ a listed identity (google lists some objects with `project = ""`) is
 unknown too, and such objects from two roots are reported separately, since
 they may live in two projects. These matches are counted and reported as unverified (an error
 with `-strict`), and a note says how many state instances have no identity;
+`-refresh` reads each root's state through `terraform plan -refresh-only`
+instead of `state pull`: the providers return identities for old state,
+nothing is written and no lock is taken (the plan file lives in a private
+temporary directory and is removed). It is slower, refreshes every
+resource with the root's credentials and needs the root's variables; when
+the plan fails, the stored state is read and a note says so.
 `terraform apply -refresh-only` with a current provider records identities
-in state and makes them verifiable (it writes the state, so it needs write
-access). The boot disk of a managed `google_compute_instance` counts as
+in state for good (it writes the state, so it needs write access). The boot disk of a managed `google_compute_instance` counts as
 managed by it; disks attached with `attached_disk` do not, since they may
 be created elsewhere. Whatever matches nothing is reported.
 
@@ -83,11 +88,12 @@ tforphans                     # same as: tforphans .
 ```
 
 ```
-TYPE           NAME             IDENTITY                                                SOURCE
-aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1   .
-aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...    .
+SCOPE                    TYPE           NAME             IDENTITY                                                SOURCE
+account_id 123456789012  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1   .
+account_id 123456789012  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...    .
 
-512 live, 498 managed, 12 ignored, 2 unmanaged; 187 resource types queried, 58 skipped (-v to list)
+512 live, 498 managed, 12 ignored, 2 unmanaged; 1 states read, 187 resource types queried, 58 skipped (-v to list)
+managed objects matched by identity: 470, by attributes: 28, unverified: 0
 ```
 
 (Illustrative output.)
@@ -99,9 +105,17 @@ resources; the error names such providers). With `-strict`, incomplete
 coverage (a failed list query or a plugin error) is also an error, which
 suits CI.
 
-Queries that did not list everything are summed up by cause: missing
-argument, permission denied, truncated, not found, API not enabled, other.
-Messages are cut to one line; `-v` prints each failed query.
+Queries that did not list everything are summed up by cause: crashed,
+missing argument, permission denied, truncated, not found, request rejected
+(often a feature the plan does not include), API retired, provider bug, API
+not enabled, other. Messages are cut to one line; `-v` prints each failed
+query.
+
+The second line says how certain "managed" is: an object matched by the
+resource identity in state is that object; one matched by attributes may
+be an equal ID in another account when state cannot say (see below), and
+such matches are counted as unverified. `-v` lists the unverified ones with
+the state address they matched.
 
 ### Resources in modules
 
@@ -233,8 +247,9 @@ and every identity value. Each `KEY=GLOB` must match as well: an identity
 key (`project=prod-*`), or `attr.` and a path into the resource's
 attributes (`attr.labels.goog-gke-node=*`), which tforphans then fetches for
 that rule's types (`include_resource`, slower) but does not print. Your
-own list blocks need `include_resource = true` for that (a note says so),
-and results of `-scan` and plugins have no attributes:
+own list blocks need `include_resource = true` for that (a note says so).
+Results of `-scan` carry the fields their data source returns; plugin
+results have no attributes:
 
 ```
 # AWS-managed service roles
@@ -263,6 +278,9 @@ google_compute_firewall name=gke-* project=my-gke-project
 google_compute_firewall name=k8s-* project=my-gke-project
 google_storage_bucket name=gcf-sources-*
 ```
+
+`-ignore-preset cloudflare-system` is the same for `-scan cloudflare`; see
+[Cloudflare](#cloudflare) for what it covers.
 
 ### Bringing orphans under Terraform: `tforphans adopt`
 
@@ -295,12 +313,16 @@ Narrow down what to adopt with `-types` or the ignore file, and review
 checks.
 
 `-format json` prints the orphans together with the coverage summary: counts
-per type (`summary.by_type`), skipped types, failed queries with their
-`category`. Every orphan has the same keys. `-include-attrs
+per type (`summary.by_type`) and per scope (`summary.by_scope`: a zone or
+account for `-scan cloudflare`, the project, account or subscription of
+list results), skipped types, failed queries with their `category`,
+unverified matches (`summary.unverified`). Each orphan has a `scope` such
+as `zone example.com` when it is known. Every orphan has the same keys. `-include-attrs
 labels,creation_timestamp` adds those attributes to each orphan (to see how
 old an object is, or who owns it); attributes can hold secrets, so ask only
-for what you need. `-format summary` prints only a table of
-counts per type, types with unmanaged objects first.
+for what you need. `-format summary` prints only tables of
+counts per type and per scope, those with unmanaged objects first, and the
+types not fully listed by cause.
 
 ## Providers without list support: plural data sources
 
@@ -342,7 +364,12 @@ A data source that fails (missing token permission, a product the account
 does not have, a provider bug) is reported as "not fully listed" and the
 others are read again, so one failure does not stop the scan. A failure in
 one zone or account only takes that zone or account out; the others are
-still listed. With
+still listed. When the provider or terraform crashes (a panic names no
+data source), the data sources are read again in halves until the crash
+is pinned to a data source and, for those read per zone or account, to the
+zones or accounts that crash; those are reported as "crashed" and the rest
+is listed as usual. This takes extra runs (at most 80), and a note says
+so while it happens. With
 `-strict` such gaps are errors; leave out products you do not use with
 `-exclude-types`.
 
@@ -387,12 +414,86 @@ tforphans -no-query -scan proxmox -state-roots ~/work/proxmox/cluster-a \
 
 Scan one cluster per run, with that cluster's states only.
 
-For Cloudflare, state is matched by `id` plus `zone_id` or `account_id`. Import IDs follow
+### Cloudflare
+
+State is matched by `id` plus `zone_id` or `account_id`. Import IDs follow
 the provider's convention (`<zone_id>/<id>`, or `accounts/<account_id>/<id>`
-for resources that can live in an account or a zone). On a small account
-the scan lists about 95 of the 271 resource types in under a minute; most of
-the rest are settings and singletons, which cannot be orphaned (`-v` lists
-every skipped type with the reason).
+for resources that can live in an account or a zone).
+
+**Coverage.** A type is listed when the provider has a plural data source
+for it that needs no argument beyond `zone_id` or `account_id`. On a small
+account that is about 95 of the 271 resource types (cloudflare 5.x), read
+in under a minute; most of the rest are settings and singletons (zone
+settings, `*_settings`, one-per-zone objects), which cannot be orphaned, or
+child objects whose data source needs a parent ID (list items, access
+policies of one application). `-v` lists every skipped type with the
+reason, and `summary.skipped_types` in JSON.
+
+**Token.** The scan reads `CLOUDFLARE_API_TOKEN` (or the provider's other
+environment variables), never the root's provider block: that block can
+use files, variables and functions that only a plan of your configuration
+evaluates, and tforphans does not plan your configuration. If your
+configuration reads the token from a file, pass it the same way:
+
+```sh
+CLOUDFLARE_API_TOKEN="$(jq -r .api_token ~/.cloudflare.json)" \
+  tforphans -no-query -scan cloudflare -state-roots ~/work/cloudflare
+```
+
+Create the token from the "Read all resources" template (Account and Zone
+read permissions on all accounts and zones). Types the token cannot read
+are reported as "permission denied" with their names; Cloudflare's 403
+does not say which permission was missing, and the permission names do not
+map one to one onto resource types, so add the read permission of the
+product in question (for example "Logs Read" for `cloudflare_logpush_job`,
+"API Tokens Read" for `cloudflare_api_token`). Products the account's plan
+does not include usually answer "400 Bad Request" ("request rejected"),
+and retired APIs (the old firewall rules and filters) "410 Gone"
+("API retired"); exclude such types with `-exclude-types`.
+
+**Several accounts.** One token, one account set: run tforphans once per
+account (staging, prod), each with its own token and the roots of that
+account under `-state-roots`. Objects of an account whose state was not
+read show up as unmanaged.
+
+**Scope.** The scan lists whole accounts. Compared with the state of one
+stack, everything that other stacks manage is reported too, so give all
+states with `-state-roots`, or limit the scan:
+
+```sh
+tforphans -no-query -scan cloudflare -scan-scope zone_id=example.com,example.org
+tforphans -no-query -scan cloudflare -scan-scope state -state-roots stacks/web
+```
+
+`-scan-scope zone_id=...` (or `account_id=...`) takes IDs or names and lists
+only those zones (or accounts): their objects, and the zones themselves.
+`-scan-scope state` takes the zone and account IDs found in the states
+read; a scope with no ID in the states is not read at all (its types are
+reported as skipped). A zone stack whose state names its account (an
+account-level object, or any `account_id`) gets the account's objects
+listed as well; `-scan-scope account_id=` (no value) leaves out
+account-level objects, and works with `state` for the zones:
+`-scan-scope state -scan-scope account_id=`.
+Without `-scan-scope` and `-state-roots` a note points this out. Every
+object carries its zone or account (`scope` in JSON, a column in the
+table), and `-format summary` counts them per zone.
+
+**Known noise.** Objects Cloudflare creates are left out by fields users
+cannot set (see above), and also the resource library catalog
+(`cloudflare_zero_trust_resource_library_application` with
+`application_source = "cloudflare"`). `-ignore-preset cloudflare-system`
+also hides the URL normalization entrypoint ruleset (created by
+`cloudflare_url_normalization_settings`). Reported on purpose, ignore them
+yourself if you accept them: the default virtual network and the Gateway CA
+mTLS certificate (their marks are settable by users), and "default"
+entrypoint rulesets and notification policies, which the dashboard creates
+when someone configures rules or alerts there (configuration outside
+Terraform), for example `cloudflare_notification_policy:Default*`.
+
+**Crashes.** Some provider versions return values that crash terraform for
+some objects (for example DNS records of mixed types in one list). Such a
+crash costs only the zones it happens in (see above); report it to the
+provider with the message from `-v`.
 
 ## Plugins: other providers without list support
 
@@ -440,8 +541,10 @@ per run with its own states and `-plugin-cluster-states`.
 - tforphans only reads. It runs `terraform providers schema`, `state pull`
   (only for workspaces `workspace list` printed as list lines),
   `workspace list`, `query`, and `apply -refresh-only` on a temporary root
-  that holds nothing but data sources; it never plans or applies your
-  configuration. `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are not passed
+  that holds nothing but data sources; it never applies your
+  configuration, and plans it only with `-refresh` (`plan -refresh-only
+  -lock=false`, which writes no state; data sources of your configuration
+  are read then, as in any plan). `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are not passed
   on (they could redirect state), and the temporary root ignores
   `TF_DATA_DIR` and `TF_WORKSPACE`. Run it with read-only credentials (AWS `ReadOnlyAccess`,
   GCP Viewer, Azure Reader, a Cloudflare "Read all resources" token, a
@@ -458,7 +561,10 @@ per run with its own states and `-plugin-cluster-states`.
   `-ignore-required-version`)
   next to your configuration, removed after the run, and a temporary
   directory for data source scans, removed as well. A run killed with
-  SIGKILL can leave them behind.
+  SIGKILL can leave them behind; the next run removes the files of a
+  process that no longer exists and refuses to start while another run is
+  still working in the same root. Adding `zz_tforphans_*` to `.gitignore`
+  keeps them out of commits in any case.
 - `-state-roots` and `-init` run terraform in every root module they find,
   with your environment. Point them only at repositories you would run
   terraform in anyway: a backend block decides where `TF_HTTP_*` and cloud

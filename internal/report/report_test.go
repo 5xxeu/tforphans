@@ -225,6 +225,18 @@ func TestPresets(t *testing.T) {
 	if ig.Match(model.Resource{Type: "google_service_account", Identity: map[string]any{"email": "ci@p.iam.gserviceaccount.com", "project": "p"}}) {
 		t.Error("user service account ignored")
 	}
+	cf, err := Preset("cloudflare-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sanitize := model.Resource{Type: "cloudflare_ruleset", Identity: map[string]any{"id": "r1", "zone_id": "z"}, Attributes: map[string]any{"phase": "http_request_sanitize", "kind": "zone"}}
+	if !cf.Match(sanitize) {
+		t.Error("URL normalization entrypoint not ignored")
+	}
+	sanitize.Attributes["phase"] = "http_request_firewall_custom"
+	if cf.Match(sanitize) {
+		t.Error("custom firewall ruleset ignored")
+	}
 	if _, err := Preset("../report"); err == nil {
 		t.Error("path accepted as a preset")
 	}

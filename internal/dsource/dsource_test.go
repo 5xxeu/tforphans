@@ -175,7 +175,7 @@ func TestExtract(t *testing.T) {
 		}),
 	}}
 	data, _ := json.Marshal(state)
-	got, err := extract(data, blocks, Cloudflare, s)
+	got, err := extract(data, blocks, Cloudflare, s, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,6 +299,8 @@ func TestCloudflareKeep(t *testing.T) {
 		{"cloudflare_mtls_certificate", map[string]any{"name": "Gateway CA - Cloudflare Managed G1 x"}, true},
 		{"cloudflare_zero_trust_dlp_custom_entry", map[string]any{"type": "predefined"}, false},
 		{"cloudflare_zero_trust_dlp_custom_entry", map[string]any{"type": "custom"}, true},
+		{"cloudflare_zero_trust_resource_library_application", map[string]any{"application_source": "cloudflare", "name": "Asana"}, false},
+		{"cloudflare_zero_trust_resource_library_application", map[string]any{"application_source": "user", "name": "Asana"}, true},
 	}
 	for _, c := range cases {
 		if got := cloudflareKeep(c.typ, c.item); got != c.want {

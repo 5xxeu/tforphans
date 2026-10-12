@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -231,6 +232,47 @@ func httpClient() *http.Client {
 	}
 }
 
+// ParseShow parses the prior state of `terraform show -json PLAN` (see
+// tf.Runner.RefreshedState) into instances.
+func ParseShow(data []byte) ([]Instance, error) {
+	var plan struct {
+		PriorState struct {
+			Values struct {
+				RootModule showModule `json:"root_module"`
+			} `json:"values"`
+		} `json:"prior_state"`
+	}
+	if err := model.DecodeJSON(data, &plan); err != nil {
+		return nil, fmt.Errorf("decode plan: %w", err)
+	}
+	var out []Instance
+	var walk func(m showModule)
+	walk = func(m showModule) {
+		for _, r := range m.Resources {
+			if r.Mode == "managed" {
+				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values})
+			}
+		}
+		for _, c := range m.ChildModules {
+			walk(c)
+		}
+	}
+	walk(plan.PriorState.Values.RootModule)
+	return out, nil
+}
+
+type showModule struct {
+	Resources []struct {
+		Address      string         `json:"address"`
+		Mode         string         `json:"mode"`
+		Type         string         `json:"type"`
+		ProviderName string         `json:"provider_name"`
+		Values       map[string]any `json:"values"`
+		Identity     map[string]any `json:"identity"`
+	} `json:"resources"`
+	ChildModules []showModule `json:"child_modules"`
+}
+
 // Index looks up state instances by type and attribute values.
 type Index struct {
 	byValue    map[string][]*Instance // type \x00 key \x00 value
@@ -247,6 +289,19 @@ func NewIndex() *Index {
 // RootAddresses returns the <type>.<name> addresses that states already use
 // in root modules; new import blocks must not target them.
 func (ix *Index) RootAddresses() map[string]bool { return ix.root }
+
+// Values returns the distinct values of a top-level identity key or
+// attribute (zone_id) of the instances of a type ("" for all), sorted.
+func (ix *Index) Values(typ, key string) []string {
+	seen := map[string]bool{}
+	for k := range ix.byValue {
+		parts := strings.SplitN(k, "\x00", 3)
+		if len(parts) == 3 && parts[1] == key && (typ == "" || parts[0] == typ) {
+			seen[parts[2]] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
 
 // Len returns the number of indexed instances.
 func (ix *Index) Len() int { return ix.count }
@@ -309,6 +364,9 @@ type Match struct {
 	// from its identity or, for state without one, from its attributes: the
 	// object may belong to another account with an equal ID.
 	Verified bool
+	// ByIdentity is set when the state instance has a resource identity;
+	// otherwise the match compared attributes.
+	ByIdentity bool
 }
 
 // Managed returns the address of the state instance that manages r.
@@ -353,13 +411,14 @@ func (ix *Index) Match(r model.Resource) Match {
 			}
 			switch {
 			case ok && verified:
-				return Match{Address: in.Address, Managed: true, Verified: true}
+				return Match{Address: in.Address, Managed: true, Verified: true, ByIdentity: len(in.Identity) > 0}
 			case ok && !best.Managed:
-				best = Match{Address: in.Address, Managed: true}
+				best = Match{Address: in.Address, Managed: true, ByIdentity: len(in.Identity) > 0}
 			}
 		}
 	}
-	if !best.Managed {
+	// An unverified match does not stop a verified one through an owner.
+	if !best.Verified {
 		if o, ok := owners[r.Type]; ok {
 			full, short := o.key(r.Identity)
 			for _, k := range []string{full, short} {

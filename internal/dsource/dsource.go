@@ -142,6 +142,12 @@ type Options struct {
 	// no root pins a version. Off by default: a release that nobody chose
 	// would run with the user's cloud credentials.
 	AllowUnpinned bool
+	// Progress, when set, receives notes about long extra work.
+	Progress func(string)
+	// Scope limits the scan, by scope argument (zone_id), to these parent
+	// IDs or names; an argument given with no values reads none of its
+	// scope. Parent objects themselves (zones) are limited the same way.
+	Scope map[string][]string
 }
 
 // Result of a scan.
@@ -155,6 +161,9 @@ type Result struct {
 // maxItems is passed to data sources that take max_items; a variable so
 // that tests can reach it.
 var maxItems = 1000000
+
+// maxProbes bounds the extra runs spent isolating a crash.
+const maxProbes = 80
 
 // Run lists every resource type that has a usable plural data source.
 func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
@@ -186,21 +195,71 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		return res, nil
 	}
 
-	all := p.blocks()
+	all, skipped := limitScope(p.blocks(), opt.Scope)
+	res.Skipped = append(res.Skipped, skipped...)
 	blocks := all
+	statePath := filepath.Join(dir, "terraform.tfstate")
+	apply := func(blocks []block) (out, stderr []byte, runErr, err error) {
+		if err := os.WriteFile(filepath.Join(dir, "main.tf"), renderBlocks(blocks), 0o644); err != nil {
+			return nil, nil, nil, err
+		}
+		// A crashed run must not leave the state of an earlier one behind.
+		if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+			return nil, nil, nil, err
+		}
+		out, stderr, runErr = r.Exec(ctx, "apply", "-refresh-only", "-auto-approve", "-input=false", "-no-color", "-json", "-lock=false")
+		if ctx.Err() != nil {
+			return nil, nil, nil, ctx.Err()
+		}
+		return out, stderr, runErr, nil
+	}
+	probes := 0
+	probe := func(set []block) (bool, []byte, error) {
+		if len(set) == 0 {
+			return false, nil, nil
+		}
+		// A crash every part repeats (terraform failing for another reason)
+		// must not cost hundreds of runs.
+		if probes++; probes > maxProbes {
+			return false, nil, fmt.Errorf("the crash could not be pinned down in %d runs", maxProbes)
+		}
+		out, stderr, runErr, err := apply(set)
+		if err != nil || runErr == nil {
+			if err != nil {
+				return false, nil, err
+			}
+			st, err := os.ReadFile(statePath)
+			return false, st, err
+		}
+		errs, fatal := applyErrors(out)
+		return crashed(stderr, errs, fatal), nil, nil
+	}
 	var failures []failure
 	for len(blocks) > 0 {
-		if err := os.WriteFile(filepath.Join(dir, "main.tf"), renderBlocks(blocks), 0o644); err != nil {
+		out, stderr, runErr, err := apply(blocks)
+		if err != nil {
 			return nil, err
-		}
-		out, stderr, runErr := r.Exec(ctx, "apply", "-refresh-only", "-auto-approve", "-input=false", "-no-color", "-json", "-lock=false")
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
 		}
 		if runErr == nil {
 			break
 		}
 		errs, fatal := applyErrors(out)
+		if crashed(stderr, errs, fatal) {
+			why := crashText(stderr, errs, fatal)
+			if opt.Progress != nil {
+				opt.Progress(fmt.Sprintf("%s: the provider or terraform crashed reading data sources; reading them in parts to find the cause (this takes extra runs)", a.Name))
+			}
+			if why != "" {
+				why = "crashed: " + tf.OneLine(why, 200)
+			}
+			keep, failed, err := isolate(blocks, why, probe)
+			if err != nil {
+				return nil, fmt.Errorf("%s: reading data sources: %v\n%s", a.Name, err, strings.TrimSpace(string(stderr)))
+			}
+			failures = append(failures, failed...)
+			blocks = keep
+			continue
+		}
 		keep, failed, changed := nextRound(blocks, errs)
 		if len(fatal) > 0 || !changed {
 			msg := strings.Join(fatal, "\n")
@@ -216,7 +275,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	var stateData []byte
 	if len(blocks) > 0 {
 		var err error
-		if stateData, err = os.ReadFile(filepath.Join(dir, "terraform.tfstate")); err != nil {
+		if stateData, err = os.ReadFile(statePath); err != nil {
 			return nil, fmt.Errorf("%s: read data sources: %w", a.Name, err)
 		}
 	}
@@ -229,7 +288,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	}
 	listed := map[string]bool{}
 	for _, b := range blocks {
-		if b.scope != nil && len(b.exclude) > 0 && instances[b.addr()] == 0 {
+		if b.hidden || b.scope != nil && len(b.exclude) > 0 && instances[b.addr()] == 0 {
 			continue
 		}
 		for _, l := range b.listings {
@@ -246,6 +305,9 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		byAddr[b.addr()] = b
 	}
 	for _, f := range failures {
+		if byAddr[f.block].hidden {
+			continue
+		}
 		if len(byAddr[f.block].listings) == 0 {
 			// A context data source: the adapter treats it as missing.
 			res.Failed = append(res.Failed, tf.Failure{Address: f.address, Type: byAddr[f.block].dsType, Message: f.message})
@@ -261,13 +323,13 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	if len(blocks) == 0 {
 		return res, nil
 	}
-	cut, err := truncated(stateData, blocks, a)
+	cut, err := truncated(stateData, slices.DeleteFunc(slices.Clone(blocks), func(b block) bool { return b.hidden }), a)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", a.Name, err)
 	}
 	res.Failed = append(res.Failed, cut...)
 
-	res.Resources, err = extract(stateData, blocks, a, sch)
+	res.Resources, err = extract(stateData, blocks, a, sch, opt.Scope)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +515,13 @@ type block struct {
 	listings []listing
 	maxItems bool     // the data source takes max_items
 	exclude  []string // parent IDs (zones, accounts) whose read failed
+	// only, when set, limits the instances to these parent IDs or names
+	// (-scan-scope, or a half of them while a crash is isolated).
+	only []string
+	// hidden blocks are read only to recognise objects that another scope
+	// lists too (account objects in zone listings); their own objects and
+	// failures are not reported.
+	hidden bool
 }
 
 // failure is a data block, or one instance of it, that could not be read.
@@ -637,13 +706,17 @@ func renderBlocks(blocks []block) []byte {
 	for _, bl := range blocks {
 		fmt.Fprintf(&b, "data %q %q {\n", bl.dsType, bl.label)
 		if bl.scope != nil {
-			cond := ""
+			var conds []string
+			if len(bl.only) > 0 {
+				l := hclList(bl.only)
+				conds = append(conds, fmt.Sprintf("(contains(%s, o.id) || contains(%s, try(o.name, \"\")))", l, l))
+			}
 			if len(bl.exclude) > 0 {
-				quoted := make([]string, len(bl.exclude))
-				for i, k := range bl.exclude {
-					quoted[i] = tf.HCLString(k)
-				}
-				cond = fmt.Sprintf(" if !contains([%s], o.id)", strings.Join(quoted, ", "))
+				conds = append(conds, fmt.Sprintf("!contains(%s, o.id)", hclList(bl.exclude)))
+			}
+			cond := ""
+			if len(conds) > 0 {
+				cond = " if " + strings.Join(conds, " && ")
 			}
 			fmt.Fprintf(&b, "  for_each  = { for o in (%s.result == null ? [] : %s.result) : o.id => o.id%s }\n", bl.parent, bl.parent, cond)
 			fmt.Fprintf(&b, "  %s = each.value\n", bl.scope.Arg)
@@ -654,6 +727,14 @@ func renderBlocks(blocks []block) []byte {
 		b.WriteString("}\n\n")
 	}
 	return []byte(b.String())
+}
+
+func hclList(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = tf.HCLString(v)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // applyErrors returns the error diagnostics of `terraform apply -json` that
@@ -696,6 +777,41 @@ func applyErrors(out []byte) ([]diagErr, []string) {
 		failed = append(failed, e)
 	}
 	return failed, fatal
+}
+
+// parentIDs returns the IDs a parent block listed (its for_each keys),
+// only those with an ID or name in only when it is set.
+func parentIDs(stateData []byte, addr string, only []string) ([]string, error) {
+	var st struct {
+		Resources []struct {
+			Mode      string `json:"mode"`
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Instances []struct {
+				Attributes map[string]any `json:"attributes"`
+			} `json:"instances"`
+		} `json:"resources"`
+	}
+	if err := model.DecodeJSON(stateData, &st); err != nil {
+		return nil, fmt.Errorf("decode data source state: %w", err)
+	}
+	var out []string
+	for _, r := range st.Resources {
+		if r.Mode != "data" || "data."+r.Type+"."+r.Name != addr {
+			continue
+		}
+		for _, in := range r.Instances {
+			for _, it := range listItems(in.Attributes, ListSpec{Items: "result"}) {
+				id, _ := it["id"].(string)
+				name, _ := it["name"].(string)
+				if id == "" || slices.Contains(out, id) || len(only) > 0 && !slices.Contains(only, id) && (name == "" || !slices.Contains(only, name)) {
+					continue
+				}
+				out = append(out, id)
+			}
+		}
+	}
+	return out, nil
 }
 
 // contextAttrs returns the attributes of the context data sources read.
@@ -831,7 +947,7 @@ func listItems(attrs map[string]any, spec ListSpec) []map[string]any {
 	return out
 }
 
-func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Resource, error) {
+func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[string][]string) ([]model.Resource, error) {
 	var st struct {
 		Resources []struct {
 			Mode      string `json:"mode"`
@@ -850,6 +966,31 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Re
 	for _, b := range blocks {
 		byAddr[b.addr()] = b
 	}
+	// Names of the parents (zones, accounts), by parent block address.
+	names := map[string]map[string]string{}
+	for _, r := range st.Resources {
+		addr := "data." + r.Type + "." + r.Name
+		if r.Mode != "data" || r.Name != "all" {
+			continue
+		}
+		for _, in := range r.Instances {
+			for _, it := range listItems(in.Attributes, ListSpec{Items: "result"}) {
+				id, _ := it["id"].(string)
+				name, _ := it["name"].(string)
+				if id != "" {
+					if names[addr] == nil {
+						names[addr] = map[string]string{}
+					}
+					names[addr][id] = name
+				}
+			}
+		}
+	}
+	// A parent block lists its own type (cloudflare_zones lists zones).
+	parentScope := map[string]*Scope{}
+	for i := range a.Scopes {
+		parentScope[a.Scopes[i].Parent] = &a.Scopes[i]
+	}
 	var out []scoped
 	for _, r := range st.Resources {
 		b, ok := byAddr["data."+r.Type+"."+r.Name]
@@ -864,6 +1005,17 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Re
 				if !ok || id == "" {
 					continue
 				}
+				where := ""
+				if sc := parentScope[b.dsType]; sc != nil && b.scope == nil {
+					name, _ := item["name"].(string)
+					if vals, ok := limit[sc.Arg]; ok && !slices.Contains(vals, id) && (name == "" || !slices.Contains(vals, name)) {
+						continue
+					}
+					where = scopeLabel(sc, id, name)
+				}
+				if b.scope != nil {
+					where = scopeLabel(b.scope, scopeVal, names[b.parent][scopeVal])
+				}
 				for _, l := range b.listings {
 					if a.Keep != nil && !a.Keep(l.resourceType, item) {
 						continue
@@ -874,6 +1026,8 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Re
 						AltTypes:       a.AltTypes[l.resourceType],
 						Identity:       map[string]any{spec.Key: id},
 						DisplayName:    displayName(item, id),
+						ScopeName:      where,
+						Attributes:     item,
 						ImportID:       id,
 						// The object's own ID must match; the scope alone
 						// (zone_id, account_id) never makes it managed.
@@ -889,7 +1043,7 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Re
 					if a.ImportID != nil {
 						res.ImportID = a.ImportID(l.resourceType, item, id)
 					}
-					sc := scoped{res: res, id: id}
+					sc := scoped{res: res, id: id, hidden: b.hidden}
 					if l.scope != nil {
 						sc.scopeArg = l.scope.Arg
 					}
@@ -901,11 +1055,60 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema) ([]model.Re
 	return collapse(out), nil
 }
 
+// scopeLabel names a parent for people: "zone example.com", or the ID
+// when the parent has no name.
+func scopeLabel(sc *Scope, id, name string) string {
+	if name == "" {
+		name = id
+	}
+	return strings.TrimSuffix(sc.Arg, "_id") + " " + name
+}
+
+// limitScope applies -scan-scope: blocks iterating over a limited scope
+// read only the parents given, and a scope given with no values is not read
+// at all (its types are reported as skipped).
+func limitScope(blocks []block, limit map[string][]string) ([]block, []tf.Skip) {
+	if len(limit) == 0 {
+		return blocks, nil
+	}
+	scopes := map[string]int{} // data source -> scoped blocks
+	for _, b := range blocks {
+		if b.scope != nil {
+			scopes[b.dsType]++
+		}
+	}
+	var out []block
+	var skipped []tf.Skip
+	for _, b := range blocks {
+		if b.scope != nil {
+			if vals, ok := limit[b.scope.Arg]; ok {
+				if len(vals) == 0 && scopes[b.dsType] > 1 {
+					// The other scope's listing may return these objects
+					// too; reading them lets collapse drop those.
+					b.hidden = true
+					out = append(out, b)
+					continue
+				}
+				if len(vals) == 0 {
+					for _, l := range b.listings {
+						skipped = append(skipped, tf.Skip{Type: l.resourceType, Reason: "-scan-scope names no " + b.scope.Arg})
+					}
+					continue
+				}
+				b.only = vals
+			}
+		}
+		out = append(out, b)
+	}
+	return out, skipped
+}
+
 // scoped is a listed object with the scope it was listed in.
 type scoped struct {
 	res      model.Resource
 	id       string
 	scopeArg string
+	hidden   bool // listed only to recognise repeats, not reported
 }
 
 // collapse drops repeats of the same object. Account objects also show up
@@ -930,7 +1133,9 @@ func collapse(rs []scoped) []model.Resource {
 			continue
 		}
 		firstScope[k] = r.scopeArg
-		out = append(out, r.res)
+		if !r.hidden {
+			out = append(out, r.res)
+		}
 	}
 	return out
 }

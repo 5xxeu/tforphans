@@ -1,0 +1,160 @@
+package dsource
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestCrashed(t *testing.T) {
+	if !crashed(nil, nil, nil) {
+		t.Error("a failed run without diagnostics is a crash")
+	}
+	if crashed(nil, []diagErr{{block: "data.x.all", message: "403"}}, nil) {
+		t.Error("an error of one data source is not a crash")
+	}
+	errs := []diagErr{{block: "data.x.all", message: "Plugin did not respond: The plugin encountered an error, and failed to respond to the plugin.(*GRPCProvider).ReadDataSource call."}}
+	if !crashed(nil, errs, nil) {
+		t.Error("a plugin crash names the blocks in flight, it is still a crash")
+	}
+	stderr := []byte("Stack trace from the terraform binary:\npanic: inconsistent list element types (cty.Object(...) then cty.Object(...))\n")
+	if got := crashText(stderr, nil, nil); !strings.HasPrefix(got, "Stack trace") && !strings.HasPrefix(got, "panic:") {
+		t.Errorf("crash text %q", got)
+	}
+}
+
+// TestIsolate covers a crash in one zone of one block and a block that
+// crashes as a whole; the other blocks and zones keep going.
+func TestIsolate(t *testing.T) {
+	zones, accounts := &Cloudflare.Scopes[1], &Cloudflare.Scopes[0]
+	blocks := []block{
+		{dsType: "cloudflare_zones", label: "all"},
+		{dsType: "cloudflare_accounts", label: "all"},
+		{dsType: "cloudflare_dns_records", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all"},
+		{dsType: "cloudflare_rulesets", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all"},
+		{dsType: "cloudflare_images", label: "all"},
+		{dsType: "cloudflare_lists", label: "by_account_id", scope: accounts, parent: "data.cloudflare_accounts.all"},
+	}
+	zoneIDs := []string{"z1", "z2", "bad", "z4", "z5"}
+	var state strings.Builder
+	state.WriteString(`{"resources": [{"mode": "data", "type": "cloudflare_zones", "name": "all", "instances": [{"attributes": {"result": [`)
+	for i, z := range zoneIDs {
+		if i > 0 {
+			state.WriteString(",")
+		}
+		fmt.Fprintf(&state, `{"id": %q}`, z)
+	}
+	state.WriteString(`]}}]}]}`)
+
+	runs := 0
+	probe := func(set []block) (bool, []byte, error) {
+		runs++
+		for _, b := range set {
+			if b.parent != "" && !slices.ContainsFunc(set, func(p block) bool { return p.addr() == b.parent }) {
+				t.Errorf("%s probed without its parent", b.addr())
+			}
+			switch b.addr() {
+			case "data.cloudflare_images.all":
+				return true, nil, nil
+			case "data.cloudflare_dns_records.by_zone_id":
+				if !slices.Contains(b.exclude, "bad") && (b.only == nil || slices.Contains(b.only, "bad")) {
+					return true, nil, nil
+				}
+			}
+		}
+		return false, []byte(state.String()), nil
+	}
+	keep, failed, err := isolate(blocks, "crashed: panic", probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, b := range keep {
+		kept = append(kept, b.addr()+fmt.Sprint(b.exclude)+fmt.Sprint(b.only))
+	}
+	want := "data.cloudflare_zones.all[][] data.cloudflare_accounts.all[][] data.cloudflare_dns_records.by_zone_id[bad][] data.cloudflare_rulesets.by_zone_id[][] data.cloudflare_lists.by_account_id[][]"
+	if got := strings.Join(kept, " "); got != want {
+		t.Errorf("kept\n%s\nwant\n%s", got, want)
+	}
+	var addrs []string
+	for _, f := range failed {
+		addrs = append(addrs, f.address+": "+f.message)
+	}
+	slices.Sort(addrs)
+	if got := strings.Join(addrs, "\n"); got != "data.cloudflare_dns_records.by_zone_id[\"bad\"]: crashed: panic\ndata.cloudflare_images.all: crashed: panic" {
+		t.Errorf("failed:\n%s", got)
+	}
+	if runs > 20 {
+		t.Errorf("%d probe runs", runs)
+	}
+}
+
+func TestIsolateParent(t *testing.T) {
+	blocks := []block{
+		{dsType: "cloudflare_zones", label: "all"},
+		{dsType: "cloudflare_dns_records", label: "by_zone_id", scope: &Cloudflare.Scopes[1], parent: "data.cloudflare_zones.all"},
+		{dsType: "cloudflare_images", label: "all"},
+	}
+	probe := func(set []block) (bool, []byte, error) {
+		return slices.ContainsFunc(set, func(b block) bool { return b.dsType == "cloudflare_zones" }), nil, nil
+	}
+	keep, failed, err := isolate(blocks, "", probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keep) != 1 || keep[0].dsType != "cloudflare_images" || len(failed) != 2 || !strings.HasPrefix(failed[1].message, "parent data.cloudflare_zones.all crashed") {
+		t.Errorf("keep %v failed %v", keep, failed)
+	}
+}
+
+func TestIsolateNotReproduced(t *testing.T) {
+	blocks := []block{{dsType: "cloudflare_zones", label: "all"}, {dsType: "cloudflare_images", label: "all"}}
+	if _, _, err := isolate(blocks, "", func([]block) (bool, []byte, error) { return false, nil, nil }); err == nil {
+		t.Error("a crash no part repeats must be an error")
+	}
+}
+
+func TestRenderOnly(t *testing.T) {
+	hcl := string(renderBlocks([]block{{dsType: "cloudflare_dns_records", label: "by_zone_id", scope: &Cloudflare.Scopes[1], parent: "data.cloudflare_zones.all", only: []string{"example.com"}, exclude: []string{"z2"}}}))
+	if !strings.Contains(hcl, `o.id => o.id if (contains(["example.com"], o.id) || contains(["example.com"], try(o.name, ""))) && !contains(["z2"], o.id) }`) {
+		t.Errorf("render:\n%s", hcl)
+	}
+}
+
+// TestLimitScopeHidden: a scope given with no value is still read for data
+// sources that also take the other scope, only to drop the objects that
+// both scopes list; it reports nothing of its own.
+func TestLimitScopeHidden(t *testing.T) {
+	zones, accounts := &Cloudflare.Scopes[1], &Cloudflare.Scopes[0]
+	blocks := []block{
+		{dsType: "cloudflare_accounts", label: "all"},
+		{dsType: "cloudflare_zones", label: "all"},
+		{dsType: "cloudflare_rulesets", label: "by_account_id", scope: accounts, parent: "data.cloudflare_accounts.all", listings: []listing{{resourceType: "cloudflare_ruleset", scope: accounts}}},
+		{dsType: "cloudflare_rulesets", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all", listings: []listing{{resourceType: "cloudflare_ruleset", scope: zones}}},
+		{dsType: "cloudflare_images", label: "by_account_id", scope: accounts, parent: "data.cloudflare_accounts.all", listings: []listing{{resourceType: "cloudflare_image", scope: accounts}}},
+	}
+	got, skipped := limitScope(blocks, map[string][]string{"account_id": {}})
+	var addrs []string
+	for _, b := range got {
+		addrs = append(addrs, fmt.Sprintf("%s hidden=%v", b.addr(), b.hidden))
+	}
+	want := "data.cloudflare_accounts.all hidden=false data.cloudflare_zones.all hidden=false data.cloudflare_rulesets.by_account_id hidden=true data.cloudflare_rulesets.by_zone_id hidden=false"
+	if strings.Join(addrs, " ") != want {
+		t.Errorf("blocks:\n%s", strings.Join(addrs, "\n"))
+	}
+	if len(skipped) != 1 || skipped[0].Type != "cloudflare_image" {
+		t.Errorf("skipped %v", skipped)
+	}
+
+	res := func(id, arg string, hidden bool) scoped {
+		r := scoped{id: id, scopeArg: arg, hidden: hidden}
+		r.res.Type = "cloudflare_ruleset"
+		r.res.Identity = map[string]any{"id": id, arg: "x"}
+		return r
+	}
+	out := collapse([]scoped{res("acct", "account_id", true), res("acct", "zone_id", false), res("zoned", "zone_id", false)})
+	if len(out) != 1 || out[0].Identity["id"] != "zoned" {
+		t.Errorf("collapse %v", out)
+	}
+}

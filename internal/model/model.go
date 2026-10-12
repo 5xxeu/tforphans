@@ -23,6 +23,9 @@ type Resource struct {
 	AltIdentity map[string]map[string]any `json:"-"`
 	Identity    map[string]any            `json:"identity"`
 	DisplayName string                    `json:"display_name"`
+	// ScopeName says for people where the object lives: "zone example.com",
+	// "project my-project".
+	ScopeName string `json:"scope,omitempty"`
 	// ImportID is an optional legacy import ID. When set, generated import
 	// blocks use `id` instead of `identity`.
 	ImportID string `json:"import_id"`

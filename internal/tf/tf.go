@@ -87,8 +87,12 @@ func laterOverrides(dir, name string) []string {
 	var out []string
 	for _, e := range entries {
 		n := e.Name()
-		base := strings.TrimSuffix(strings.TrimSuffix(n, ".json"), ".tf")
-		if e.IsDir() || IgnoredFile(n) || base == n || strings.HasPrefix(n, "zz_tforphans_") || !(base == "override" || strings.HasSuffix(base, "_override")) {
+		// Only .tf and .tf.json files are configuration.
+		base, ok := strings.CutSuffix(n, ".tf.json")
+		if !ok {
+			base, ok = strings.CutSuffix(n, ".tf")
+		}
+		if !ok || e.IsDir() || IgnoredFile(n) || strings.HasPrefix(n, "zz_tforphans_") || !(base == "override" || strings.HasSuffix(base, "_override")) {
 			continue
 		}
 		if n > name {
@@ -109,6 +113,30 @@ func cmdError(args []string, stderr []byte, err error) error {
 // StatePull returns the raw state of r.Workspace.
 func (r Runner) StatePull(ctx context.Context) ([]byte, error) {
 	args := []string{"state", "pull", "-no-color"}
+	out, stderr, err := r.run(ctx, args...)
+	if err != nil {
+		return nil, cmdError(args, stderr, err)
+	}
+	return out, nil
+}
+
+// RefreshedState returns `terraform show -json` of a refresh-only plan: the
+// state as the providers see it now, with resource identities that the
+// stored state may lack. Nothing is written to the stored state and no lock
+// is taken; the plan file, which holds the state's values, lives in a
+// private temporary directory that is removed afterwards.
+func (r Runner) RefreshedState(ctx context.Context) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "tforphans-refresh-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	planFile := filepath.Join(dir, "refresh.tfplan")
+	args := []string{"plan", "-refresh-only", "-lock=false", "-input=false", "-no-color", "-out=" + planFile}
+	if _, stderr, err := r.run(ctx, args...); err != nil {
+		return nil, cmdError(args, stderr, err)
+	}
+	args = []string{"show", "-json", "-no-color", planFile}
 	out, stderr, err := r.run(ctx, args...)
 	if err != nil {
 		return nil, cmdError(args, stderr, err)
