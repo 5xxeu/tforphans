@@ -107,6 +107,9 @@ func cmdError(args []string, stderr []byte, err error) error {
 	if msg == "" {
 		return fmt.Errorf("terraform %s: %w", strings.Join(args, " "), err)
 	}
+	if strings.Contains(msg, "Unsupported Terraform Core version") {
+		msg += "\n(the root's required_version rejects this terraform: use a version it allows, or pass -ignore-required-version to override it for this run only)"
+	}
 	return fmt.Errorf("terraform %s: %w\n%s", strings.Join(args, " "), err, msg)
 }
 

@@ -77,8 +77,14 @@ be created elsewhere. Whatever matches nothing is reported.
 Binaries for Linux, macOS and Windows are on the
 [releases page](https://github.com/5xxeu/tforphans/releases), with
 checksums, an SBOM and a build provenance attestation
-(`gh attestation verify tforphans_*.tar.gz -R 5xxeu/tforphans`). Or build
-it (Go 1.26 or newer):
+(`gh attestation verify tforphans_*.tar.gz -R 5xxeu/tforphans`). With
+Homebrew (macOS, Linux; from 0.1.1):
+
+```sh
+brew install 5xxeu/tap/tforphans
+```
+
+Or build it (Go 1.26 or newer):
 
 ```sh
 go install github.com/5xxeu/tforphans@latest
@@ -416,6 +422,13 @@ Terraform before 1.16 generates resources without their `provider` and
 accepts `provider` in an import block only while the configuration is still
 to be generated: after `-generate-config-out`, move the `provider` line of
 each import block into its generated resource before applying.
+
+Generated configuration holds what the provider reads back from the API.
+Some resources need more than that: write-only or secret arguments
+(passwords, API tokens), content the API does not return (the code of a
+`cloudflare_workers_script`, files uploaded once), or arguments that only
+shape creation. `terraform plan` after the import shows them as changes or
+missing values; fill them in by hand before applying.
 
 `adopt` exits 0 whether or not it found anything (1 on errors, and with
 `-strict` on incomplete coverage); the plain command is the one for CI
@@ -790,7 +803,10 @@ CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, the unit tests with
 the race detector, golangci-lint, govulncheck and the integration tests
 against Terraform 1.15 and 1.16. A `v*` tag builds the release with
 GoReleaser (`.goreleaser.yaml`) as a draft, with checksums, SBOMs and a
-build provenance attestation.
+build provenance attestation, and pushes the Homebrew cask to
+`5xxeu/homebrew-tap` (secret `HOMEBREW_TAP_TOKEN`: a fine-grained token
+with contents write on that repository only). The cask points at the
+release files, so publish the draft soon after.
 
 The integration test uses a fake provider (things are files in a temporary
 directory) that implements list resources and resource identity, and runs

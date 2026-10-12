@@ -3,6 +3,7 @@ package tf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -199,6 +200,13 @@ func TestParseQueryStreamUnfinished(t *testing.T) {
 {"list_complete":{"address":"list.fake_zoned.z","resource_type":"fake_zoned","total":100},"type":"list_complete"}`
 	if res, _, _ := ParseQueryStream([]byte(limitOnly), "root", noKeys, func(string) int { return 100 }); len(res.Failed) != 1 || res.explained() {
 		t.Errorf("limit only: failed=%v explained=%v", res.Failed, res.explained())
+	}
+	// Terraform's default limit gets a hint where to raise it.
+	if res, _, _ := ParseQueryStream([]byte(limitOnly), "root", noKeys, func(string) int { return 100 }); len(res.Failed) != 1 || !strings.Contains(res.Failed[0].Message, "add limit = N to the block") {
+		t.Errorf("default limit: %+v", res.Failed)
+	}
+	if res, _, _ := ParseQueryStream([]byte(strings.ReplaceAll(limitOnly, `"total":100`, `"total":50`)), "root", noKeys, func(string) int { return 50 }); len(res.Failed) != 1 || !strings.Contains(res.Failed[0].Message, "raise limit in the list block") {
+		t.Errorf("own limit: %+v", res.Failed)
 	}
 	if res, _, _ := ParseQueryStream([]byte(stream), "root", noKeys, func(string) int { return 100 }); !res.explained() {
 		t.Error("a block with its own error explains a failed run")
@@ -597,5 +605,12 @@ func TestMajorMinor(t *testing.T) {
 		if _, _, ok := majorMinor(v); ok {
 			t.Errorf("%q read as a version", v)
 		}
+	}
+}
+
+func TestCmdErrorRequiredVersion(t *testing.T) {
+	err := cmdError([]string{"state", "pull"}, []byte("Error: Unsupported Terraform Core version\n\n  on main.tf line 2"), errors.New("exit status 1"))
+	if !strings.Contains(err.Error(), "-ignore-required-version") {
+		t.Errorf("%v", err)
 	}
 }
