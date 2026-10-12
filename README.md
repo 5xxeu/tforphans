@@ -177,12 +177,15 @@ than they are (a state file of its own counts as proof of management):
 `plugin`, `terraform`, `init`, `refresh`, `allow-unpinned`, `allow-http`,
 `include-attrs`, `o`, `state`, `proxmox-cluster-states`,
 `plugin-cluster-states` and `allow-incomplete` are accepted only from a
-file given with `-config`. The `plan:` line names the config file read. These limits are no
-sandbox: like the repository itself, whose roots, states and
-`.tforphans-ignore` decide the result anyway, the file can still choose
-which roots and `-state-roots` are read. Run tforphans only in
-repositories you trust as much as their Terraform states, or pass
-`-no-config`.
+file given with `-config`. Its `roots`, `state-roots` and `ignore` must
+stay within the current directory (symbolic links resolved): no `..`,
+absolute paths or `~/` leading out of it. The `plan:` line names the
+config file read. These limits are no sandbox: like the repository itself,
+whose roots, states and `.tforphans-ignore` decide the result anyway, the
+file can still choose which of its roots and `-state-roots` are read. Run
+tforphans only in repositories you trust as much as their Terraform
+states, or pass `-no-config`. A file given with `-config` may point
+anywhere.
 
 ### Resources in modules
 

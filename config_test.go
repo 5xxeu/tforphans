@@ -17,8 +17,8 @@ func TestConfig(t *testing.T) {
 	conf := `
 roots: [infra]
 state-roots:
-  - ../teams
-  - /abs/tree
+  - teams
+  - ./org/../tree
 scan: cloudflare
 scan-scope: [state]
 ignore-preset: [cloudflare-system]
@@ -34,7 +34,7 @@ limit: 5
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.roots, []string{"infra"}) || !slices.Equal(o.stateRoots, []string{"../teams", "/abs/tree"}) ||
+	if !slices.Equal(o.roots, []string{"infra"}) || !slices.Equal(o.stateRoots, []string{"teams", "./org/../tree"}) ||
 		!slices.Equal(o.scans, []string{"cloudflare"}) || !o.scopeState || !o.strict || o.format != "summary" || o.limit != 5 ||
 		!o.exclude.Match("cloudflare_api_token") || !o.exclude.Match("cloudflare_account_member") || o.configFile != defaultConfigFile {
 		t.Errorf("from the file: %+v", o)
@@ -57,12 +57,12 @@ limit: 5
 	// Another file: its relative paths are relative to it.
 	sub := filepath.Join(dir, "audits")
 	os.Mkdir(sub, 0o755)
-	os.WriteFile(filepath.Join(sub, "cf.yaml"), []byte("roots: [../infra]\nstate-roots: [teams]\nplugin: ./list.sh\nignore: ignore.txt\n"), 0o644)
+	os.WriteFile(filepath.Join(sub, "cf.yaml"), []byte("roots: [../infra]\nstate-roots: [teams, /abs/tree]\nplugin: ./list.sh\nignore: ignore.txt\n"), 0o644)
 	o, err = parseFlags([]string{"-config", "audits/cf.yaml"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.roots, []string{filepath.Join(dir, "infra")}) || !slices.Equal(o.stateRoots, []string{filepath.Join(sub, "teams")}) ||
+	if !slices.Equal(o.roots, []string{filepath.Join(dir, "infra")}) || !slices.Equal(o.stateRoots, []string{filepath.Join(sub, "teams"), "/abs/tree"}) ||
 		o.ignorePath != filepath.Join(sub, "ignore.txt") || !slices.Equal(o.plugins, []string{"./list.sh"}) {
 		t.Errorf("-config elsewhere: %+v", o)
 	}
@@ -87,10 +87,19 @@ func TestConfigRejected(t *testing.T) {
 		"scan: {cloudflare: true}\n":            "want a value",
 		"limit: lots\n":                         "limit: parse error",
 		"scan: [cloudflare\n":                   "yaml",
+		"state-roots: [../teams]\n":             "outside the current directory",
+		"state-roots: [/abs/tree]\n":            "outside the current directory",
+		"roots: [~/infra]\n":                    "outside the current directory",
+		"ignore: ../ignore.txt\n":               "outside the current directory",
+		"state-roots: [out/inner]\n":            "outside the current directory",
 	} {
 		dir := t.TempDir()
 		t.Chdir(dir)
 		os.WriteFile(defaultConfigFile, []byte(conf), 0o644)
+		// A link out of the directory (a cloned repository may have one).
+		if err := os.Symlink(t.TempDir(), "out"); err != nil && strings.Contains(conf, "out/") {
+			continue // no symbolic links here (Windows without the right)
+		}
 		if _, err := parseFlags([]string{"adopt"}, io.Discard); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v, want %q", conf, err, want)
 		}

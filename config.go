@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,7 +69,11 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 		if key == "roots" {
 			if len(o.roots) == 0 {
 				for _, v := range vals {
-					o.roots = append(o.roots, configPath(dir, v))
+					p := configPath(dir, v)
+					if err := inside(p, explicit); err != nil {
+						return fmt.Errorf("%s: roots: %w", path, err)
+					}
+					o.roots = append(o.roots, p)
 				}
 			}
 			continue
@@ -90,11 +95,56 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 		for _, v := range vals {
 			if slices.Contains(configPathKeys, key) && !strings.Contains(v, "://") && v != "-" && (key != "terraform" || strings.ContainsRune(v, '/')) {
 				v = configPath(dir, v)
+				if err := inside(v, explicit); err != nil {
+					return fmt.Errorf("%s: %s: %w", path, key, err)
+				}
 			}
 			if err := fs.Set(key, v); err != nil {
 				return fmt.Errorf("%s: %s: %w", path, key, err)
 			}
 		}
+	}
+	return nil
+}
+
+// inside keeps the paths of a config file read on its own within the
+// current directory, symbolic links resolved: the file comes with the
+// repository and may choose among its roots, not reach other directories
+// (another checkout's states, a home directory). A file given with
+// -config may point anywhere.
+func inside(p string, explicit bool) error {
+	if explicit {
+		return nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return err
+	}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	// A path that does not exist yet: resolve its longest existing part,
+	// which may be a link out.
+	for rest := ""; ; {
+		real, err := filepath.EvalSymlinks(abs)
+		if err == nil {
+			abs = filepath.Join(real, rest)
+			break
+		}
+		parent := filepath.Dir(abs)
+		if !errors.Is(err, fs.ErrNotExist) || parent == abs {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		rest = filepath.Join(filepath.Base(abs), rest)
+		abs = parent
+	}
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%s is outside the current directory; only a file given with -config may point there", p)
 	}
 	return nil
 }
