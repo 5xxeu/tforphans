@@ -266,11 +266,16 @@ func TestBuildCoverage(t *testing.T) {
 		{Type: "aliased", Reason: "provider p is configured only with aliases", Root: "staging"},
 		{Type: "gone", Reason: "no data source", Excluded: true},
 		{Type: "twin", Reason: "listed through google", Excluded: true},
+		{Type: "net", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
+		{Type: "net2", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
 	}
 	checks := []tf.Check{
 		{Type: "rec", Scope: "zone a"}, {Type: "rec", Scope: "zone b"}, {Type: "rec", Scope: "zone d"},
 		{Type: "rule", Scope: "zone a"}, {Type: "none"},
 		{Type: "empty", Root: "prod"}, {Type: "aliased", Root: "prod"}, {Type: "twin", Root: "prod"},
+		// google lists another project than the aliased google-beta; the
+		// user's block with google-beta.other covers it.
+		{Type: "net", Root: "prod", Provider: "google"}, {Type: "net2", Root: "prod", Provider: "google-beta"},
 	}
 	got := BuildCoverage(counts, checks, skipped, failed)
 	var lines []string
@@ -283,6 +288,9 @@ func TestBuildCoverage(t *testing.T) {
 		"aliased/root staging incomplete [skipped: provider p is configured only with aliases] 0/0/0/0",
 		"empty/ complete [] 0/0/0/0",
 		"gone/ skipped [no data source] 0/0/0/0",
+		"net/ complete [] 0/0/0/0",
+		"net/root prod incomplete [skipped: provider google-beta is configured only with aliases] 0/0/0/0",
+		"net2/ complete [] 0/0/0/0",
 		"none/ complete [] 0/0/0/0",
 		"rec/zone a complete [] 2/2/0/0",
 		"rec/zone b complete [] 1/0/0/1",

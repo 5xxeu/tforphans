@@ -74,14 +74,20 @@ type Skip struct {
 	// another provider, a scope not asked for) or one that has no listing
 	// at all; any other skip is a check that was needed and not done.
 	Excluded bool `json:"excluded,omitempty"`
+	// Provider is the local name of the provider the type was skipped
+	// for: a listing through another provider (google instead of an
+	// aliased google-beta) may look at another project.
+	Provider string `json:"provider,omitempty"`
 }
 
 // Check is a listing that ran to the end: a type in a root (or in a scan
-// scope such as one zone), with or without results.
+// scope such as one zone), with or without results, and the local name of
+// the provider that listed it.
 type Check struct {
-	Type  string
-	Scope string
-	Root  string
+	Type     string
+	Scope    string
+	Root     string
+	Provider string
 }
 
 type Plan struct {
@@ -166,7 +172,7 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 					continue
 				}
-				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + local + " is configured only with aliases"})
+				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + local + " is configured only with aliases", Provider: local})
 			}
 			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases (%s.%s), so its %d list-capable types were not queried with the empty default configuration; add your own list blocks with provider = %s.<alias> to a .tfquery.hcl file in the root",
 				local, local, strings.Join(aliases, ", "+local+"."), len(types), local))
@@ -179,7 +185,7 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 			}
 			q, reason := planType(t, local, ps.ListResourceSchemas[t], opt.Args)
 			if reason != "" {
-				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason})
+				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: local})
 				continue
 			}
 			q.Source, q.Temporary = addr, temporary

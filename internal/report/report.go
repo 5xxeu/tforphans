@@ -274,8 +274,9 @@ const GapPrefix = "skipped: "
 // that ran (checks), the types skipped and the listings that failed.
 // Every scope a check read gets a row, also one without objects. A type
 // skipped where a check was needed (a required argument, a provider with
-// only aliases) is incomplete unless the same root listed it some other
-// way: another root may look at another account. A type left out on
+// only aliases) is incomplete unless the same root listed it through the
+// same provider (the user's own list block with an alias of it): another
+// root or provider may look at another account. A type left out on
 // purpose (excluded) is skipped, and only when nothing listed it. failed
 // must be classified.
 func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped []tf.Skip, failed []tf.Failure) []Coverage {
@@ -292,9 +293,9 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 	for k, c := range counts {
 		entry(k[0], k[1]).TypeCount = *c
 	}
-	checked := map[[2]string]bool{} // type, root
+	checked := map[[3]string]bool{} // type, root, provider
 	for _, c := range checks {
-		checked[[2]string{c.Type, c.Root}] = true
+		checked[[3]string{c.Type, c.Root, c.Provider}] = true
 		if c.Scope != "" {
 			entry(c.Type, c.Scope)
 		}
@@ -328,7 +329,7 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 	isSkipped := map[string]bool{}
 	for _, sk := range skipped {
 		if !sk.Excluded {
-			if checked[[2]string{sk.Type, sk.Root}] {
+			if checked[[3]string{sk.Type, sk.Root, sk.Provider}] {
 				continue
 			}
 			scope := ""

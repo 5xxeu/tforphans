@@ -136,9 +136,26 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
 	// What finished counts, not what was planned: a block with
-	// for_each = {} checks nothing.
-	for _, t := range res.Done {
-		sum.Checks = append(sum.Checks, tf.Check{Type: t, Root: root})
+	// for_each = {} checks nothing. With several roots each one is a scope
+	// of its own, so that a root without objects keeps its row.
+	rootScope := ""
+	if len(o.roots) > 1 {
+		rootScope = "root " + root
+	}
+	for _, d := range res.Done {
+		block, _, _ := strings.Cut(d.Address, "[")
+		local := ""
+		if q, ok := byAddress[block]; ok {
+			local = q.Provider
+		} else if local, _, _ = strings.Cut(userLists[block].Provider, "."); local == "" {
+			local, _, _ = strings.Cut(d.Type, "_")
+		}
+		sum.Checks = append(sum.Checks, tf.Check{Type: d.Type, Scope: rootScope, Root: root, Provider: local})
+	}
+	for i := range res.Failed {
+		if res.Failed[i].Scope == "" {
+			res.Failed[i].Scope = rootScope
+		}
 	}
 	sum.Ran += res.Started
 	sum.Failed = append(sum.Failed, res.Failed...)

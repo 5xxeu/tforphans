@@ -101,13 +101,19 @@ func OneLine(msg string, max int) string {
 	return msg
 }
 
+// Listing is a list block instance and the resource type it lists.
+type Listing struct {
+	Address string
+	Type    string
+}
+
 type QueryResult struct {
 	Found    []model.Resource
 	Failed   []Failure
 	Started  int // list block instances that started
 	Complete int // list block instances that finished
-	// Done are the resource types of the instances that finished.
-	Done []string
+	// Done are the instances that finished.
+	Done []Listing
 	// Unfinished are the list block instances that started but neither
 	// finished nor reported an error of their own.
 	Unfinished []string
@@ -274,7 +280,7 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 			res.Complete++
 			c := m.ListComplete
 			finished[c.Address] = true
-			res.Done = append(res.Done, c.ResourceType)
+			res.Done = append(res.Done, Listing{Address: c.Address, Type: c.ResourceType})
 			block, _, _ := strings.Cut(c.Address, "[")
 			switch limit := limitFor(block); {
 			case limit <= 0 && c.Total > 0:
