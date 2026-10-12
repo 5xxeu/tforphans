@@ -262,4 +262,14 @@ func TestTerragruntUnits(t *testing.T) {
 	if err != nil || len(got) != 2 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") || !strings.Contains(unread[0].Reason, "could not be parsed") {
 		t.Errorf("broken unit: %v %v %v", got, unread, err)
 	}
+	// Also in a directory that is a terraform root as well (left over from
+	// before the move to Terragrunt).
+	os.WriteFile(filepath.Join(dir, "broken", "terraform.tfstate"), []byte("{}"), 0o644)
+	got, unread, err = FindRoots(dir, true)
+	if err != nil || len(got) != 2 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") {
+		t.Errorf("broken unit in a terraform root: %v %v %v", got, unread, err)
+	}
+	if got, unread, _ := FindRoots(dir, false); len(got) != 1 || len(unread) != 0 {
+		t.Errorf("without -terragrunt it is a terraform root: %v %v", got, unread)
+	}
 }

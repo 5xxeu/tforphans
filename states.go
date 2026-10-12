@@ -150,7 +150,14 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 	}
 	// A Terragrunt unit: terragrunt renders the backend and initializes
 	// on its own. One state (units do not use workspaces), never refreshed.
-	if unit, _ := tf.IsTerragruntUnit(dir); o.terragrunt && unit {
+	unit := false
+	if o.terragrunt {
+		var err error
+		if unit, err = tf.IsTerragruntUnit(dir); err != nil {
+			return nil, 0, err
+		}
+	}
+	if unit {
 		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir)
 		if err != nil {
 			return nil, 0, err

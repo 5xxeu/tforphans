@@ -62,11 +62,16 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 			}
 			return err
 		}
-		if !ok && units {
-			if ok, err = IsTerragruntUnit(path); err != nil {
+		if units {
+			// Checked even in a terraform root: a broken terragrunt.hcl
+			// there must not leave the old terraform state standing in for
+			// the unit's.
+			unit, err := IsTerragruntUnit(path)
+			if err != nil {
 				unread = append(unread, Unread{path, err.Error()})
 				return nil
 			}
+			ok = ok || unit
 		}
 		if ok {
 			roots = append(roots, path)
