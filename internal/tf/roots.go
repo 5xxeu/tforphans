@@ -41,7 +41,7 @@ import (
 // unread instead of failing the walk: a tree such as a home directory has
 // some, and a root there may manage what is found.
 func FindRoots(dir string, units bool) (roots []string, unread []Unread, err error) {
-	var maybe []string
+	var maybe, found []string // candidate parents, units
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
@@ -77,6 +77,9 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 				maybe = append(maybe, path)
 				return nil
 			}
+			if kind != TerragruntNone {
+				found = append(found, path)
+			}
 			ok = ok || kind != TerragruntNone
 		}
 		if ok {
@@ -84,15 +87,18 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 		}
 		return nil
 	})
-	// A terragrunt.hcl that may be a parent is one when roots lie below it;
+	// A terragrunt.hcl that may be a parent is one when units lie below it;
 	// otherwise it is a unit (its configuration may be all generated).
 	// Deepest first: whether a candidate is a parent depends on the ones
 	// below it (an absolute path below is always longer; "a" below "." is
 	// not, as written).
 	slices.SortFunc(maybe, func(a, b string) int { return len(absPath(b)) - len(absPath(a)) })
 	for _, m := range maybe {
-		if !slices.ContainsFunc(roots, func(r string) bool { return below(m, r) }) {
+		// Units below make a parent; terraform roots below (a tools
+		// directory inside a unit) do not.
+		if !slices.ContainsFunc(found, func(r string) bool { return below(m, r) }) {
 			roots = append(roots, m)
+			found = append(found, m)
 		}
 	}
 	sort.Strings(roots)

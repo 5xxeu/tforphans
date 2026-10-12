@@ -243,9 +243,12 @@ func TestTerragruntParentFromDot(t *testing.T) {
 		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
 		os.WriteFile(filepath.Join(dir, name), []byte(gen), 0o644)
 	}
+	// A terraform root inside a generated unit does not make it a parent.
+	os.MkdirAll(filepath.Join(dir, "x", "tools"), 0o755)
+	os.WriteFile(filepath.Join(dir, "x", "tools", "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644)
 	t.Chdir(dir)
 	got, unread, err := FindRoots(".", true)
-	want := []string{filepath.Join("live", "app"), filepath.Join("live", "db"), "x"}
+	want := []string{filepath.Join("live", "app"), filepath.Join("live", "db"), "x", filepath.Join("x", "tools")}
 	if err != nil || len(unread) != 0 || !reflect.DeepEqual(got, want) {
 		t.Errorf("%v %v %v", got, unread, err)
 	}

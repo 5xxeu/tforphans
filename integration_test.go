@@ -819,7 +819,7 @@ func TestIntegrationTerragrunt(t *testing.T) {
     if_exists = "overwrite"
   }
   config = {
-    path = "${get_parent_terragrunt_dir()}/state/${path_relative_to_include()}/terraform.tfstate"
+    path = "${get_parent_terragrunt_dir()}/../state/${path_relative_to_include()}/terraform.tfstate"
   }
 }
 `,
@@ -838,9 +838,13 @@ func TestIntegrationTerragrunt(t *testing.T) {
 	if out, err := apply.CombinedOutput(); err != nil {
 		t.Fatalf("terragrunt apply: %v\n%s", err, tail(string(out)))
 	}
-	code, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live, "-terragrunt")
-	if code != exitOK || !strings.Contains(stderr, "1 states read") {
+	// -strict: nothing unread, coverage complete; adopt writes.
+	code, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live, "-terragrunt", "-strict")
+	if code != exitOK || !strings.Contains(stderr, "1 states read") || strings.Contains(stderr, "not read") {
 		t.Errorf("exit %d\n%s", code, stderr)
+	}
+	if code, _, stderr := runTool("adopt", "-no-query", "-plugin", "true", "-state-roots", live, "-terragrunt"); code != exitOK || strings.Contains(stderr, "not writing") {
+		t.Errorf("adopt: exit %d\n%s", code, stderr)
 	}
 	// Without -terragrunt the unit is no root: nothing to read.
 	if _, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live); !strings.Contains(stderr, "0 states read") {
