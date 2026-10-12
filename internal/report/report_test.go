@@ -268,6 +268,7 @@ func TestBuildCoverage(t *testing.T) {
 		{Type: "twin", Reason: "listed through google", Excluded: true},
 		{Type: "net", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
 		{Type: "net2", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
+		{Type: "rs", Reason: "no zone was listed to read it in", Kind: "zone"},
 	}
 	checks := []tf.Check{
 		{Type: "rec", Scope: "zone a"}, {Type: "rec", Scope: "zone b"}, {Type: "rec", Scope: "zone d"},
@@ -276,6 +277,9 @@ func TestBuildCoverage(t *testing.T) {
 		// google lists another project than the aliased google-beta; the
 		// user's block with google-beta.other covers it.
 		{Type: "net", Root: "prod", Provider: "google"}, {Type: "net2", Root: "prod", Provider: "google-beta"},
+		// Accounts were read, zones were not: the account listing does not
+		// stand for the zones.
+		{Type: "rs", Scope: "account A", Kind: "account"},
 	}
 	got := BuildCoverage(counts, checks, skipped, failed)
 	var lines []string
@@ -296,6 +300,8 @@ func TestBuildCoverage(t *testing.T) {
 		"rec/zone b complete [] 1/0/0/1",
 		"rec/zone c incomplete [permission denied] 0/0/0/0",
 		"rec/zone d complete [] 0/0/0/0",
+		"rs/ incomplete [skipped: no zone was listed to read it in] 0/0/0/0",
+		"rs/account A complete [] 0/0/0/0",
 		"rule/zone a incomplete [truncated] 1/0/1/0",
 		"twin/ complete [] 0/0/0/0",
 	}

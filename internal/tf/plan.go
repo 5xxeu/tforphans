@@ -78,6 +78,9 @@ type Skip struct {
 	// for: a listing through another provider (google instead of an
 	// aliased google-beta) may look at another project.
 	Provider string `json:"provider,omitempty"`
+	// Kind is the kind of scan scope the type was skipped in (zone);
+	// a listing in another kind (account) does not cover it.
+	Kind string `json:"-"`
 }
 
 // Check is a listing that ran to the end: a type in a root (or in a scan
@@ -88,6 +91,7 @@ type Check struct {
 	Scope    string
 	Root     string
 	Provider string
+	Kind     string // scan scope kind (zone, account); "" when unscoped
 }
 
 type Plan struct {

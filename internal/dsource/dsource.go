@@ -315,7 +315,8 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			// No parent to read it in (no zone): nothing was listed, and
 			// an empty parent list may be a token that sees none.
 			if b.scope != nil && len(keys) == 0 {
-				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: fmt.Sprintf("no %s was listed to read it in (the credentials may see none)", strings.TrimSuffix(b.scope.Arg, "_id"))})
+				kind := strings.TrimSuffix(b.scope.Arg, "_id")
+				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: fmt.Sprintf("no %s was listed to read it in (the credentials may see none)", kind), Kind: kind})
 				continue
 			}
 			listed[l.resourceType] = true
@@ -325,7 +326,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 				continue
 			}
 			for _, k := range keys {
-				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType, Scope: scopeLabel(b.scope, k, names[b.parent][k])})
+				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType, Scope: scopeLabel(b.scope, k, names[b.parent][k]), Kind: strings.TrimSuffix(b.scope.Arg, "_id")})
 			}
 		}
 	}

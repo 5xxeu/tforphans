@@ -94,7 +94,7 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 		for _, v := range vals {
 			// Only state takes a URL or - (stdin); for the other keys
 			// "x://y" is a path like any other.
-			isPath := slices.Contains(configPathKeys, key) && (key != "terraform" || strings.ContainsRune(v, '/')) &&
+			isPath := slices.Contains(configPathKeys, key) && (key != "terraform" || strings.ContainsAny(v, "/"+string(filepath.Separator))) &&
 				(key != "state" || !strings.Contains(v, "://") && v != "-")
 			if isPath {
 				p, err := inside(configPath(dir, v), explicit)
