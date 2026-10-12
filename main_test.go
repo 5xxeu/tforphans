@@ -147,3 +147,16 @@ func TestDedupeKeepsAttributes(t *testing.T) {
 		}
 	}
 }
+
+// TestDedupeUnknownLocation: objects with an empty project from two roots
+// may be in two projects; they are not merged, nor are their attributes.
+func TestDedupeUnknownLocation(t *testing.T) {
+	id := map[string]any{"name": "node", "zone": "z1", "project": ""}
+	a := model.Resource{Type: "google_compute_instance", Identity: id, Source: "a", ListAddress: "list.google_compute_instance.mine"}
+	b := model.Resource{Type: "google_compute_instance", Identity: id, Source: "b", ListAddress: "list.google_compute_instance.tfo_google_google_compute_instance",
+		Attributes: map[string]any{"labels": map[string]any{"goog-gke-node": ""}}}
+	got := dedupe([]model.Resource{a, b})
+	if len(got) != 2 || got[0].Attributes != nil {
+		t.Errorf("got %+v", got)
+	}
+}

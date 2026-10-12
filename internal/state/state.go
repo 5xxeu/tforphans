@@ -465,6 +465,16 @@ var owners = map[string]owner{
 // value means unknown rather than a value to compare.
 var emptyIsUnknown = map[string]bool{"project": true, "account_id": true, "subscription_id": true, "region": true, "zone": true, "location": true}
 
+// UnknownLocation reports whether an identity has an empty location key.
+func UnknownLocation(identity map[string]any) bool {
+	for k := range emptyIsUnknown {
+		if v, ok := identity[k].(string); ok && v == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func matches(r model.Resource, in *Instance) (ok, verified bool) {
 	// Attribute names only loosely follow identity names (AWS identities
 	// carry account_id, which is not an attribute), so with the attribute

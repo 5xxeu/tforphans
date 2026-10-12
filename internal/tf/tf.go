@@ -53,7 +53,13 @@ func (r Runner) Exec(ctx context.Context, args ...string) ([]byte, []byte, error
 
 func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error) {
 	if r.AnyVersion {
-		path := filepath.Join(r.Dir, fmt.Sprintf("zz_tforphans_%d_version_override.tf", os.Getpid()))
+		name := fmt.Sprintf("zz_tforphans_%d_version_override.tf", os.Getpid())
+		// Override files apply in name order; one after ours could set
+		// required_version again.
+		if later := laterOverrides(r.Dir, name); len(later) > 0 {
+			return nil, nil, fmt.Errorf("-ignore-required-version: %s applies after tforphans' override file and may set required_version again; rename it or relax the constraint", strings.Join(later, ", "))
+		}
+		path := filepath.Join(r.Dir, name)
 		if err := writeTemp(path, []byte(versionOverride)); err != nil {
 			return nil, nil, err
 		}
@@ -72,6 +78,24 @@ func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+// laterOverrides returns the override files of dir whose names sort after
+// name, other than tforphans' own.
+func laterOverrides(dir, name string) []string {
+	entries, _ := os.ReadDir(dir)
+	var out []string
+	for _, e := range entries {
+		n := e.Name()
+		base := strings.TrimSuffix(strings.TrimSuffix(n, ".json"), ".tf")
+		if e.IsDir() || base == n || strings.HasPrefix(n, "zz_tforphans_") || !(base == "override" || strings.HasSuffix(base, "_override")) {
+			continue
+		}
+		if n > name {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func cmdError(args []string, stderr []byte, err error) error {

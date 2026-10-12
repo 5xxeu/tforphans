@@ -57,7 +57,8 @@ match. Old state often lacks the account or subscription (AWS `account_id`
 is no attribute), and so can an identity, so such a match cannot tell an
 IAM role `ci` in one account from a role `ci` in another. An empty value in
 a listed identity (google lists some objects with `project = ""`) is
-unknown too. These matches are counted and reported as unverified (an error
+unknown too, and such objects from two roots are reported separately, since
+they may live in two projects. These matches are counted and reported as unverified (an error
 with `-strict`), and a note says how many state instances have no identity;
 `terraform apply -refresh-only` with a current provider records identities
 in state and makes them verifiable (it writes the state, so it needs write
@@ -199,7 +200,8 @@ A root pinned to an older Terraform (`required_version = "= 1.10.5"`)
 refuses `terraform query`; `-ignore-required-version` lifts the root
 module's constraint for each command with a temporary
 `zz_tforphans_<pid>_version_override.tf` (child modules' constraints still
-apply).
+apply, and an override file of yours that sorts after it is an error, since
+it could set the constraint again).
 
 For anything more specific (provider aliases, other accounts, filters), put
 your own `list` blocks in a `*.tfquery.hcl` file in the root module. They run

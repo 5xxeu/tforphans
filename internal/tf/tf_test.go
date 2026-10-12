@@ -499,3 +499,14 @@ provider "awsx" {
 		t.Errorf("override ignored: %q", got)
 	}
 }
+
+func TestLaterOverrides(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"main.tf", "aa_override.tf", "zzz_override.tf", "override.tf.json", "zz_tforphans_1_override.tf"} {
+		os.WriteFile(filepath.Join(dir, n), nil, 0o644)
+	}
+	got := laterOverrides(dir, "zz_tforphans_9_version_override.tf")
+	if !slices.Equal(got, []string{"zzz_override.tf"}) {
+		t.Errorf("got %v", got)
+	}
+}
