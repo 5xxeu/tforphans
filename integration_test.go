@@ -575,8 +575,9 @@ exec %q "$@"
 		t.Fatal(err)
 	}
 	for _, o := range out.Orphans {
-		// id was asked for, name is what the ignore rule looks at.
-		if o.Provider == nil || o.Attributes["id"] != o.DisplayName || o.Attributes["name"] != o.DisplayName || len(o.Attributes) != 2 {
+		// id was asked for; name, which only the ignore rule looks at, is
+		// not printed.
+		if o.Provider == nil || o.Attributes["id"] != o.DisplayName || len(o.Attributes) != 1 {
 			t.Errorf("orphan %+v", o)
 		}
 	}

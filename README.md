@@ -229,7 +229,7 @@ characters. The name glob is tried against the display name, the import ID
 and every identity value. Each `KEY=GLOB` must match as well: an identity
 key (`project=prod-*`), or `attr.` and a path into the resource's
 attributes (`attr.labels.goog-gke-node=*`), which tforphans then fetches for
-that rule's types (`include_resource`, slower):
+that rule's types (`include_resource`, slower) but does not print:
 
 ```
 # AWS-managed service roles
@@ -284,7 +284,8 @@ checks.
 per type (`summary.by_type`), skipped types, failed queries with their
 `category`. Every orphan has the same keys. `-include-attrs
 labels,creation_timestamp` adds those attributes to each orphan (to see how
-old an object is, or who owns it). `-format summary` prints only a table of
+old an object is, or who owns it); attributes can hold secrets, so ask only
+for what you need. `-format summary` prints only a table of
 counts per type, types with unmanaged objects first.
 
 ## Providers without list support: plural data sources

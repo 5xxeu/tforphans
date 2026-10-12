@@ -412,6 +412,25 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		return orphans[i].DisplayName < orphans[j].DisplayName
 	})
 	sum.Live, sum.Orphans = len(live), len(orphans)
+	// Attributes fetched for ignore rules are not printed: an ignore file
+	// from someone else's repository could otherwise pull secrets
+	// (attr.password=*) into the JSON output.
+	for i := range orphans {
+		r := &orphans[i]
+		if r.Attributes == nil {
+			continue
+		}
+		keep := map[string]any{}
+		for _, a := range o.includeAttrs {
+			if v, ok := r.Attributes[a]; ok {
+				keep[a] = v
+			}
+		}
+		r.Attributes = nil
+		if len(keep) > 0 {
+			r.Attributes = keep
+		}
+	}
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
