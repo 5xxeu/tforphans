@@ -58,8 +58,9 @@ is no attribute), and so can an identity, so such a match cannot tell an
 IAM role `ci` in one account from a role `ci` in another. An empty value in
 a listed identity (google lists some objects with `project = ""`) is
 unknown too, and such objects from two roots are reported separately, since
-they may live in two projects. These matches are counted and reported as unverified (an error
-with `-strict`), and a note says how many state instances have no identity;
+they may live in two projects. These matches are reported as uncertain,
+not as managed (an error with `-strict`), and a note says how many state
+instances have no identity;
 `-refresh` reads each root's state through `terraform plan -refresh-only`
 instead of `state pull`: the providers return identities for old state,
 nothing is written and no lock is taken (the plan file lives in a private
@@ -73,12 +74,30 @@ be created elsewhere. Whatever matches nothing is reported.
 
 ## Install
 
+Binaries for Linux, macOS and Windows are on the
+[releases page](https://github.com/5xxeu/tforphans/releases), with
+checksums, an SBOM and a build provenance attestation
+(`gh attestation verify tforphans_*.tar.gz -R 5xxeu/tforphans`). Or build
+it (Go 1.26 or newer):
+
 ```sh
 go install github.com/5xxeu/tforphans@latest
 ```
 
-Requires Terraform 1.14 or newer in `PATH` (or `-terraform /path/to/bin`).
-OpenTofu has no `query` command yet; with it only `-no-query` mode works.
+Terraform in `PATH` (or `-terraform /path/to/bin`). What needs which
+version:
+
+| What | Terraform |
+|---|---|
+| Listing with `terraform query` (the default) | 1.14 or newer; tforphans checks and says so |
+| Matching by resource identity | state written by 1.12 or newer with a provider that records identities; older state is matched by attributes (less certain, see `-refresh`) |
+| `adopt` import blocks with `identity` | 1.12; with `id` 1.5 |
+| `-no-query` with `-state`, `-state-roots`, `-scan`, `-plugin` | no query needed; tested only with 1.15 and 1.16 so far |
+
+The tests run against 1.15 and 1.16. Roots that are queried must allow
+1.14 in their `required_version` (`-ignore-required-version` overrides it
+for the run); roots whose state is only read need not. OpenTofu has no
+`query` command yet; with it only `-no-query` mode can work (not tested).
 
 ## Usage
 
@@ -92,8 +111,9 @@ SCOPE                    TYPE           NAME             IDENTITY               
 account_id 123456789012  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1   .
 account_id 123456789012  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...    .
 
-512 live, 498 managed, 12 ignored, 2 unmanaged; 1 states read, 187 resource types queried, 58 skipped (-v to list)
-managed objects matched by identity: 470, by attributes: 28, unverified: 0
+512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged; 1 states read, 187 resource types queried, 58 skipped (-v to list)
+managed objects matched by identity: 470, by attributes: 28
+coverage: complete
 ```
 
 (Illustrative output.)
@@ -102,8 +122,11 @@ Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
 A run that queried no resource type at all is an error too, since it could
 not have found anything (for example a provider version without list
 resources; the error names such providers). With `-strict`, incomplete
-coverage (a failed list query or a plugin error) is also an error, which
-suits CI.
+coverage (a failed list query, a plugin error, a type skipped for want of
+an argument) is also an error, which suits CI. A root given as an argument
+that is not initialized and fails for it is not queried and its state not
+read: a warning names it, coverage is incomplete, and the other roots still
+run (`-init` runs `terraform init` there first).
 
 Queries that did not list everything are summed up by cause: crashed,
 missing argument, permission denied, truncated, not found, request rejected
@@ -111,11 +134,82 @@ missing argument, permission denied, truncated, not found, request rejected
 not enabled, other. Messages are cut to one line; `-v` prints each failed
 query.
 
-The second line says how certain "managed" is: an object matched by the
-resource identity in state is that object; one matched by attributes may
-be an equal ID in another account when state cannot say (see below), and
-such matches are counted as unverified. `-v` lists the unverified ones with
-the state address they matched.
+Every live object ends up in one of four groups: **managed** (matched to
+state, its account or cluster confirmed), **uncertain** (matched to state,
+but state cannot say whether the instance is in the same account or
+cluster; see below), **ignored** and **unmanaged**. Uncertain objects are
+not counted as managed and get no import block; the text output lists them
+after the unmanaged ones with the state address they matched. The second
+line says how the managed objects were matched: by the resource identity in
+state (exact) or by attributes.
+
+The last line says whether "nothing unmanaged" can be trusted: `coverage:
+complete`, or `coverage: INCOMPLETE` with what was not checked (failed or
+truncated listings, unread states, plugin errors, and types that needed a
+check and were skipped in a root: a list resource with a required argument
+not given with `-arg`, a provider configured only with aliases). A type
+left out on purpose (`-exclude-types`, opt-in types, google-beta listed
+through google, a scope not asked for) or one with no list resource or
+data source at all does not make coverage incomplete; the line then reads
+`coverage: complete for what can be listed; not checked: ...`, and `-v`
+lists those types. A type listed in one root does not cover a root where
+it was skipped, since the roots may look at different accounts. Before the slow part,
+a `plan:` line says what the run checks: which roots are queried, how many
+states are read, what is scanned and with which scope.
+
+### Config file
+
+Flags can live in `.tforphans.yaml` in the current directory, so that a run
+needs no long command line. Keys are flag names without the dash; a list
+repeats a flag; `roots` lists the root modules:
+
+```yaml
+roots: [.]
+state-roots:
+  - stacks
+  - teams/platform
+scan: [cloudflare]
+scan-scope: [state]
+ignore-preset: [cloudflare-system]
+exclude-types: [cloudflare_api_token, cloudflare_account_member]
+strict: true
+format: summary
+```
+
+The command line wins: a flag given there replaces the file's value, lists
+included (`-scan proxmox` replaces `scan: [cloudflare]`). Relative paths are
+relative to the file, `~/` is the home directory. `-config FILE` reads
+another file (one per audit: `cloudflare.yaml`, `aws.yaml`), which may
+also point outside the current directory (`state-roots:
+[~/work/infrastructure]`); `-no-config` ignores `.tforphans.yaml`.
+Credentials stay in the environment, as without a file.
+
+Config files live in repositories and change in pull requests that a CI
+job may then run, so what a file may set depends on what it could do:
+
+| Keys | `.tforphans.yaml` | `-config FILE` |
+|---|---|---|
+| `plugin`, `terraform`, `allow-http`, `o`, `state` URLs | no | no |
+| `init`, `refresh`, `allow-unpinned`, `include-attrs`, `state` files, `proxmox-cluster-states`, `plugin-cluster-states`, `allow-incomplete` | no | yes |
+| everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, ...) | yes | yes |
+
+The first row runs any command, sends credentials to an address of the
+file's choosing or overwrites any file: it belongs on the command line,
+where a change shows in the command itself. The second runs the roots'
+data sources or providers, prints attribute values, or makes results look
+more certain than they are (a state file of its own counts as proof of
+management): fine in a file you name, not in one that is read on its own
+and may come with someone else's repository.
+
+The paths of `.tforphans.yaml` (`roots`, `state-roots`, `ignore`) must
+exist and stay within the current directory, resolved as the system does
+(symbolic links included): no `..`, absolute paths or `~/` leading out of
+it. A file given with `-config` may point anywhere. The `plan:` line names
+the config file read. These limits are no sandbox: like the repository
+itself, whose roots, states and `.tforphans-ignore` decide the result
+anyway, the file can still choose which of its roots and `-state-roots` are
+read. Run tforphans only in repositories you trust as much as their
+Terraform states, or pass `-no-config`.
 
 ### Resources in modules
 
@@ -227,7 +321,9 @@ that configures a provider only with aliases (`provider "aws" { alias =
 "prod" }` and no block without an alias) gets no generated blocks for it,
 since the empty default configuration could reach another account through
 the environment; a note says so, and your own list blocks with `provider =
-aws.prod` cover it. A provider with no provider block at all is queried
+aws.prod` cover it. Until they do, its types count as not checked in that
+root (coverage incomplete, an error with `-strict`); `-exclude-types`
+leaves them out on purpose. A provider with no provider block at all is queried
 (credentials from the environment, as for any run).
 
 ### Narrowing the scan
@@ -308,21 +404,53 @@ root, so a block in any root with their provider configuration counts. With seve
 Narrow down what to adopt with `-types` or the ignore file, and review
 `generated.tf` before applying.
 
+The file starts with a comment saying how many states it was checked
+against, how many uncertain objects were left out and which types were not
+fully listed (objects of those types may be missing). Import blocks of
+scoped objects say where the object lives (`# in zone example.com`). When a
+state could not be read, `adopt` writes nothing: its objects would show as
+unmanaged and be imported a second time. Fix the access, or pass
+`-allow-incomplete`.
+
+Terraform before 1.16 generates resources without their `provider` and
+accepts `provider` in an import block only while the configuration is still
+to be generated: after `-generate-config-out`, move the `provider` line of
+each import block into its generated resource before applying.
+
 `adopt` exits 0 whether or not it found anything (1 on errors, and with
 `-strict` on incomplete coverage); the plain command is the one for CI
 checks.
 
-`-format json` prints the orphans together with the coverage summary: counts
-per type (`summary.by_type`) and per scope (`summary.by_scope`: a zone or
+`-format json` prints the orphans (`orphans`), the uncertain objects with
+the state address they matched (`uncertain`) and the summary: counts per
+type (`summary.by_type`) and per scope (`summary.by_scope`: a zone or
 account for `-scan cloudflare`, the project, account or subscription of
-list results), skipped types, failed queries with their `category`,
-unverified matches (`summary.unverified`). Each orphan has a `scope` such
-as `zone example.com` when it is known. Every orphan has the same keys. `-include-attrs
+list results), skipped types, failed queries with their `category` and
+`scope`, states not read (`summary.unread_states`) and whether the run
+checked everything (`summary.complete`). `summary.coverage` has one row per
+type and scope:
+
+```json
+{"type": "cloudflare_dns_record", "scope": "zone example.com", "status": "complete",
+ "live": 12, "managed": 10, "uncertain": 0, "ignored": 0, "orphans": 2}
+{"type": "cloudflare_dns_record", "scope": "zone example.org", "status": "incomplete",
+ "reasons": ["permission denied"], "live": 0, ...}
+```
+
+`status` is `complete`, `incomplete` (with the failure categories in
+`reasons`, or `skipped: <reason>` and a scope `root <dir>` for a type that
+needed a check there) or `skipped` (left out on purpose or cannot be
+listed; `reasons` says why). Every scope that was read has a row, also one
+without objects of the type. A row without `scope` stands for the type as
+a whole: a type listed without results, or a failure that concerns every
+scope. Only listings that ran count: a list block with `for_each = {}`
+checks nothing. Each orphan has a `scope`
+such as `zone example.com` when it is known. Every orphan has the same keys. `-include-attrs
 labels,creation_timestamp` adds those attributes to each orphan (to see how
 old an object is, or who owns it); attributes can hold secrets, so ask only
 for what you need. `-format summary` prints only tables of
-counts per type and per scope, those with unmanaged objects first, and the
-types not fully listed by cause.
+counts per type (with the coverage of each type) and per scope, those with
+unmanaged objects first, and the types not fully listed by cause.
 
 ## Providers without list support: plural data sources
 
@@ -404,7 +532,7 @@ Proxmox state does not record which cluster an object belongs to, and VM
 IDs repeat across clusters. A guest never matches state whose node
 (`node_name`, telmate's `target_node`) the scanned cluster does not have.
 A node it does have proves nothing, though: node names such as `pve1`
-repeat across clusters too. So all Proxmox matches are unverified (an error
+repeat across clusters too. So all Proxmox matches are uncertain (an error
 with `-strict`) unless you state that every state given belongs to the
 scanned cluster:
 
@@ -462,9 +590,15 @@ stack, everything that other stacks manage is reported too, so give all
 states with `-state-roots`, or limit the scan:
 
 ```sh
-tforphans -no-query -scan cloudflare -scan-scope zone_id=example.com,example.org
+tforphans -no-query -scan cloudflare -scan-scope zone_id=example.com,example.org -scan-scope account_id=
 tforphans -no-query -scan cloudflare -scan-scope state -state-roots stacks/web
 ```
+
+The zone and account limits are independent: `zone_id=...` alone still
+lists the account-level objects of every account, and `account_id=A` does
+not limit the zones to those of account A. The first line above lists only
+the two zones (`account_id=` with no value leaves out account-level
+objects).
 
 `-scan-scope zone_id=...` (or `account_id=...`) takes IDs or names and lists
 only those zones (or accounts): their objects, and the zones themselves.
@@ -522,7 +656,7 @@ A plugin is any command that prints one JSON object per line:
 - `unverified`: optional, `true` when state cannot confirm where the object
   lives (Vault state does not record the Vault address, so a policy `ci`
   in state of another Vault would match). Such objects match only as
-  unverified (an error with `-strict`) unless `-plugin-cluster-states`
+  uncertain (an error with `-strict`) unless `-plugin-cluster-states`
   states that every state given belongs to the cluster the plugins scan.
 
 `-types` and `-exclude-types` narrow plugin results and the results of your
@@ -539,6 +673,31 @@ no list queries; it needs at least one `-scan` or `-plugin`. [examples/plugins/v
 covers Vault auth methods, roles, secret engines and policies with the
 `vault` CLI and `jq`, and marks every object `unverified`: scan one Vault
 per run with its own states and `-plugin-cluster-states`.
+
+## In CI
+
+A scheduled job that fails when something is unmanaged or could not be
+checked, with the JSON report as an artifact (GitLab):
+
+```yaml
+tforphans:
+  stage: audit
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - terraform -chdir=infra init -input=false
+    - tforphans -config audits/aws.yaml -strict -format json > tforphans.json
+  artifacts:
+    when: always
+    paths: [tforphans.json]
+```
+
+Exit status `2` means unmanaged objects, `1` an error or, with `-strict`,
+incomplete coverage; `jq '.orphans'` and `jq '.summary.coverage[] |
+select(.status != "complete")'` show what to look at. Run it on a schedule
+or on the default branch, with read-only credentials: commands
+(`-plugin`, `-terraform`) and state URLs come only from the job's command
+line, never from a config file a merge request could change.
 
 ## Security
 
@@ -626,6 +785,12 @@ per run with its own states and `-plugin-cluster-states`.
 go test ./...
 go test -tags integration .   # needs terraform; builds testdata/fakeprovider
 ```
+
+CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, the unit tests with
+the race detector, golangci-lint, govulncheck and the integration tests
+against Terraform 1.15 and 1.16. A `v*` tag builds the release with
+GoReleaser (`.goreleaser.yaml`) as a draft, with checksums, SBOMs and a
+build provenance attestation.
 
 The integration test uses a fake provider (things are files in a temporary
 directory) that implements list resources and resource identity, and runs

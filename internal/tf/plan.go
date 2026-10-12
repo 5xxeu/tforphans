@@ -68,6 +68,30 @@ type Query struct {
 type Skip struct {
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
+	// Root is the root module the type was skipped in ("" for -scan).
+	Root string `json:"root,omitempty"`
+	// Excluded marks a type left out on purpose (opt-in, listed through
+	// another provider, a scope not asked for) or one that has no listing
+	// at all; any other skip is a check that was needed and not done.
+	Excluded bool `json:"excluded,omitempty"`
+	// Provider is the local name of the provider the type was skipped
+	// for: a listing through another provider (google instead of an
+	// aliased google-beta) may look at another project.
+	Provider string `json:"provider,omitempty"`
+	// Kind is the kind of scan scope the type was skipped in (zone);
+	// a listing in another kind (account) does not cover it.
+	Kind string `json:"-"`
+}
+
+// Check is a listing that ran to the end: a type in a root (or in a scan
+// scope such as one zone), with or without results, and the local name of
+// the provider that listed it.
+type Check struct {
+	Type     string
+	Scope    string
+	Root     string
+	Provider string
+	Kind     string // scan scope kind (zone, account); "" when unscoped
 }
 
 type Plan struct {
@@ -148,7 +172,11 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		// that may reach another account through the environment.
 		if aliases := opt.AliasOnly[local]; !temporary && len(aliases) > 0 {
 			for _, t := range types {
-				p.Skipped = append(p.Skipped, Skip{t, "provider " + local + " is configured only with aliases"})
+				if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
+					continue
+				}
+				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + local + " is configured only with aliases", Provider: local})
 			}
 			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases (%s.%s), so its %d list-capable types were not queried with the empty default configuration; add your own list blocks with provider = %s.<alias> to a .tfquery.hcl file in the root",
 				local, local, strings.Join(aliases, ", "+local+"."), len(types), local))
@@ -156,12 +184,12 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		}
 		for _, t := range types {
 			if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
-				p.Skipped = append(p.Skipped, Skip{t, reason + "; name it in -types to list it"})
+				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 				continue
 			}
 			q, reason := planType(t, local, ps.ListResourceSchemas[t], opt.Args)
 			if reason != "" {
-				p.Skipped = append(p.Skipped, Skip{t, reason})
+				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: local})
 				continue
 			}
 			q.Source, q.Temporary = addr, temporary
@@ -213,7 +241,7 @@ func (p *Plan) dropTwins(configs map[string]string) {
 		if !q.Temporary && cur.Temporary || q.Temporary == cur.Temporary && isFamilyName(q.Source, fam) && !isFamilyName(cur.Source, fam) {
 			drop, kept[i] = cur, q
 		}
-		p.Skipped = append(p.Skipped, Skip{drop.Type, fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Provider, drop.Provider)})
+		p.Skipped = append(p.Skipped, Skip{Type: drop.Type, Reason: fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Provider, drop.Provider), Excluded: true})
 	}
 	p.Queries = kept
 	for local := range p.Declare {

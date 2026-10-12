@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,7 +52,15 @@ type scanOutput struct {
 		Identity map[string]any `json:"identity"`
 	} `json:"orphans"`
 	Summary struct {
-		Live   int `json:"live"`
+		Live     int  `json:"live"`
+		Complete bool `json:"complete"`
+		Coverage []struct {
+			Type    string   `json:"type"`
+			Scope   string   `json:"scope"`
+			Status  string   `json:"status"`
+			Reasons []string `json:"reasons"`
+			Live    int      `json:"live"`
+		} `json:"coverage"`
 		Failed []struct {
 			Address  string `json:"address"`
 			Type     string `json:"type"`
@@ -99,6 +108,16 @@ func TestIntegrationScanCrash(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "crashed") {
 		t.Errorf("stderr:\n%s", stderr)
+	}
+	// Only the crashed zone is incomplete.
+	var cov []string
+	for _, c := range out.Summary.Coverage {
+		if c.Type == "fake_record" {
+			cov = append(cov, fmt.Sprintf("%s %s %v %d", c.Scope, c.Status, c.Reasons, c.Live))
+		}
+	}
+	if want := []string{"zone z1.name complete [] 2", "zone z2.name complete [] 1", "zone z3.name incomplete [crashed] 0", "zone z4.name complete [] 1"}; out.Summary.Complete || !slices.Equal(cov, want) {
+		t.Errorf("coverage %q, want %q", cov, want)
 	}
 	if code, _, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-strict"); code != exitError {
 		t.Errorf("-strict with a crashed zone: exit %d", code)
@@ -214,5 +233,21 @@ resource "fake_thing" "a" { name = "a" }
 	code, _, stderr = runTool("-types", "fake_thing", "-refresh", "-terraform", wrapper)
 	if code != exitOrphans || !strings.Contains(stderr, "-refresh failed, the stored state was read instead") {
 		t.Errorf("-refresh fallback: exit %d\n%s", code, stderr)
+	}
+}
+
+// TestIntegrationScanNoZones: with no zone listed, records were not read in
+// any: coverage is incomplete and -strict fails, not a clean audit.
+func TestIntegrationScanNoZones(t *testing.T) {
+	root := scanSetup(t)
+	t.Chdir(root)
+	data := os.Getenv("FAKE_DIR")
+	if err := os.RemoveAll(filepath.Join(data, "zone")); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(data, "zone"), 0o755)
+	code, out, stderr := scanJSON(t, "-types", "fake_record", "-strict", "-v")
+	if code != exitError || out.Summary.Complete || !strings.Contains(stderr, "no zone was listed to read it in") {
+		t.Errorf("exit %d, complete %v\n%s", code, out.Summary.Complete, stderr)
 	}
 }

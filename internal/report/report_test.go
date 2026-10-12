@@ -2,11 +2,14 @@ package report
 
 import (
 	"bytes"
+	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 func TestIgnore(t *testing.T) {
@@ -150,7 +153,7 @@ func TestImportRejectsInjection(t *testing.T) {
 
 func TestTextStripsControlCharacters(t *testing.T) {
 	var b bytes.Buffer
-	if err := Text(&b, []model.Resource{{Type: "t", DisplayName: "vm\x1b]0;owned\x07\x1b[31m", Identity: map[string]any{"id": "x"}}}); err != nil {
+	if err := Text(&b, []model.Resource{{Type: "t", DisplayName: "vm\x1b]0;owned\x07\x1b[31m", Identity: map[string]any{"id": "x"}}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.ContainsAny(b.String(), "\x1b\x07") {
@@ -239,5 +242,116 @@ func TestPresets(t *testing.T) {
 	}
 	if _, err := Preset("../report"); err == nil {
 		t.Error("path accepted as a preset")
+	}
+}
+
+// Coverage per type and scope: a failure of one zone makes only that zone
+// incomplete, one without a scope every row of its type; every scope read
+// gets a row, also one without objects; a type skipped where a check was
+// needed is incomplete unless the same root listed it, and one left out on
+// purpose is skipped only when nothing listed it.
+func TestBuildCoverage(t *testing.T) {
+	counts := map[[2]string]*TypeCount{
+		{"rec", "zone a"}:  {Live: 2, Managed: 2},
+		{"rec", "zone b"}:  {Live: 1, Orphans: 1},
+		{"rule", "zone a"}: {Live: 1, Uncertain: 1},
+	}
+	failed := []tf.Failure{
+		{Type: "rec", Scope: "zone c", Category: tf.FailDenied},
+		{Type: "rule", Category: tf.FailTruncated},
+		{Type: "acct", Category: tf.FailDenied},
+	}
+	skipped := []tf.Skip{
+		{Type: "empty", Reason: "needs region", Root: "prod"},
+		{Type: "aliased", Reason: "provider p is configured only with aliases", Root: "staging"},
+		{Type: "gone", Reason: "no data source", Excluded: true},
+		{Type: "twin", Reason: "listed through google", Excluded: true},
+		{Type: "net", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
+		{Type: "net2", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
+		{Type: "rs", Reason: "no zone was listed to read it in", Kind: "zone"},
+	}
+	checks := []tf.Check{
+		{Type: "rec", Scope: "zone a"}, {Type: "rec", Scope: "zone b"}, {Type: "rec", Scope: "zone d"},
+		{Type: "rule", Scope: "zone a"}, {Type: "none"},
+		{Type: "empty", Root: "prod"}, {Type: "aliased", Root: "prod"}, {Type: "twin", Root: "prod"},
+		// google lists another project than the aliased google-beta; the
+		// user's block with google-beta.other covers it.
+		{Type: "net", Root: "prod", Provider: "google"}, {Type: "net2", Root: "prod", Provider: "google-beta"},
+		// Accounts were read, zones were not: the account listing does not
+		// stand for the zones.
+		{Type: "rs", Scope: "account A", Kind: "account"},
+	}
+	got := BuildCoverage(counts, checks, skipped, failed)
+	var lines []string
+	for _, c := range got {
+		lines = append(lines, fmt.Sprintf("%s/%s %s %v %d/%d/%d/%d", c.Type, c.Scope, c.Status, c.Reasons, c.Live, c.Managed, c.Uncertain, c.Orphans))
+	}
+	want := []string{
+		"acct/ incomplete [permission denied] 0/0/0/0",
+		"aliased/ complete [] 0/0/0/0",
+		"aliased/root staging incomplete [skipped: provider p is configured only with aliases] 0/0/0/0",
+		"empty/ complete [] 0/0/0/0",
+		"gone/ skipped [no data source] 0/0/0/0",
+		"net/ complete [] 0/0/0/0",
+		"net/root prod incomplete [skipped: provider google-beta is configured only with aliases] 0/0/0/0",
+		"net2/ complete [] 0/0/0/0",
+		"none/ complete [] 0/0/0/0",
+		"rec/zone a complete [] 2/2/0/0",
+		"rec/zone b complete [] 1/0/0/1",
+		"rec/zone c incomplete [permission denied] 0/0/0/0",
+		"rec/zone d complete [] 0/0/0/0",
+		"rs/ incomplete [skipped: no zone was listed to read it in] 0/0/0/0",
+		"rs/account A complete [] 0/0/0/0",
+		"rule/zone a incomplete [truncated] 1/0/1/0",
+		"twin/ complete [] 0/0/0/0",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("coverage:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+	st := typeStatus(got)
+	if st["rec"] != Incomplete || st["gone"] != Skipped || st["none"] != Complete || st["aliased"] != Incomplete {
+		t.Errorf("type status %v", st)
+	}
+}
+
+// Text output lists uncertain objects apart from the unmanaged ones.
+func TestTextUncertain(t *testing.T) {
+	var b bytes.Buffer
+	u := []Uncertain{{Resource: model.Resource{Type: "t", DisplayName: "vm", Identity: map[string]any{"id": "1"}, Source: "proxmox"}, StateAddress: "t.vm"}}
+	if err := Text(&b, nil, u); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !strings.Contains(out, "No unmanaged resources found.") || !strings.Contains(out, "Uncertain") || !strings.Contains(out, "t.vm") {
+		t.Errorf("text:\n%s", out)
+	}
+}
+
+// Import blocks of scoped objects say where the object lives.
+func TestImportScope(t *testing.T) {
+	var b bytes.Buffer
+	r := model.Resource{Type: "cloudflare_dns_record", DisplayName: "www", ImportID: "z/1", ScopeName: "zone example.com"}
+	if _, err := Import(&b, []model.Resource{r}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "  # in zone example.com\n") {
+		t.Errorf("import:\n%s", b.String())
+	}
+}
+
+// A type skipped where a check was needed shows in the summary table even
+// without objects, and is named among what was not fully listed.
+func TestSummaryTableGap(t *testing.T) {
+	s := Summary{
+		ByType:   map[string]*TypeCount{"rec": {Live: 1, Managed: 1}},
+		Coverage: BuildCoverage(map[[2]string]*TypeCount{{"rec", ""}: {Live: 1, Managed: 1}}, []tf.Check{{Type: "rec"}}, []tf.Skip{{Type: "zoned", Reason: "requires zone", Root: "prod"}}, nil),
+	}
+	var b bytes.Buffer
+	if err := SummaryTable(&b, s); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !regexp.MustCompile(`zoned\s+0\s+0\s+0\s+0\s+0\s+incomplete`).MatchString(out) || !strings.Contains(out, "skipped, needed a check (1): zoned") {
+		t.Errorf("summary:\n%s", out)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/5xxeu/tforphans/internal/glob"
+	"github.com/5xxeu/tforphans/internal/proc"
 )
 
 const schemaJSON = `{"provider_schemas": {
@@ -389,6 +390,16 @@ func TestPlanOptIn(t *testing.T) {
 	if got := types(BuildPlan(&s, nil, PlanOptions{Include: glob.CompileList([]string{"google_project"})})); !slices.Equal(got, []string{"google_project"}) {
 		t.Errorf("named: %v", got)
 	}
+	// With only aliased configurations an opt-in type stays left out on
+	// purpose; the others are checks that were needed.
+	p = BuildPlan(&s, nil, PlanOptions{AliasOnly: map[string][]string{"google": {"prod"}}})
+	excluded := map[string]bool{}
+	for _, sk := range p.Skipped {
+		excluded[sk.Type] = sk.Excluded
+	}
+	if len(p.Queries) != 0 || !excluded["google_project"] || excluded["google_compute_network"] || len(excluded) != 2 {
+		t.Errorf("alias-only: queries %v, skipped %+v", types(p), p.Skipped)
+	}
 }
 
 func TestScopedArg(t *testing.T) {
@@ -546,6 +557,16 @@ func TestRemoveStale(t *testing.T) {
 	goneOverride := filepath.Join(dir, "zz_tforphans_99999999_override.tf")
 	os.WriteFile(gone, nil, 0o644)
 	os.WriteFile(goneOverride, nil, 0o644)
+	if proc.Alive(99999999) {
+		// The platform cannot tell a dead process: nothing is removed.
+		if err := RemoveStale(dir); err == nil {
+			t.Error("files of a process that may be running removed")
+		}
+		if _, err := os.Stat(gone); err != nil {
+			t.Error(err)
+		}
+		return
+	}
 	if err := RemoveStale(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -563,5 +584,18 @@ func TestRemoveStale(t *testing.T) {
 	}
 	if _, err := os.Stat(busy); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestMajorMinor(t *testing.T) {
+	for v, want := range map[string][2]int{"1.13.5": {1, 13}, "1.14.0-beta1": {1, 14}, "1.16": {1, 16}, "2.0.0": {2, 0}} {
+		if ma, mi, ok := majorMinor(v); !ok || ma != want[0] || mi != want[1] {
+			t.Errorf("%s: %d.%d %v", v, ma, mi, ok)
+		}
+	}
+	for _, v := range []string{"", "1", "x.y"} {
+		if _, _, ok := majorMinor(v); ok {
+			t.Errorf("%q read as a version", v)
+		}
 	}
 }

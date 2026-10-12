@@ -153,7 +153,8 @@ type Options struct {
 // Result of a scan.
 type Result struct {
 	Resources []model.Resource
-	Listed    int          // resource types listed
+	Listed    []string     // resource types listed
+	Checks    []tf.Check   // listings read, by scope
 	Skipped   []tf.Skip    // resource types without a usable data source
 	Failed    []tf.Failure // resource types whose data source failed
 }
@@ -218,6 +219,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	}
 	// A crash every part repeats (terraform failing for another reason, or
 	// crashing in many zones) must not cost hundreds of runs.
+	spent := 0
 	probe := budget(func(set []block) (bool, []byte, error) {
 		out, stderr, runErr, err := apply(set)
 		if err != nil || runErr == nil {
@@ -229,7 +231,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 		errs, fatal := applyErrors(out)
 		return crashed(stderr, errs, fatal), nil, nil
-	}, maxProbes, func() {
+	}, &spent, maxProbes, func() {
 		if opt.Progress != nil {
 			opt.Progress(fmt.Sprintf("%s: the crash was not pinned down in %d extra runs; what is still suspect is reported as crashed", a.Name, maxProbes))
 		}
@@ -258,6 +260,15 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: reading data sources: %v\n%s", a.Name, err, strings.TrimSpace(string(stderr)))
 			}
+			if len(failed) == 0 {
+				// Not repeated: the next full read is an extra run too.
+				if spent++; spent > maxProbes {
+					for _, b := range blocks {
+						failures = append(failures, failure{block: b.addr(), address: b.addr(), message: why})
+					}
+					keep = nil
+				}
+			}
 			failures = append(failures, failed...)
 			blocks = keep
 			continue
@@ -284,23 +295,44 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	// A type counts as listed when one of its blocks read something: an
 	// unscoped block, or a scoped one with no failed instance or at least
 	// one instance that worked (one whose every zone failed listed nothing).
-	instances, err := instanceCounts(stateData)
+	instances, err := instanceKeys(stateData)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.Name, err)
+	}
+	names, err := parentNames(stateData)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", a.Name, err)
 	}
 	listed := map[string]bool{}
 	for _, b := range blocks {
+		keys := instances[b.addr()]
 		// A scoped block left with no instance (every zone failed, or
 		// -scan-scope names none that exists) listed nothing.
-		if b.hidden || b.scope != nil && (len(b.exclude) > 0 || len(b.only) > 0) && instances[b.addr()] == 0 {
+		if b.hidden || b.scope != nil && (len(b.exclude) > 0 || len(b.only) > 0) && len(keys) == 0 {
 			continue
 		}
 		for _, l := range b.listings {
+			// No parent to read it in (no zone): nothing was listed, and
+			// an empty parent list may be a token that sees none.
+			if b.scope != nil && len(keys) == 0 {
+				kind := strings.TrimSuffix(b.scope.Arg, "_id")
+				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: fmt.Sprintf("no %s was listed to read it in (the credentials may see none)", kind), Kind: kind})
+				continue
+			}
 			listed[l.resourceType] = true
+			// Each scope read counts, also one without objects of the type.
+			if b.scope == nil {
+				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType})
+				continue
+			}
+			for _, k := range keys {
+				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType, Scope: scopeLabel(b.scope, k, names[b.parent][k]), Kind: strings.TrimSuffix(b.scope.Arg, "_id")})
+			}
 		}
 	}
-	res.Listed = len(listed)
+	res.Listed = slices.Sorted(maps.Keys(listed))
 	res.Failed = append(res.Failed, reportFailures(failures, all, listed, a)...)
+	defer func() { failureScopes(res.Failed, all, names) }()
 	if len(blocks) == 0 {
 		return res, nil
 	}
@@ -595,12 +627,12 @@ func buildPlan(s *schema, a Adapter, opt Options) plan {
 	}
 	for _, t := range types {
 		if reason, ok := a.Skip[t]; ok {
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: reason})
+			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: reason, Excluded: true})
 			continue
 		}
 		ds := plural(s, t)
 		if ds == "" {
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: "no list resource or plural data source"})
+			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: "no list resource or plural data source", Excluded: true})
 			continue
 		}
 		attrs := s.DataSources[ds].Block.Attributes
@@ -765,41 +797,6 @@ func applyErrors(out []byte) ([]diagErr, []string) {
 	return failed, fatal
 }
 
-// parentIDs returns the IDs a parent block listed (its for_each keys),
-// only those with an ID or name in only when it is set.
-func parentIDs(stateData []byte, addr string, only []string) ([]string, error) {
-	var st struct {
-		Resources []struct {
-			Mode      string `json:"mode"`
-			Type      string `json:"type"`
-			Name      string `json:"name"`
-			Instances []struct {
-				Attributes map[string]any `json:"attributes"`
-			} `json:"instances"`
-		} `json:"resources"`
-	}
-	if err := model.DecodeJSON(stateData, &st); err != nil {
-		return nil, fmt.Errorf("decode data source state: %w", err)
-	}
-	var out []string
-	for _, r := range st.Resources {
-		if r.Mode != "data" || "data."+r.Type+"."+r.Name != addr {
-			continue
-		}
-		for _, in := range r.Instances {
-			for _, it := range listItems(in.Attributes, ListSpec{Items: "result"}) {
-				id, _ := it["id"].(string)
-				name, _ := it["name"].(string)
-				if id == "" || slices.Contains(out, id) || len(only) > 0 && !slices.Contains(only, id) && (name == "" || !slices.Contains(only, name)) {
-					continue
-				}
-				out = append(out, id)
-			}
-		}
-	}
-	return out, nil
-}
-
 // contextAttrs returns the attributes of the context data sources read.
 func contextAttrs(stateData []byte, names []string) (map[string]map[string]any, error) {
 	out := map[string]map[string]any{}
@@ -827,27 +824,35 @@ func contextAttrs(stateData []byte, names []string) (map[string]map[string]any, 
 	return out, nil
 }
 
-// instanceCounts returns how many instances each data block has in the
-// scan's state.
-func instanceCounts(stateData []byte) (map[string]int, error) {
-	out := map[string]int{}
+// instanceKeys returns the instance keys (zone IDs) of each data block in
+// the state; an instance without a key has "".
+func instanceKeys(stateData []byte) (map[string][]string, error) {
+	out := map[string][]string{}
 	if len(stateData) == 0 {
 		return out, nil
 	}
 	var st struct {
 		Resources []struct {
-			Mode      string            `json:"mode"`
-			Type      string            `json:"type"`
-			Name      string            `json:"name"`
-			Instances []json.RawMessage `json:"instances"`
+			Mode      string `json:"mode"`
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Instances []struct {
+				IndexKey any `json:"index_key"`
+			} `json:"instances"`
 		} `json:"resources"`
 	}
 	if err := json.Unmarshal(stateData, &st); err != nil {
 		return nil, fmt.Errorf("decode data source state: %w", err)
 	}
 	for _, r := range st.Resources {
-		if r.Mode == "data" {
-			out["data."+r.Type+"."+r.Name] = len(r.Instances)
+		if r.Mode != "data" {
+			continue
+		}
+		addr := "data." + r.Type + "." + r.Name
+		out[addr] = []string{}
+		for _, in := range r.Instances {
+			k, _ := in.IndexKey.(string)
+			out[addr] = append(out[addr], k)
 		}
 	}
 	return out, nil
@@ -903,32 +908,6 @@ func truncated(stateData []byte, blocks []block, a Adapter) ([]tf.Failure, error
 		}
 		for _, l := range b.listings {
 			out = append(out, tf.Failure{Address: b.addr(), Type: l.resourceType, Message: note(b) + b.parent + " returned its max_items; parents beyond it were not read"})
-		}
-	}
-	return out, nil
-}
-
-// unknownScopes reports -scan-scope values that name no parent the scan
-// read: a typo would otherwise look like a zone without objects.
-func unknownScopes(stateData []byte, blocks []block, a Adapter, limit map[string][]string) ([]tf.Failure, error) {
-	var out []tf.Failure
-	for _, sc := range a.Scopes {
-		vals := limit[sc.Arg]
-		addr := "data." + sc.Parent + ".all"
-		if len(vals) == 0 || !slices.ContainsFunc(blocks, func(b block) bool { return b.addr() == addr }) {
-			continue
-		}
-		ids, err := parentIDs(stateData, addr, nil)
-		if err != nil {
-			return nil, err
-		}
-		for _, v := range vals {
-			if found, err := parentIDs(stateData, addr, []string{v}); err != nil {
-				return nil, err
-			} else if len(found) == 0 {
-				out = append(out, tf.Failure{Address: "-scan-scope " + sc.Arg + "=" + v, Type: strings.TrimSuffix(sc.Parent, "s"),
-					Message: fmt.Sprintf("not found: no %s with this ID or name among the %d %s listed", strings.TrimSuffix(sc.Arg, "_id"), len(ids), addr)})
-			}
 		}
 	}
 	return out, nil
@@ -1017,25 +996,9 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[s
 	for _, b := range blocks {
 		byAddr[b.addr()] = b
 	}
-	// Names of the parents (zones, accounts), by parent block address.
-	names := map[string]map[string]string{}
-	for _, r := range st.Resources {
-		addr := "data." + r.Type + "." + r.Name
-		if r.Mode != "data" || r.Name != "all" {
-			continue
-		}
-		for _, in := range r.Instances {
-			for _, it := range listItems(in.Attributes, ListSpec{Items: "result"}) {
-				id, _ := it["id"].(string)
-				name, _ := it["name"].(string)
-				if id != "" {
-					if names[addr] == nil {
-						names[addr] = map[string]string{}
-					}
-					names[addr][id] = name
-				}
-			}
-		}
+	names, err := parentNames(stateData)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.Name, err)
 	}
 	// A parent block lists its own type (cloudflare_zones lists zones).
 	parentScope := map[string]*Scope{}
@@ -1104,54 +1067,6 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[s
 		}
 	}
 	return collapse(out), nil
-}
-
-// scopeLabel names a parent for people: "zone example.com", or the ID
-// when the parent has no name.
-func scopeLabel(sc *Scope, id, name string) string {
-	if name == "" {
-		name = id
-	}
-	return strings.TrimSuffix(sc.Arg, "_id") + " " + name
-}
-
-// limitScope applies -scan-scope: blocks iterating over a limited scope
-// read only the parents given, and a scope given with no values is not read
-// at all (its types are reported as skipped).
-func limitScope(blocks []block, limit map[string][]string) ([]block, []tf.Skip) {
-	if len(limit) == 0 {
-		return blocks, nil
-	}
-	scopes := map[string]int{} // data source -> scoped blocks
-	for _, b := range blocks {
-		if b.scope != nil {
-			scopes[b.dsType]++
-		}
-	}
-	var out []block
-	var skipped []tf.Skip
-	for _, b := range blocks {
-		if b.scope != nil {
-			if vals, ok := limit[b.scope.Arg]; ok {
-				if len(vals) == 0 && scopes[b.dsType] > 1 {
-					// The other scope's listing may return these objects
-					// too; reading them lets collapse drop those.
-					b.hidden = true
-					out = append(out, b)
-					continue
-				}
-				if len(vals) == 0 {
-					for _, l := range b.listings {
-						skipped = append(skipped, tf.Skip{Type: l.resourceType, Reason: "-scan-scope names no " + b.scope.Arg})
-					}
-					continue
-				}
-				b.only = vals
-			}
-		}
-		out = append(out, b)
-	}
-	return out, skipped
 }
 
 // scoped is a listed object with the scope it was listed in.

@@ -2,6 +2,7 @@ package tf
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -521,4 +523,37 @@ func configTokens(src []byte) string {
 		parts = append(parts, string(t.Bytes))
 	}
 	return strings.Join(parts, "\x00")
+}
+
+// QueryVersion checks that terraform has the query command (1.14). Older
+// versions show no list resources in their provider schemas, so without
+// this check a run would blame the providers. A version that cannot be
+// read is let through: the query itself then says what is wrong.
+func (r Runner) QueryVersion(ctx context.Context) error {
+	out, _, err := r.run(ctx, "version", "-json")
+	if err != nil {
+		return nil
+	}
+	var v struct {
+		Version string `json:"terraform_version"`
+	}
+	if json.Unmarshal(out, &v) != nil {
+		return nil
+	}
+	major, minor, ok := majorMinor(v.Version)
+	if !ok || major > 1 || major == 1 && minor >= 14 {
+		return nil
+	}
+	return fmt.Errorf("%s %s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin), v.Version)
+}
+
+// majorMinor reads "1.13.5" or "1.14.0-beta1".
+func majorMinor(v string) (major, minor int, ok bool) {
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(strings.SplitN(parts[1], "-", 2)[0])
+	return major, minor, err1 == nil && err2 == nil
 }

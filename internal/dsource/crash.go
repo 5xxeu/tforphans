@@ -213,18 +213,18 @@ func isolateInstances(b block, parents []block, why string, probe prober) (*bloc
 	return &b, failed, nil
 }
 
-// budget bounds the probe runs. Past the bound every probe counts as a
-// crash without running: isolate then gives up on what is still suspect
-// (it is reported as crashed) instead of failing the whole scan. exhausted
-// is called once when that happens.
-func budget(probe prober, max int, exhausted func()) prober {
-	n := 0
+// budget bounds the probe runs, counted in n (which the caller also
+// charges for full reads after a crash that did not repeat). Past the bound
+// every probe counts as a crash without running: isolate then gives up on
+// what is still suspect (it is reported as crashed) instead of failing the
+// whole scan. exhausted is called once when that happens.
+func budget(probe prober, n *int, max int, exhausted func()) prober {
 	return func(set []block) (bool, []byte, error) {
 		if len(set) == 0 {
 			return false, nil, nil
 		}
-		if n++; n > max {
-			if n == max+1 && exhausted != nil {
+		if *n++; *n > max {
+			if *n == max+1 && exhausted != nil {
 				exhausted()
 			}
 			return true, nil, nil

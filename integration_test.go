@@ -12,8 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/report"
 )
 
 // TestIntegration runs the whole tool against a real terraform binary and the
@@ -52,7 +56,7 @@ resource "fake_thing" "a" {
 	if !strings.Contains(stdout, "to = fake_thing.a_2\n") {
 		t.Errorf("import into the configured address fake_thing.a:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "4 live, 1 managed, 1 ignored, 2 unmanaged") {
+	if !strings.Contains(stderr, "4 live, 1 managed, 0 uncertain, 1 ignored, 2 unmanaged") {
 		t.Errorf("summary:\n%s", stderr)
 	}
 	if left, _ := filepath.Glob("*.tfquery.hcl"); len(left) > 0 {
@@ -81,6 +85,14 @@ resource "fake_thing" "a" {
 
 	// Import the orphan; afterwards nothing is unmanaged.
 	terraform(t, root, "plan", "-generate-config-out=generated.tf", "-no-color")
+	if before116(t) {
+		// What the adopt hint asks for with older Terraform: the provider
+		// moves from the import blocks into the generated resources.
+		imports, _ := os.ReadFile("imports.tf")
+		write(t, "imports.tf", regexp.MustCompile(`(?m)^  provider = .*\n`).ReplaceAllString(string(imports), ""))
+		generated, _ := os.ReadFile("generated.tf")
+		write(t, "generated.tf", regexp.MustCompile(`(?m)^(resource "fake_thing" .*\{\n)`).ReplaceAllString(string(generated), "${1}  provider = fakeloc\n"))
+	}
 	terraform(t, root, "apply", "-auto-approve", "-no-color")
 	if code, _, stderr := runTool("-exclude-types", "fake_broken"); code != exitOK {
 		t.Fatalf("after import: exit %d\n%s", code, stderr)
@@ -176,7 +188,7 @@ resource "fake_thing" "x" {
 
 	t.Chdir(root)
 	code, stdout, stderr := runTool("adopt", "-types", "fake_thing")
-	if code != exitOK || !strings.Contains(stderr, "5 live, 4 managed, 0 ignored, 1 unmanaged") {
+	if code != exitOK || !strings.Contains(stderr, "5 live, 4 managed, 0 uncertain, 0 ignored, 1 unmanaged") {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
 	if !strings.Contains(stdout, "to = fake_thing.hand_made\n  # the root module does not declare example.com/fake/fake") {
@@ -240,7 +252,7 @@ resource "fake_thing" "x" { name = var.name }
 
 	t.Chdir(root)
 	code, stdout, stderr := runTool("-types", "fake_thing", "-state-roots", tree)
-	if code != exitOrphans || !strings.Contains(stderr, "4 live, 3 managed, 0 ignored, 1 unmanaged; 3 states read") {
+	if code != exitOrphans || !strings.Contains(stderr, "4 live, 3 managed, 0 uncertain, 0 ignored, 1 unmanaged; 3 states read") {
 		t.Fatalf("exit %d\n%s%s", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "stray") || strings.Contains(stdout, "other-") {
@@ -252,6 +264,17 @@ resource "fake_thing" "x" { name = var.name }
 	if code, _, _ := runTool("-types", "fake_thing", "-state-roots", tree, "-strict"); code != exitError {
 		t.Errorf("-strict with an unreadable state: exit %d", code)
 	}
+	if !strings.Contains(stderr, "coverage: INCOMPLETE (1 states not read)") {
+		t.Errorf("coverage verdict:\n%s", stderr)
+	}
+	// adopt would import the objects of the unread state a second time.
+	if code, stdout, stderr := runTool("adopt", "-types", "fake_thing", "-state-roots", tree); code != exitError || stdout != "" || !strings.Contains(stderr, "-allow-incomplete") {
+		t.Errorf("adopt with an unread state: exit %d\n%s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = runTool("adopt", "-types", "fake_thing", "-state-roots", tree, "-allow-incomplete")
+	if code != exitOK || !strings.Contains(stdout, "# Objects that none of the 3 states read manages.") || !strings.Contains(stdout, "to = fake_thing.stray") {
+		t.Errorf("adopt -allow-incomplete: exit %d\n%s%s", code, stdout, stderr)
+	}
 	// The selected workspace of the other root is left alone.
 	if ws, _ := os.ReadFile(filepath.Join(other, ".terraform", "environment")); strings.TrimSpace(string(ws)) != "default" {
 		t.Errorf("selected workspace changed to %q", ws)
@@ -260,7 +283,7 @@ resource "fake_thing" "x" { name = var.name }
 	// A workspace whose state cannot be read does not lose the others.
 	write(t, filepath.Join(other, "terraform.tfstate.d", "prod", "terraform.tfstate"), "not json")
 	code, stdout, stderr = runTool("-types", "fake_thing", "-state-roots", tree)
-	if code != exitOrphans || !strings.Contains(stderr, "4 live, 2 managed, 0 ignored, 2 unmanaged; 2 states read") || !strings.Contains(stderr, "workspace prod") {
+	if code != exitOrphans || !strings.Contains(stderr, "4 live, 2 managed, 0 uncertain, 0 ignored, 2 unmanaged; 2 states read") || !strings.Contains(stderr, "workspace prod") {
 		t.Fatalf("broken workspace: exit %d\n%s%s", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "other-prod") || strings.Contains(stdout, "other-default") {
@@ -350,7 +373,7 @@ func TestIntegrationProxmox(t *testing.T) {
 		} `json:"orphans"`
 		Summary struct {
 			Live, Managed, States int
-			Unverified            int `json:"unverified_matches"`
+			Uncertain             int `json:"uncertain"`
 		} `json:"summary"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
@@ -380,12 +403,12 @@ func TestIntegrationProxmox(t *testing.T) {
 		t.Errorf("orphans:\n%s\nwant:\n%s\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"), stderr)
 	}
 	// Nothing proves which cluster the states belong to: all five matches
-	// are unverified until the user says so.
-	if out.Summary.Live != 16 || out.Summary.Managed != 5 || out.Summary.Unverified != 5 {
+	// are uncertain until the user says so.
+	if out.Summary.Live != 16 || out.Summary.Managed != 0 || out.Summary.Uncertain != 5 {
 		t.Errorf("summary %+v", out.Summary)
 	}
 	code, stdout, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict")
-	if err := json.Unmarshal([]byte(stdout), &out); err != nil || code != exitOrphans || out.Summary.Managed != 5 || out.Summary.Unverified != 0 {
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil || code != exitOrphans || out.Summary.Managed != 5 || out.Summary.Uncertain != 0 {
 		t.Errorf("with -proxmox-cluster-states: exit %d %+v %v\n%s", code, out.Summary, err, stderr)
 	}
 	if _, err := os.Stat(victim); err == nil {
@@ -448,6 +471,14 @@ list "fake_thing" "tfo_aliased" {
 	if code != exitOrphans || !strings.Contains(stderr, "note: .: provider fake is configured only with aliases") || !strings.Contains(stderr, "1 resource types queried") {
 		t.Errorf("alias-only provider: exit %d\n%s", code, stderr)
 	}
+	// The user's block covers fake_thing; fake_zoned, skipped for the
+	// aliases, is a gap that -strict does not pass.
+	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOrphans || !strings.Contains(stderr, "coverage: complete") {
+		t.Errorf("alias-only provider, type covered by the user's block: exit %d\n%s", code, stderr)
+	}
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that needed a check)") {
+		t.Errorf("alias-only provider, type not covered: exit %d\n%s", code, stderr)
+	}
 }
 
 // TestIntegrationSameTypeTwoProviders: two providers (like google and
@@ -485,7 +516,7 @@ resource "fake_thing" "x" {
 `)
 	terraform(t, root, "apply", "-auto-approve", "-no-color")
 	code, stdout, stderr = runTool("-types", "fake_thing", "-format", "json")
-	if code != exitOrphans || !strings.Contains(stderr, "2 live, 1 managed, 0 ignored, 1 unmanaged") || !strings.Contains(stdout, `"provider_source": "example.com/fake2/fake"`) {
+	if code != exitOrphans || !strings.Contains(stderr, "2 live, 1 managed, 0 uncertain, 0 ignored, 1 unmanaged") || !strings.Contains(stdout, `"provider_source": "example.com/fake2/fake"`) {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }
@@ -494,6 +525,24 @@ func runTool(args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
+}
+
+// before116 reports a Terraform older than 1.16 on PATH.
+func before116(t *testing.T) bool {
+	t.Helper()
+	out, err := exec.Command("terraform", "version", "-json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Version string `json:"terraform_version"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatal(err)
+	}
+	var major, minor int
+	fmt.Sscanf(v.Version, "%d.%d", &major, &minor)
+	return major == 1 && minor < 16
 }
 
 func terraform(t *testing.T, dir string, args ...string) {
@@ -636,5 +685,92 @@ exec %q "$@"
 	}
 	if left, _ := filepath.Glob("zz_tforphans_*"); len(left) > 0 {
 		t.Errorf("files left behind: %v", left)
+	}
+}
+
+// TestIntegrationTwoRootsCut: a listing cut short in one of two roots makes
+// every row of its type incomplete, also those with objects it returned.
+func TestIntegrationTwoRootsCut(t *testing.T) {
+	data, root := setup(t)
+	second := filepath.Join(filepath.Dir(root), "second")
+	if err := os.MkdirAll(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n"
+	write(t, filepath.Join(root, "main.tf"), conf)
+	write(t, filepath.Join(second, "main.tf"), conf)
+	for _, n := range []string{"a", "b", "c"} {
+		write(t, filepath.Join(data, "thing", n), "")
+	}
+	t.Chdir(filepath.Dir(root))
+	code, out, stderr := runTool("-types", "fake_thing", "-limit", "2", "-format", "json", "root", "second")
+	if code != exitOrphans {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	var rep struct {
+		Summary report.Summary `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, c := range rep.Summary.Coverage {
+		if c.Type == "fake_thing" {
+			rows = append(rows, fmt.Sprintf("%q %s %d", c.Scope, c.Status, c.Live))
+		}
+	}
+	if rep.Summary.Complete || len(rows) == 0 || slices.ContainsFunc(rows, func(r string) bool { return !strings.Contains(r, " incomplete ") || strings.Contains(r, "root ") }) {
+		t.Errorf("coverage %v, complete %v\n%s", rows, rep.Summary.Complete, stderr)
+	}
+}
+
+// TestIntegrationUninitializedRoot: a root that needs terraform init does
+// not stop the run; the others are still queried, and the gap shows.
+func TestIntegrationUninitializedRoot(t *testing.T) {
+	data, root := setup(t)
+	broken := filepath.Join(filepath.Dir(root), "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	write(t, filepath.Join(broken, "main.tf"), "terraform {\n  required_providers {\n    null = { source = \"hashicorp/null\" }\n  }\n}\n")
+	// Providers from dev_overrides need no init, a backend does: the
+	// schema may work and reading the state fail.
+	backend := filepath.Join(filepath.Dir(root), "backend")
+	if err := os.MkdirAll(backend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(backend, "main.tf"), "terraform {\n  backend \"local\" {\n    path = \"other.tfstate\"\n  }\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	write(t, filepath.Join(data, "thing", "a"), "")
+	t.Chdir(filepath.Dir(root))
+	code, stdout, stderr := runTool("-types", "fake_thing", "broken", "backend", "root")
+	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken is not initialized") ||
+		!strings.Contains(stderr, "backend is not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
+		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, _, _ := runTool("-types", "fake_thing", "-strict", "broken", "backend", "root"); code != exitError {
+		t.Errorf("-strict with an uninitialized root: exit %d", code)
+	}
+}
+
+// TestIntegrationRootThroughLink: jump/../root, with jump a link, is the
+// root the system takes it for, also for the temporary query files.
+func TestIntegrationRootThroughLink(t *testing.T) {
+	data, root := setup(t)
+	tmp := filepath.Dir(root)
+	work := filepath.Join(tmp, "work")
+	for _, d := range []string{work, filepath.Join(tmp, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(tmp, "sub"), filepath.Join(work, "jump")); err != nil {
+		t.Skip(err)
+	}
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	write(t, filepath.Join(data, "thing", "a"), "")
+	t.Chdir(work)
+	if code, stdout, stderr := runTool("-types", "fake_thing", "jump/../root"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") {
+		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }

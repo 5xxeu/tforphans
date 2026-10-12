@@ -21,6 +21,9 @@ import (
 type Failure struct {
 	Address string `json:"address"`
 	Type    string `json:"type"`
+	// Scope is where the failure applies ("zone example.com"); empty when
+	// it concerns the type in every scope.
+	Scope string `json:"scope,omitempty"`
 	// Category groups failures by cause (see Classify); set by Classify.
 	Category string `json:"category,omitempty"`
 	Message  string `json:"message"`
@@ -98,11 +101,19 @@ func OneLine(msg string, max int) string {
 	return msg
 }
 
+// Listing is a list block instance and the resource type it lists.
+type Listing struct {
+	Address string
+	Type    string
+}
+
 type QueryResult struct {
 	Found    []model.Resource
 	Failed   []Failure
 	Started  int // list block instances that started
 	Complete int // list block instances that finished
+	// Done are the instances that finished.
+	Done []Listing
 	// Unfinished are the list block instances that started but neither
 	// finished nor reported an error of their own.
 	Unfinished []string
@@ -179,6 +190,10 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	out, stderr, runErr := r.run(ctx, args...)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	// Terraform before 1.14 and OpenTofu print this (on stdout).
+	if runErr != nil && strings.Contains(string(out)+string(stderr), `no command named "query"`) {
+		return nil, fmt.Errorf("%s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin))
 	}
 	res, fatal, err := ParseQueryStream(out, r.Dir, keys, limitFor)
 	if err != nil {
@@ -269,6 +284,7 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 			res.Complete++
 			c := m.ListComplete
 			finished[c.Address] = true
+			res.Done = append(res.Done, Listing{Address: c.Address, Type: c.ResourceType})
 			block, _, _ := strings.Cut(c.Address, "[")
 			switch limit := limitFor(block); {
 			case limit <= 0 && c.Total > 0:
