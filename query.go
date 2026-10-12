@@ -158,6 +158,18 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
+	// providerOf is the local provider name a list block instance used.
+	providerOf := func(address, typ string) string {
+		block, _, _ := strings.Cut(address, "[")
+		if q, ok := byAddress[block]; ok {
+			return q.Provider
+		}
+		if local, _, _ := strings.Cut(userLists[block].Provider, "."); local != "" {
+			return local
+		}
+		local, _, _ := strings.Cut(typ, "_")
+		return local
+	}
 	// What finished counts, not what was planned: a block with
 	// for_each = {} checks nothing. The objects found give their own rows
 	// (project, account); a root that listed a type and found none of it
@@ -173,18 +185,12 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		if len(o.roots) > 1 && !found[d.Type] {
 			rootScope = "root " + root
 		}
-		block, _, _ := strings.Cut(d.Address, "[")
-		local := ""
-		if q, ok := byAddress[block]; ok {
-			local = q.Provider
-		} else if local, _, _ = strings.Cut(userLists[block].Provider, "."); local == "" {
-			local, _, _ = strings.Cut(d.Type, "_")
-		}
-		sum.Checks = append(sum.Checks, tf.Check{Type: d.Type, Scope: rootScope, Root: root, Provider: local})
+		sum.Checks = append(sum.Checks, tf.Check{Type: d.Type, Scope: rootScope, Root: root, Provider: providerOf(d.Address, d.Type)})
 	}
 	sum.Ran += res.Started
 	for i := range res.Failed {
 		res.Failed[i].Root = root
+		res.Failed[i].Provider = providerOf(res.Failed[i].Address, res.Failed[i].Type)
 	}
 	sum.Failed = append(sum.Failed, res.Failed...)
 	// Import blocks have to use the provider configuration the object was

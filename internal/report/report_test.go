@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -356,5 +357,17 @@ func TestSummaryTableGap(t *testing.T) {
 	out := b.String()
 	if !regexp.MustCompile(`zoned\s+0\s+0\s+0\s+0\s+0\s+incomplete`).MatchString(out) || !strings.Contains(out, "skipped, needed a check (1): zoned") {
 		t.Errorf("summary:\n%s", out)
+	}
+}
+
+func TestNewUnreadState(t *testing.T) {
+	err := errors.Join(
+		errors.New("workspace a: terraform state pull: exit status 1\nError: Backend initialization required"),
+		errors.New("workspace b: terraform state pull: exit status 1\nError: Unsupported Terraform Core version\n\n  on main.tf line 2"))
+	if got := NewUnreadState("r", err).Error; got != "workspace a: Error: Backend initialization required; workspace b: Error: Unsupported Terraform Core version" {
+		t.Errorf("%q", got)
+	}
+	if got := NewUnreadState("r", errors.New("not initialized")).Error; got != "not initialized" {
+		t.Errorf("%q", got)
 	}
 }

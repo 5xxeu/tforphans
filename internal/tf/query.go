@@ -26,6 +26,8 @@ type Failure struct {
 	Scope string `json:"scope,omitempty"`
 	// Root is the root module whose query failed ("" for -scan).
 	Root string `json:"root,omitempty"`
+	// Provider is the local name of the provider the block used.
+	Provider string `json:"-"`
 	// Category groups failures by cause (see Classify); set by Classify.
 	Category string `json:"category,omitempty"`
 	Message  string `json:"message"`

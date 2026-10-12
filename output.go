@@ -179,7 +179,7 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		if len(s.NoList) > 0 {
 			beyond = append(beyond, fmt.Sprintf("%d providers without list resources", len(slices.Compact(slices.Sorted(slices.Values(s.NoList))))))
 		}
-		if s.APIOff > 0 {
+		if s.APIOff > 0 && !o.strictAPI {
 			beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api counts them)", s.APIOff))
 		}
 		if len(beyond) == 0 {
@@ -190,7 +190,11 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		return
 	}
 	var gaps []string
-	if n := len(s.Failed) - s.APIOff; n > 0 {
+	failed := len(s.Failed)
+	if !o.strictAPI {
+		failed -= s.APIOff
+	}
+	if n := failed; n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d failed or truncated listings", n))
 	}
 	if n := len(gapTypes); n > 0 {

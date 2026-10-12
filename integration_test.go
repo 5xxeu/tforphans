@@ -792,4 +792,11 @@ func TestIntegrationAPIOff(t *testing.T) {
 	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-strict-api"); code != exitError {
 		t.Errorf("-strict-api: exit %d\n%s", code, stderr)
 	}
+	// A provider with only an alias: the user's block with that alias meets
+	// the disabled API, which covers the alias-only skip of fake_thing.
+	write(t, "main.tf", "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\nprovider \"fake\" {\n  alias = \"second\"\n}\n")
+	write(t, "mine.tfquery.hcl", "list \"fake_thing\" \"mine\" {\n  provider = fake.second\n}\n")
+	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOK {
+		t.Errorf("aliased block with the API off: exit %d\n%s", code, stderr)
+	}
 }

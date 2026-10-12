@@ -193,16 +193,27 @@ type UnreadState struct {
 
 // NewUnreadState keeps the telling line of err: terraform's "Error: ..."
 // line when there is one, else the first.
+//
+// Errors of several workspaces ("workspace NAME: ...") keep their names.
 func NewUnreadState(root string, err error) UnreadState {
 	lines := strings.Split(err.Error(), "\n")
-	msg := lines[0]
+	var parts []string
+	ws := ""
 	for _, l := range lines {
-		if l = strings.TrimSpace(l); strings.HasPrefix(l, "Error: ") {
-			msg = l
-			break
+		l = strings.TrimSpace(l)
+		if name, ok := strings.CutPrefix(l, "workspace "); ok {
+			if n, _, ok := strings.Cut(name, ": "); ok {
+				ws = "workspace " + n + ": "
+			}
+		}
+		if strings.HasPrefix(l, "Error: ") && !slices.Contains(parts, ws+l) {
+			parts = append(parts, ws+l)
 		}
 	}
-	return UnreadState{Root: root, Error: msg}
+	if len(parts) == 0 {
+		return UnreadState{Root: root, Error: lines[0]}
+	}
+	return UnreadState{Root: root, Error: strings.Join(parts, "; ")}
 }
 
 // Summary describes how complete the scan was.
@@ -225,8 +236,8 @@ type Summary struct {
 	Ignored   int `json:"ignored"`
 	Orphans   int `json:"orphans"`
 	Queried   int `json:"queried_types"`
-	// APIOff counts failed listings whose API is not enabled: they are in
-	// failed_queries but not counted as gaps (unless -strict-api).
+	// APIOff counts failed listings whose API is not enabled (they are in
+	// failed_queries too); they count as gaps only with -strict-api.
 	APIOff int `json:"api_not_enabled,omitempty"`
 	// Complete is false when something was not checked: failed or
 	// truncated listings, unread states, plugin errors, types that needed

@@ -603,20 +603,31 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	// A disabled API (GCP) can hold no objects: such listings stay in
 	// failed_queries but are no gap, unless -strict-api.
-	counting, skipped := sum.Failed, sum.Skipped
+	counting, skipped, checks := sum.Failed, sum.Skipped, sum.Checks
+	for _, f := range sum.Failed {
+		if f.Category == tf.FailAPIOff {
+			sum.APIOff++
+		}
+	}
 	if !o.strictAPI {
 		counting = nil
 		skipped = slices.Clone(sum.Skipped)
+		checks = slices.Clone(sum.Checks)
 		for _, f := range sum.Failed {
 			if f.Category == tf.FailAPIOff {
-				sum.APIOff++
 				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
+				// The listing ran far enough to learn there is nothing:
+				// it stands for the check (an aliased block of the user's
+				// covers the alias-only skip of its provider).
+				if f.Root != "" {
+					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
+				}
 				continue
 			}
 			counting = append(counting, f)
 		}
 	}
-	sum.Coverage = report.BuildCoverage(byTypeScope, sum.Checks, skipped, counting)
+	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
 	sum.Complete = !nothingChecked(o, sum) && len(counting) == 0 && len(sum.Warnings) == 0 && len(sum.UnreadStates) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
