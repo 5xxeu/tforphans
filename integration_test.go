@@ -723,3 +723,24 @@ func TestIntegrationTwoRootsCut(t *testing.T) {
 		t.Errorf("coverage %v, complete %v\n%s", rows, rep.Summary.Complete, stderr)
 	}
 }
+
+// TestIntegrationUninitializedRoot: a root that needs terraform init does
+// not stop the run; the others are still queried, and the gap shows.
+func TestIntegrationUninitializedRoot(t *testing.T) {
+	data, root := setup(t)
+	broken := filepath.Join(filepath.Dir(root), "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	write(t, filepath.Join(broken, "main.tf"), "terraform {\n  required_providers {\n    null = { source = \"hashicorp/null\" }\n  }\n}\n")
+	write(t, filepath.Join(data, "thing", "a"), "")
+	t.Chdir(filepath.Dir(root))
+	code, stdout, stderr := runTool("-types", "fake_thing", "root", "broken")
+	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken is not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
+		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, _, _ := runTool("-types", "fake_thing", "-strict", "root", "broken"); code != exitError {
+		t.Errorf("-strict with an uninitialized root: exit %d", code)
+	}
+}

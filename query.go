@@ -22,15 +22,31 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		return nil, err
 	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion}
-	if !r.Initialized() && o.init {
+	initialized := r.Initialized()
+	if !initialized && o.init {
 		if err := r.Init(ctx); err != nil {
 			return nil, err
 		}
+	}
+	// A root that is not initialized and fails for it: as for
+	// -state-roots, the other roots still run, and the gap shows in
+	// coverage and for -strict. (Without .terraform a root may still work:
+	// no providers, or providers from dev_overrides.)
+	uninitialized := func(err error) bool {
+		if initialized || o.init {
+			return false
+		}
+		sum.UnreadStates = append(sum.UnreadStates, root)
+		sum.Warnings = append(sum.Warnings, fmt.Sprintf("%s is not initialized: not queried and its state not read, so its objects may show as unmanaged and its providers' objects are missing (run terraform init there, or pass -init): %v", root, err))
+		return true
 	}
 	if o.noQuery {
 		// Only the state is needed: no provider schemas or query files.
 		insts, n, err := pullRoot(ctx, o, root)
 		if err != nil {
+			if uninitialized(err) {
+				return nil, nil
+			}
 			return nil, err
 		}
 		idx.Add(insts)
@@ -39,6 +55,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	schemas, err := r.ProvidersSchema(ctx)
 	if err != nil {
+		if uninitialized(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("%w\n(is the module initialized? run terraform init)", err)
 	}
 	declared, err := tf.LocalNames(root)

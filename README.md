@@ -112,7 +112,10 @@ A run that queried no resource type at all is an error too, since it could
 not have found anything (for example a provider version without list
 resources; the error names such providers). With `-strict`, incomplete
 coverage (a failed list query, a plugin error, a type skipped for want of
-an argument) is also an error, which suits CI.
+an argument) is also an error, which suits CI. A root given as an argument
+that is not initialized and fails for it is not queried and its state not
+read: a warning names it, coverage is incomplete, and the other roots still
+run (`-init` runs `terraform init` there first).
 
 Queries that did not list everything are summed up by cause: crashed,
 missing argument, permission denied, truncated, not found, request rejected
