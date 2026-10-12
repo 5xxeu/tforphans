@@ -205,15 +205,16 @@ type Summary struct {
 	Orphans   int `json:"orphans"`
 	Queried   int `json:"queried_types"`
 	// Complete is false when something was not checked: failed or
-	// truncated listings, unread states, plugin errors.
+	// truncated listings, unread states, plugin errors, types that needed
+	// a check and were skipped.
 	Complete bool `json:"complete"`
 	// Ran counts list block instances that started and types that scans
 	// listed: what was actually checked, unlike Queried, which counts
 	// blocks (a block with for_each = {} runs nothing).
 	Ran int `json:"-"`
-	// Listed are the types that were queried or scanned, with or without
+	// Checks are the listings that ran to the end, with or without
 	// results.
-	Listed   []string     `json:"-"`
+	Checks   []tf.Check   `json:"-"`
 	Skipped  []tf.Skip    `json:"skipped_types,omitempty"`
 	Failed   []tf.Failure `json:"failed_queries,omitempty"`
 	Warnings []string     `json:"warnings,omitempty"`
@@ -249,7 +250,7 @@ type Uncertain struct {
 const (
 	Complete   = "complete"   // listed, nothing failed
 	Incomplete = "incomplete" // a listing failed or was cut off
-	Skipped    = "skipped"    // the type cannot be listed (see skipped_types)
+	Skipped    = "skipped"    // left out on purpose or cannot be listed (see skipped_types)
 )
 
 // Coverage is how far one type was listed in one scope. Scope "" stands for
@@ -258,17 +259,26 @@ type Coverage struct {
 	Type   string `json:"type"`
 	Scope  string `json:"scope,omitempty"`
 	Status string `json:"status"`
-	// Reasons are the failure categories (see failed_queries) or the
-	// reason a type was skipped.
+	// Reasons are the failure categories (see failed_queries), the
+	// reason a type was skipped, or GapPrefix and the reason a type that
+	// needed a check was skipped.
 	Reasons []string `json:"reasons,omitempty"`
 	TypeCount
 }
 
-// BuildCoverage combines the counts per type and scope with the types that
-// were listed, skipped and failed. A type that was listed somewhere is not
-// reported as skipped: another root could not list it, but that alone is
-// not a gap. failed must be classified.
-func BuildCoverage(counts map[[2]string]*TypeCount, listed []string, skipped []tf.Skip, failed []tf.Failure) []Coverage {
+// GapPrefix starts the reason of a type that needed a check and was
+// skipped (see BuildCoverage).
+const GapPrefix = "skipped: "
+
+// BuildCoverage combines the counts per type and scope with the listings
+// that ran (checks), the types skipped and the listings that failed.
+// Every scope a check read gets a row, also one without objects. A type
+// skipped where a check was needed (a required argument, a provider with
+// only aliases) is incomplete unless the same root listed it some other
+// way: another root may look at another account. A type left out on
+// purpose (excluded) is skipped, and only when nothing listed it. failed
+// must be classified.
+func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped []tf.Skip, failed []tf.Failure) []Coverage {
 	byKey := map[[2]string]*Coverage{}
 	types := map[string]bool{}
 	entry := func(typ, scope string) *Coverage {
@@ -282,9 +292,16 @@ func BuildCoverage(counts map[[2]string]*TypeCount, listed []string, skipped []t
 	for k, c := range counts {
 		entry(k[0], k[1]).TypeCount = *c
 	}
-	for _, t := range listed {
-		if !types[t] {
-			entry(t, "")
+	checked := map[[2]string]bool{} // type, root
+	for _, c := range checks {
+		checked[[2]string{c.Type, c.Root}] = true
+		if c.Scope != "" {
+			entry(c.Type, c.Scope)
+		}
+	}
+	for _, c := range checks {
+		if c.Scope == "" && !types[c.Type] {
+			entry(c.Type, "")
 		}
 	}
 	addReason := func(c *Coverage, why string) {
@@ -310,12 +327,25 @@ func BuildCoverage(counts map[[2]string]*TypeCount, listed []string, skipped []t
 	}
 	isSkipped := map[string]bool{}
 	for _, sk := range skipped {
+		if !sk.Excluded {
+			if checked[[2]string{sk.Type, sk.Root}] {
+				continue
+			}
+			scope := ""
+			if sk.Root != "" {
+				scope = "root " + sk.Root
+			}
+			addReason(entry(sk.Type, scope), GapPrefix+sk.Reason)
+			continue
+		}
 		if types[sk.Type] && !isSkipped[sk.Type] {
 			continue
 		}
 		isSkipped[sk.Type] = true
 		c := entry(sk.Type, "")
-		c.Status = Skipped
+		if c.Status == Complete {
+			c.Status = Skipped
+		}
 		if !slices.Contains(c.Reasons, sk.Reason) {
 			c.Reasons = append(c.Reasons, sk.Reason)
 		}

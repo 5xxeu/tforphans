@@ -468,6 +468,14 @@ list "fake_thing" "tfo_aliased" {
 	if code != exitOrphans || !strings.Contains(stderr, "note: .: provider fake is configured only with aliases") || !strings.Contains(stderr, "1 resource types queried") {
 		t.Errorf("alias-only provider: exit %d\n%s", code, stderr)
 	}
+	// The user's block covers fake_thing; fake_zoned, skipped for the
+	// aliases, is a gap that -strict does not pass.
+	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOrphans || !strings.Contains(stderr, "coverage: complete") {
+		t.Errorf("alias-only provider, type covered by the user's block: exit %d\n%s", code, stderr)
+	}
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that needed a check)") {
+		t.Errorf("alias-only provider, type not covered: exit %d\n%s", code, stderr)
+	}
 }
 
 // TestIntegrationSameTypeTwoProviders: two providers (like google and

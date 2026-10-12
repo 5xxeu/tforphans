@@ -245,9 +245,10 @@ func TestPresets(t *testing.T) {
 }
 
 // Coverage per type and scope: a failure of one zone makes only that zone
-// incomplete, one without a scope every row of its type; a type listed with
-// no objects is complete, and one skipped in a root but listed elsewhere is
-// not reported as skipped.
+// incomplete, one without a scope every row of its type; every scope read
+// gets a row, also one without objects; a type skipped where a check was
+// needed is incomplete unless the same root listed it, and one left out on
+// purpose is skipped only when nothing listed it.
 func TestBuildCoverage(t *testing.T) {
 	counts := map[[2]string]*TypeCount{
 		{"rec", "zone a"}:  {Live: 2, Managed: 2},
@@ -259,27 +260,41 @@ func TestBuildCoverage(t *testing.T) {
 		{Type: "rule", Category: tf.FailTruncated},
 		{Type: "acct", Category: tf.FailDenied},
 	}
-	skipped := []tf.Skip{{Type: "empty", Reason: "needs region"}, {Type: "gone", Reason: "no data source"}}
-	got := BuildCoverage(counts, []string{"rec", "rule", "empty", "none"}, skipped, failed)
+	skipped := []tf.Skip{
+		{Type: "empty", Reason: "needs region", Root: "prod"},
+		{Type: "aliased", Reason: "provider p is configured only with aliases", Root: "staging"},
+		{Type: "gone", Reason: "no data source", Excluded: true},
+		{Type: "twin", Reason: "listed through google", Excluded: true},
+	}
+	checks := []tf.Check{
+		{Type: "rec", Scope: "zone a"}, {Type: "rec", Scope: "zone b"}, {Type: "rec", Scope: "zone d"},
+		{Type: "rule", Scope: "zone a"}, {Type: "none"},
+		{Type: "empty", Root: "prod"}, {Type: "aliased", Root: "prod"}, {Type: "twin", Root: "prod"},
+	}
+	got := BuildCoverage(counts, checks, skipped, failed)
 	var lines []string
 	for _, c := range got {
 		lines = append(lines, fmt.Sprintf("%s/%s %s %v %d/%d/%d/%d", c.Type, c.Scope, c.Status, c.Reasons, c.Live, c.Managed, c.Uncertain, c.Orphans))
 	}
 	want := []string{
 		"acct/ incomplete [permission denied] 0/0/0/0",
+		"aliased/ complete [] 0/0/0/0",
+		"aliased/root staging incomplete [skipped: provider p is configured only with aliases] 0/0/0/0",
 		"empty/ complete [] 0/0/0/0",
 		"gone/ skipped [no data source] 0/0/0/0",
 		"none/ complete [] 0/0/0/0",
 		"rec/zone a complete [] 2/2/0/0",
 		"rec/zone b complete [] 1/0/0/1",
 		"rec/zone c incomplete [permission denied] 0/0/0/0",
+		"rec/zone d complete [] 0/0/0/0",
 		"rule/zone a incomplete [truncated] 1/0/1/0",
+		"twin/ complete [] 0/0/0/0",
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Errorf("coverage:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
 	}
 	st := typeStatus(got)
-	if st["rec"] != Incomplete || st["gone"] != Skipped || st["none"] != Complete {
+	if st["rec"] != Incomplete || st["gone"] != Skipped || st["none"] != Complete || st["aliased"] != Incomplete {
 		t.Errorf("type status %v", st)
 	}
 }

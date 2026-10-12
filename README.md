@@ -111,8 +111,8 @@ Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
 A run that queried no resource type at all is an error too, since it could
 not have found anything (for example a provider version without list
 resources; the error names such providers). With `-strict`, incomplete
-coverage (a failed list query or a plugin error) is also an error, which
-suits CI.
+coverage (a failed list query, a plugin error, a type skipped for want of
+an argument) is also an error, which suits CI.
 
 Queries that did not list everything are summed up by cause: crashed,
 missing argument, permission denied, truncated, not found, request rejected
@@ -131,7 +131,15 @@ state (exact) or by attributes.
 
 The last line says whether "nothing unmanaged" can be trusted: `coverage:
 complete`, or `coverage: INCOMPLETE` with what was not checked (failed or
-truncated listings, unread states, plugin errors). Before the slow part,
+truncated listings, unread states, plugin errors, and types that needed a
+check and were skipped in a root: a list resource with a required argument
+not given with `-arg`, a provider configured only with aliases). A type
+left out on purpose (`-exclude-types`, opt-in types, google-beta listed
+through google, a scope not asked for) or one with no list resource or
+data source at all does not make coverage incomplete; the line then reads
+`coverage: complete for what can be listed; not checked: ...`, and `-v`
+lists those types. A type listed in one root does not cover a root where
+it was skipped, since the roots may look at different accounts. Before the slow part,
 a `plan:` line says what the run checks: which roots are queried, how many
 states are read, what is scanned and with which scope.
 
@@ -162,9 +170,11 @@ ignores `.tforphans.yaml`. Credentials stay in the environment, as without
 a file.
 
 `.tforphans.yaml` is read on its own, so it may come with someone else's
-repository. Such a file cannot set what runs commands or sends
-credentials, or creates files: `plugin`, `terraform`, `init`, `allow-http`,
-`o` and `state` URLs are accepted only from a file given with `-config`.
+repository. Such a file cannot set what runs commands or the root's data
+sources, installs an unpinned provider, sends credentials, puts attribute
+values into the output or creates files: `plugin`, `terraform`, `init`,
+`refresh`, `allow-unpinned`, `allow-http`, `include-attrs`, `o` and `state`
+URLs are accepted only from a file given with `-config`.
 
 ### Resources in modules
 
@@ -276,7 +286,9 @@ that configures a provider only with aliases (`provider "aws" { alias =
 "prod" }` and no block without an alias) gets no generated blocks for it,
 since the empty default configuration could reach another account through
 the environment; a note says so, and your own list blocks with `provider =
-aws.prod` cover it. A provider with no provider block at all is queried
+aws.prod` cover it. Until they do, its types count as not checked in that
+root (coverage incomplete, an error with `-strict`); `-exclude-types`
+leaves them out on purpose. A provider with no provider block at all is queried
 (credentials from the environment, as for any run).
 
 ### Narrowing the scan
@@ -391,9 +403,13 @@ type and scope:
 ```
 
 `status` is `complete`, `incomplete` (with the failure categories in
-`reasons`) or `skipped` (the type cannot be listed; `reasons` says why). A
-row without `scope` stands for the type as a whole: a type listed without
-results, or a failure that concerns every scope. Each orphan has a `scope`
+`reasons`, or `skipped: <reason>` and a scope `root <dir>` for a type that
+needed a check there) or `skipped` (left out on purpose or cannot be
+listed; `reasons` says why). Every scope that was read has a row, also one
+without objects of the type. A row without `scope` stands for the type as
+a whole: a type listed without results, or a failure that concerns every
+scope. Only listings that ran count: a list block with `for_each = {}`
+checks nothing. Each orphan has a `scope`
 such as `zone example.com` when it is known. Every orphan has the same keys. `-include-attrs
 labels,creation_timestamp` adds those attributes to each orphan (to see how
 old an object is, or who owns it); attributes can hold secrets, so ask only

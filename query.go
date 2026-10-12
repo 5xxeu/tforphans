@@ -55,7 +55,10 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly,
 		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 }, ProviderConfigs: configs})
-	sum.Skipped = append(sum.Skipped, plan.Skipped...)
+	for _, sk := range plan.Skipped {
+		sk.Root = root
+		sum.Skipped = append(sum.Skipped, sk)
+	}
 	for _, n := range plan.Notes {
 		sum.Notes = append(sum.Notes, root+": "+n)
 	}
@@ -132,11 +135,10 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
-	for _, q := range plan.Queries {
-		sum.Listed = append(sum.Listed, q.Type)
-	}
-	for addr := range userLists {
-		sum.Listed = append(sum.Listed, strings.Split(addr, ".")[1])
+	// What finished counts, not what was planned: a block with
+	// for_each = {} checks nothing.
+	for _, t := range res.Done {
+		sum.Checks = append(sum.Checks, tf.Check{Type: t, Root: root})
 	}
 	sum.Ran += res.Started
 	sum.Failed = append(sum.Failed, res.Failed...)

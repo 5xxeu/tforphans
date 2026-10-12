@@ -106,6 +106,8 @@ type QueryResult struct {
 	Failed   []Failure
 	Started  int // list block instances that started
 	Complete int // list block instances that finished
+	// Done are the resource types of the instances that finished.
+	Done []string
 	// Unfinished are the list block instances that started but neither
 	// finished nor reported an error of their own.
 	Unfinished []string
@@ -272,6 +274,7 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 			res.Complete++
 			c := m.ListComplete
 			finished[c.Address] = true
+			res.Done = append(res.Done, c.ResourceType)
 			block, _, _ := strings.Cut(c.Address, "[")
 			switch limit := limitFor(block); {
 			case limit <= 0 && c.Total > 0:

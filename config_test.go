@@ -91,6 +91,15 @@ func TestConfigRejected(t *testing.T) {
 			t.Errorf("%q: %v, want %q", conf, err, want)
 		}
 	}
+	// Keys of the report mode: refresh runs the root's data sources,
+	// include-attrs puts attribute values into the output.
+	for _, conf := range []string{"refresh: true\n", "include-attrs: [content]\n", "allow-unpinned: true\n"} {
+		t.Chdir(t.TempDir())
+		os.WriteFile(defaultConfigFile, []byte(conf), 0o644)
+		if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "only from a file given with -config") {
+			t.Errorf("%q: %v", conf, err)
+		}
+	}
 	// The same keys are fine in a file the user names.
 	dir := t.TempDir()
 	t.Chdir(dir)

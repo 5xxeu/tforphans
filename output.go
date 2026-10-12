@@ -135,7 +135,14 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 	}
 	if o.verbose {
 		for _, sk := range s.Skipped {
-			fmt.Fprintf(w, "  skipped %s: %s\n", report.Clean(sk.Type), report.Clean(sk.Reason))
+			where := ""
+			if sk.Root != "" {
+				where = " in " + report.Clean(sk.Root)
+			}
+			fmt.Fprintf(w, "  skipped %s%s: %s\n", report.Clean(sk.Type), where, report.Clean(sk.Reason))
+		}
+		for _, p := range slices.Compact(slices.Sorted(slices.Values(s.NoList))) {
+			fmt.Fprintf(w, "  no list resources: %s\n", report.Clean(p))
 		}
 	}
 	printFailed(w, o, s.Failed)
@@ -153,13 +160,38 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		fmt.Fprintf(w, "warning: %d objects are uncertain (%s): they match state only by ID, so their account, subscription or cluster could not be checked; with states of several accounts or clusters they may be unmanaged. State without resource identity: pass -refresh to read identities without writing anything, or record them with terraform apply -refresh-only and a current provider. Proxmox and plugin results marked unverified: state does not record the cluster; scan one cluster with its own states and pass -proxmox-cluster-states or -plugin-cluster-states.\n", s.Uncertain, where)
 	}
 	// The last line says whether "nothing unmanaged" can be trusted.
+	// Complete covers what can be listed; say what could not be.
+	var out []string
+	gapTypes := map[string]bool{}
+	for _, c := range s.Coverage {
+		switch {
+		case c.Status == report.Skipped:
+			out = append(out, c.Type)
+		case slices.ContainsFunc(c.Reasons, func(r string) bool { return strings.HasPrefix(r, report.GapPrefix) }):
+			gapTypes[c.Type] = true
+		}
+	}
 	if s.Complete {
-		fmt.Fprintln(w, "coverage: complete")
+		var beyond []string
+		if len(out) > 0 {
+			beyond = append(beyond, fmt.Sprintf("%d types left out on purpose or without any listing", len(out)))
+		}
+		if len(s.NoList) > 0 {
+			beyond = append(beyond, fmt.Sprintf("%d providers without list resources", len(slices.Compact(slices.Sorted(slices.Values(s.NoList))))))
+		}
+		if len(beyond) == 0 {
+			fmt.Fprintln(w, "coverage: complete")
+			return
+		}
+		fmt.Fprintf(w, "coverage: complete for what can be listed; not checked: %s (-v lists them)\n", strings.Join(beyond, ", "))
 		return
 	}
 	var gaps []string
 	if n := len(s.Failed); n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d failed or truncated listings", n))
+	}
+	if n := len(gapTypes); n > 0 {
+		gaps = append(gaps, fmt.Sprintf("%d types skipped that needed a check", n))
 	}
 	if n := len(s.UnreadStates); n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d states not read", n))

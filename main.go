@@ -195,7 +195,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...] lines (default "+defaultIgnoreFile+" if present)")
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable")
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
-	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
+	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
 	fs.BoolVar(&o.printQuery, "print-query", false, "print the generated .tfquery.hcl for each root and exit")
 	fs.BoolVar(&o.noQuery, "no-query", false, "do not run terraform query: read the roots' states and run plugins only")
@@ -444,7 +444,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
 		sum.Ran += len(res.Listed)
-		sum.Listed = append(sum.Listed, res.Listed...)
+		sum.Checks = append(sum.Checks, res.Checks...)
 		sum.Skipped = append(sum.Skipped, res.Skipped...)
 		// Import blocks need the provider's local name in that root when it
 		// is not the type prefix (cf = { source = "cloudflare/cloudflare" }).
@@ -567,8 +567,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
-	sum.Complete = len(sum.Failed) == 0 && len(sum.Warnings) == 0
-	sum.Coverage = report.BuildCoverage(byTypeScope, sum.Listed, sum.Skipped, sum.Failed)
+	sum.Coverage = report.BuildCoverage(byTypeScope, sum.Checks, sum.Skipped, sum.Failed)
+	sum.Complete = len(sum.Failed) == 0 && len(sum.Warnings) == 0 &&
+		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (written before Terraform 1.12 or by a provider without identities): they are matched by attributes, which is less certain. -refresh reads identities without writing anything; terraform apply -refresh-only with a current provider records them in state (it needs write access).", n, idx.Len()))
 	}
@@ -633,9 +634,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		return exitCode(exitError)
 	}
 
-	incomplete := len(sum.Failed) > 0 || len(sum.Warnings) > 0 || sum.Uncertain > 0
 	switch {
-	case o.strict && incomplete:
+	case o.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)
 	case len(orphans) > 0 && !o.adopt:
 		return exitCode(exitOrphans)

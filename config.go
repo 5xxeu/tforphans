@@ -16,10 +16,11 @@ import (
 const defaultConfigFile = ".tforphans.yaml"
 
 // configOnlyExplicit are keys a config file found on its own may not set:
-// they run commands, install providers, send credentials or create files
-// (adopt -o), and the file may come with someone else's repository. A file
-// given with -config may.
-var configOnlyExplicit = []string{"plugin", "terraform", "init", "allow-http", "o"}
+// they run commands or the root's data sources (refresh plans the root),
+// install providers, send credentials, put attribute values into the
+// output or create files (adopt -o), and the file may come with someone
+// else's repository. A file given with -config may.
+var configOnlyExplicit = []string{"plugin", "terraform", "init", "refresh", "allow-unpinned", "allow-http", "include-attrs", "o"}
 
 // configPathKeys hold paths, which are relative to the config file.
 var configPathKeys = []string{"state-roots", "state", "ignore", "o", "terraform"}

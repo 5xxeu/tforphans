@@ -154,6 +154,7 @@ type Options struct {
 type Result struct {
 	Resources []model.Resource
 	Listed    []string     // resource types listed
+	Checks    []tf.Check   // listings read, by scope
 	Skipped   []tf.Skip    // resource types without a usable data source
 	Failed    []tf.Failure // resource types whose data source failed
 }
@@ -294,27 +295,37 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	// A type counts as listed when one of its blocks read something: an
 	// unscoped block, or a scoped one with no failed instance or at least
 	// one instance that worked (one whose every zone failed listed nothing).
-	instances, err := instanceCounts(stateData)
+	instances, err := instanceKeys(stateData)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.Name, err)
+	}
+	names, err := parentNames(stateData)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", a.Name, err)
 	}
 	listed := map[string]bool{}
 	for _, b := range blocks {
+		keys := instances[b.addr()]
 		// A scoped block left with no instance (every zone failed, or
 		// -scan-scope names none that exists) listed nothing.
-		if b.hidden || b.scope != nil && (len(b.exclude) > 0 || len(b.only) > 0) && instances[b.addr()] == 0 {
+		if b.hidden || b.scope != nil && (len(b.exclude) > 0 || len(b.only) > 0) && len(keys) == 0 {
 			continue
 		}
 		for _, l := range b.listings {
 			listed[l.resourceType] = true
+			// Each scope read counts, also one without objects of the
+			// type; a scoped block without instances had nothing to read.
+			if b.scope == nil || len(keys) == 0 {
+				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType})
+				continue
+			}
+			for _, k := range keys {
+				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType, Scope: scopeLabel(b.scope, k, names[b.parent][k])})
+			}
 		}
 	}
 	res.Listed = slices.Sorted(maps.Keys(listed))
 	res.Failed = append(res.Failed, reportFailures(failures, all, listed, a)...)
-	names, err := parentNames(stateData)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", a.Name, err)
-	}
 	defer func() { failureScopes(res.Failed, all, names) }()
 	if len(blocks) == 0 {
 		return res, nil
@@ -610,12 +621,12 @@ func buildPlan(s *schema, a Adapter, opt Options) plan {
 	}
 	for _, t := range types {
 		if reason, ok := a.Skip[t]; ok {
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: reason})
+			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: reason, Excluded: true})
 			continue
 		}
 		ds := plural(s, t)
 		if ds == "" {
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: "no list resource or plural data source"})
+			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: "no list resource or plural data source", Excluded: true})
 			continue
 		}
 		attrs := s.DataSources[ds].Block.Attributes
@@ -807,27 +818,35 @@ func contextAttrs(stateData []byte, names []string) (map[string]map[string]any, 
 	return out, nil
 }
 
-// instanceCounts returns how many instances each data block has in the
-// scan's state.
-func instanceCounts(stateData []byte) (map[string]int, error) {
-	out := map[string]int{}
+// instanceKeys returns the instance keys (zone IDs) of each data block in
+// the state; an instance without a key has "".
+func instanceKeys(stateData []byte) (map[string][]string, error) {
+	out := map[string][]string{}
 	if len(stateData) == 0 {
 		return out, nil
 	}
 	var st struct {
 		Resources []struct {
-			Mode      string            `json:"mode"`
-			Type      string            `json:"type"`
-			Name      string            `json:"name"`
-			Instances []json.RawMessage `json:"instances"`
+			Mode      string `json:"mode"`
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Instances []struct {
+				IndexKey any `json:"index_key"`
+			} `json:"instances"`
 		} `json:"resources"`
 	}
 	if err := json.Unmarshal(stateData, &st); err != nil {
 		return nil, fmt.Errorf("decode data source state: %w", err)
 	}
 	for _, r := range st.Resources {
-		if r.Mode == "data" {
-			out["data."+r.Type+"."+r.Name] = len(r.Instances)
+		if r.Mode != "data" {
+			continue
+		}
+		addr := "data." + r.Type + "." + r.Name
+		out[addr] = []string{}
+		for _, in := range r.Instances {
+			k, _ := in.IndexKey.(string)
+			out[addr] = append(out[addr], k)
 		}
 	}
 	return out, nil
