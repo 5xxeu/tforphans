@@ -370,4 +370,11 @@ func TestNewUnreadState(t *testing.T) {
 	if got := NewUnreadState("r", errors.New("not initialized")).Error; got != "not initialized" {
 		t.Errorf("%q", got)
 	}
+	err = errors.Join(
+		errors.New("workspace a: terraform state pull: exit status 1\nError: Backend initialization required"),
+		errors.New("workspace b: decode state: unexpected end of JSON input"),
+		errors.New("workspace c: read: permission denied\nmore"))
+	if got := NewUnreadState("r", err).Error; got != "workspace a: Error: Backend initialization required; workspace b: decode state: unexpected end of JSON input; workspace c: read: permission denied" {
+		t.Errorf("%q", got)
+	}
 }

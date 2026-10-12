@@ -194,25 +194,34 @@ type UnreadState struct {
 // NewUnreadState keeps the telling line of err: terraform's "Error: ..."
 // line when there is one, else the first.
 //
-// Errors of several workspaces ("workspace NAME: ...") keep their names.
+// Errors of several workspaces ("workspace NAME: ...") are shortened one by
+// one and keep their names.
 func NewUnreadState(root string, err error) UnreadState {
-	lines := strings.Split(err.Error(), "\n")
 	var parts []string
-	ws := ""
-	for _, l := range lines {
+	ws, first, found := "", "", false
+	flush := func() {
+		if !found && first != "" && !slices.Contains(parts, first) {
+			parts = append(parts, first)
+		}
+	}
+	for _, l := range strings.Split(err.Error(), "\n") {
 		l = strings.TrimSpace(l)
 		if name, ok := strings.CutPrefix(l, "workspace "); ok {
 			if n, _, ok := strings.Cut(name, ": "); ok {
-				ws = "workspace " + n + ": "
+				flush()
+				ws, first, found = "workspace "+n+": ", l, false
+				continue
 			}
+		}
+		if first == "" {
+			first = ws + l
 		}
 		if strings.HasPrefix(l, "Error: ") && !slices.Contains(parts, ws+l) {
 			parts = append(parts, ws+l)
+			found = true
 		}
 	}
-	if len(parts) == 0 {
-		return UnreadState{Root: root, Error: lines[0]}
-	}
+	flush()
 	return UnreadState{Root: root, Error: strings.Join(parts, "; ")}
 }
 
