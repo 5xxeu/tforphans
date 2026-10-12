@@ -36,7 +36,7 @@ func TestFindRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, _, err := FindRoots(dir)
+	got, _, err := FindRoots(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +227,32 @@ func TestFindRootsUnreadable(t *testing.T) {
 	if _, err := os.ReadDir(filepath.Join(dir, "locked")); err == nil {
 		t.Skip("permissions are not enforced here (root)")
 	}
-	roots, unread, err := FindRoots(dir)
+	roots, unread, err := FindRoots(dir, false)
 	if err != nil || len(roots) != 1 || len(unread) != 1 || !strings.HasSuffix(unread[0], "locked") {
 		t.Errorf("roots %v, unread %v, err %v", roots, unread, err)
+	}
+}
+
+func TestTerragruntUnits(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"terragrunt.hcl":                       "remote_state {\n  backend = \"s3\"\n}\n", // legacy parent: no unit
+		"root.hcl":                             "remote_state {\n  backend = \"s3\"\n}\n",
+		"app/terragrunt.hcl":                   "include \"root\" {\n  path = find_in_parent_folders(\"root.hcl\")\n}\n",
+		"db/terragrunt.hcl":                    "terraform {\n  source = \"../modules/db\"\n}\n",
+		"modules/db/main.tf":                   "resource \"terraform_data\" \"x\" {}\n",
+		"app/.terragrunt-cache/x/y/backend.tf": "terraform {\n  backend \"s3\" {}\n}\n",
+	}
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+	}
+	got, _, err := FindRoots(dir, true)
+	want := []string{filepath.Join(dir, "app"), filepath.Join(dir, "db")}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("units: %v, %v", got, err)
+	}
+	if got, _, _ := FindRoots(dir, false); len(got) != 0 {
+		t.Errorf("without -terragrunt: %v", got)
 	}
 }

@@ -29,7 +29,7 @@ var commandLineOnly = []string{"plugin", "terraform", "allow-http", "o"}
 // attribute values into the output, or make results look more certain
 // than they are (a state file of its own, trusting cluster states, adopt
 // with unread states).
-var configOnlyExplicit = []string{"init", "refresh", "allow-unpinned", "include-attrs",
+var configOnlyExplicit = []string{"init", "terragrunt", "refresh", "allow-unpinned", "include-attrs",
 	"state", "proxmox-cluster-states", "plugin-cluster-states", "allow-incomplete"}
 
 // configPathKeys hold paths, which are relative to the config file.

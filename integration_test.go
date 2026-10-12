@@ -800,3 +800,50 @@ func TestIntegrationAPIOff(t *testing.T) {
 		t.Errorf("aliased block with the API off: exit %d\n%s", code, stderr)
 	}
 }
+
+// TestIntegrationTerragrunt reads the state of a Terragrunt unit under
+// -state-roots with -terragrunt (needs terragrunt 0.73+ in PATH).
+func TestIntegrationTerragrunt(t *testing.T) {
+	if _, err := exec.LookPath("terragrunt"); err != nil {
+		t.Skip("terragrunt not in PATH")
+	}
+	if _, err := exec.LookPath("terraform"); err != nil {
+		t.Skip("terraform not in PATH")
+	}
+	live := filepath.Join(t.TempDir(), "live")
+	files := map[string]string{
+		"root.hcl": `remote_state {
+  backend  = "local"
+  generate = {
+    path      = "backend.tf"
+    if_exists = "overwrite"
+  }
+  config = {
+    path = "${get_parent_terragrunt_dir()}/state/${path_relative_to_include()}/terraform.tfstate"
+  }
+}
+`,
+		"app/terragrunt.hcl":     "include \"root\" {\n  path = find_in_parent_folders(\"root.hcl\")\n}\nterraform {\n  source = \"../../modules/app\"\n}\n",
+		"../modules/app/main.tf": "resource \"terraform_data\" \"x\" {\n  input = \"hello\"\n}\n",
+	}
+	for name, body := range files {
+		p := filepath.Join(live, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, p, body)
+	}
+	apply := exec.Command("terragrunt", "apply", "-auto-approve", "--non-interactive")
+	apply.Dir = filepath.Join(live, "app")
+	if out, err := apply.CombinedOutput(); err != nil {
+		t.Fatalf("terragrunt apply: %v\n%s", err, tail(string(out)))
+	}
+	code, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live, "-terragrunt")
+	if code != exitOK || !strings.Contains(stderr, "1 states read") {
+		t.Errorf("exit %d\n%s", code, stderr)
+	}
+	// Without -terragrunt the unit is no root: nothing to read.
+	if _, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live); !strings.Contains(stderr, "0 states read") {
+		t.Errorf("without -terragrunt:\n%s", stderr)
+	}
+}

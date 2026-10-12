@@ -94,7 +94,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	}
 	var dirs []string
 	for _, tree := range o.stateRoots {
-		found, unread, err := tf.FindRoots(tree)
+		found, unread, err := tf.FindRoots(tree, o.terragrunt)
 		if err != nil {
 			return nil, fmt.Errorf("-state-roots %s: %w", tree, err)
 		}
@@ -147,6 +147,19 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
 	if err := tf.RemoveStale(dir); err != nil {
 		return nil, 0, err
+	}
+	// A Terragrunt unit: terragrunt renders the backend and initializes
+	// on its own. One state (units do not use workspaces), never refreshed.
+	if o.terragrunt && tf.IsTerragruntUnit(dir) {
+		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		insts, err := state.Parse(raw)
+		if err != nil {
+			return nil, 0, err
+		}
+		return insts, 1, nil
 	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
 	if !r.Initialized() {

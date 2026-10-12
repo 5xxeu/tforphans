@@ -32,10 +32,13 @@ import (
 // of non-default workspaces (terraform.tfstate.d) marks its parent as a
 // root and is not walked into.
 //
+// With units, a Terragrunt unit (see IsTerragruntUnit) counts as a root too;
+// its .terragrunt-cache is hidden and not walked into.
+//
 // Directories below dir that cannot be read (permission denied) are
 // returned as unread instead of failing the walk: a tree such as a home
 // directory has some.
-func FindRoots(dir string) (roots, unread []string, err error) {
+func FindRoots(dir string, units bool) (roots, unread []string, err error) {
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
@@ -57,6 +60,9 @@ func FindRoots(dir string) (roots, unread []string, err error) {
 				return filepath.SkipDir
 			}
 			return err
+		}
+		if !ok && units {
+			ok = IsTerragruntUnit(path)
 		}
 		if ok {
 			roots = append(roots, path)
@@ -567,4 +573,45 @@ func majorMinor(v string) (major, minor int, ok bool) {
 	major, err1 := strconv.Atoi(parts[0])
 	minor, err2 := strconv.Atoi(strings.SplitN(parts[1], "-", 2)[0])
 	return major, minor, err1 == nil && err2 == nil
+}
+
+// IsTerragruntUnit reports a directory whose terragrunt.hcl deploys a module:
+// it has a terraform block (source) or includes a parent configuration. A
+// parent such as a legacy top-level terragrunt.hcl with only remote_state
+// has neither and is no unit.
+func IsTerragruntUnit(dir string) bool {
+	f, diags := hclparse.NewParser().ParseHCLFile(filepath.Join(dir, "terragrunt.hcl"))
+	if diags.HasErrors() || f == nil {
+		return false
+	}
+	body, ok := f.Body.(*hclsyntax.Body)
+	if !ok {
+		return false
+	}
+	for _, b := range body.Blocks {
+		if b.Type == "terraform" || b.Type == "include" {
+			return true
+		}
+	}
+	return false
+}
+
+// TerragruntStatePull reads the state of a Terragrunt unit with terragrunt,
+// which renders the backend and runs terraform (init included: it fetches
+// the module and providers into .terragrunt-cache). tfBin is the terraform
+// it runs.
+func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string) ([]byte, error) {
+	r := Runner{Bin: bin, Dir: dir, Env: []string{
+		// Current and older names of the same settings.
+		"TG_NON_INTERACTIVE=true", "TERRAGRUNT_NON_INTERACTIVE=true",
+		"TG_TF_PATH=" + tfBin, "TERRAGRUNT_TFPATH=" + tfBin,
+		"TG_LOG_LEVEL=error", "TERRAGRUNT_LOG_LEVEL=error",
+	}}
+	// "run --" needs Terragrunt 0.73 or newer.
+	args := []string{"run", "--", "state", "pull"}
+	out, stderr, err := r.run(ctx, args...)
+	if err != nil {
+		return nil, cmdError(append([]string{"(terragrunt)"}, args...), stderr, err)
+	}
+	return out, nil
 }

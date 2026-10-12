@@ -286,6 +286,28 @@ credentials go to every URL given. Plain http needs `-allow-http` and never
 carries credentials, since state read over it could be altered in transit.
 State must be raw state (`terraform state pull`), not `terraform show -json`.
 
+### Terragrunt
+
+`-terragrunt` makes `-state-roots` read Terragrunt units too: directories
+whose `terragrunt.hcl` has a `terraform` block or an `include`, such as
+`live/prod/app` under a `root.hcl`. Each unit's state is read with
+`terragrunt run -- state pull` (Terragrunt 0.73 or newer in `PATH`; tested
+with 1.1.6), which renders the backend the unit's configuration describes,
+so remote state blocks, `generate` and includes all work. Terragrunt
+initializes a unit before reading it: it fetches the module source and
+providers into `.terragrunt-cache` next to `terragrunt.hcl`, as any
+terragrunt command does, which is why the flag is opt-in (and accepted
+from `-config FILE`, not from `.tforphans.yaml`). It runs the terraform
+of `-terraform`.
+
+```sh
+tforphans -no-query -scan cloudflare -state-roots live -terragrunt
+```
+
+Units are read as states only: their modules are not queried, and `-refresh`
+does not apply to them. Workspaces are not used by units and are not
+listed.
+
 ### Regions, locations and other list arguments
 
 List queries use the provider configuration of the root module, so by
@@ -789,9 +811,9 @@ line, never from a config file a merge request could change.
 - The temporary files are written next to the configuration; there is no
   separate work directory, and a provider version cannot be overridden for
   the run (the root's installed providers are used).
-- Terragrunt is not supported yet: generated backends live in
-  `.terragrunt-cache`, which `-state-roots` skips. Pass such states with
-  `-state` or run tforphans in the generated directories.
+- Terragrunt units are read only as states (`-state-roots DIR -terragrunt`);
+  their modules are not queried. List their providers' objects from a plain
+  root with the same provider configuration, or with `-scan`.
 - Generated configuration can need manual fixes when the API does not return
   everything the resource requires. For example, Cloudflare does not return
   a Worker's code, so `cloudflare_workers_script` needs `content_file`, and
