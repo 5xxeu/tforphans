@@ -234,21 +234,28 @@ func TestFindRootsUnreadable(t *testing.T) {
 	}
 }
 
-// A legacy parent above units that are all generated, walked from ".":
-// the units are found first, the parent is no unit.
-func TestTerragruntParentFromDot(t *testing.T) {
+// Parents are the terragrunt.hcl files units include; any other one is a
+// unit, even with units below it or with all its configuration generated.
+func TestTerragruntParents(t *testing.T) {
 	dir := t.TempDir()
 	gen := "remote_state {\n  backend = \"s3\"\n}\ngenerate \"main\" {\n  path = \"main.tf\"\n  contents = \"\"\n}\n"
-	for _, name := range []string{"terragrunt.hcl", "live/terragrunt.hcl", "live/app/terragrunt.hcl", "live/db/terragrunt.hcl", "x/terragrunt.hcl"} {
-		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
-		os.WriteFile(filepath.Join(dir, name), []byte(gen), 0o644)
+	files := map[string]string{
+		"terragrunt.hcl":             gen, // legacy parent of svc
+		"svc/terragrunt.hcl":         "include \"root\" {\n  path = find_in_parent_folders()\n}\n",
+		"live/app/terragrunt.hcl":    gen, // a unit with a unit below that includes root.hcl
+		"live/app/db/terragrunt.hcl": "include \"root\" {\n  path = find_in_parent_folders(\"root.hcl\")\n}\n",
+		"lit/terragrunt.hcl":         gen, // parent by a literal path
+		"lit/u/terragrunt.hcl":       "include \"root\" {\n  path = \"../terragrunt.hcl\"\n}\n",
+		"x/terragrunt.hcl":           gen, // a terraform root below does not make a parent
+		"x/tools/main.tf":            "terraform {\n  backend \"s3\" {}\n}\n",
 	}
-	// A terraform root inside a generated unit does not make it a parent.
-	os.MkdirAll(filepath.Join(dir, "x", "tools"), 0o755)
-	os.WriteFile(filepath.Join(dir, "x", "tools", "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644)
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+	}
 	t.Chdir(dir)
 	got, unread, err := FindRoots(".", true)
-	want := []string{filepath.Join("live", "app"), filepath.Join("live", "db"), "x", filepath.Join("x", "tools")}
+	want := []string{filepath.Join("lit", "u"), filepath.Join("live", "app"), filepath.Join("live", "app", "db"), "svc", "x", filepath.Join("x", "tools")}
 	if err != nil || len(unread) != 0 || !reflect.DeepEqual(got, want) {
 		t.Errorf("%v %v %v", got, unread, err)
 	}
@@ -259,7 +266,7 @@ func TestTerragruntUnits(t *testing.T) {
 	files := map[string]string{
 		"terragrunt.hcl":                       "remote_state {\n  backend = \"s3\"\n}\n", // legacy parent: no unit
 		"root.hcl":                             "remote_state {\n  backend = \"s3\"\n}\n",
-		"app/terragrunt.hcl":                   "include \"root\" {\n  path = find_in_parent_folders(\"root.hcl\")\n}\n",
+		"app/terragrunt.hcl":                   "include \"root\" {\n  path = find_in_parent_folders()\n}\n", // makes the top one a parent
 		"db/terragrunt.hcl":                    "terraform {\n  source = \"../modules/db\"\n}\n",
 		"modules/db/main.tf":                   "resource \"terraform_data\" \"x\" {}\n",
 		"local/terragrunt.hcl":                 "remote_state {\n  backend = \"s3\"\n}\n", // fresh checkout: no backend.tf yet

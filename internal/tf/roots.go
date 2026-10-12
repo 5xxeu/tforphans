@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,7 +40,9 @@ import (
 // unread instead of failing the walk: a tree such as a home directory has
 // some, and a root there may manage what is found.
 func FindRoots(dir string, units bool) (roots []string, unread []Unread, err error) {
-	var maybe, found []string // candidate parents, units
+	var maybe, tg []string // candidate parents, every directory with a terragrunt.hcl
+	parents := map[string]bool{}
+	var nearest []string // units that include the nearest terragrunt.hcl above
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
@@ -73,12 +74,21 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 				unread = append(unread, Unread{path, err.Error()})
 				return nil
 			}
+			if kind != TerragruntNone {
+				tg = append(tg, path)
+			}
+			if kind == TerragruntUnit {
+				dirs, near := terragruntIncludes(path)
+				for _, d := range dirs {
+					parents[absPath(d)] = true
+				}
+				if near {
+					nearest = append(nearest, path)
+				}
+			}
 			if kind == TerragruntMaybe && !ok {
 				maybe = append(maybe, path)
 				return nil
-			}
-			if kind != TerragruntNone {
-				found = append(found, path)
 			}
 			ok = ok || kind != TerragruntNone
 		}
@@ -87,22 +97,85 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 		}
 		return nil
 	})
-	// A terragrunt.hcl that may be a parent is one when units lie below it;
-	// otherwise it is a unit (its configuration may be all generated).
-	// Deepest first: whether a candidate is a parent depends on the ones
-	// below it (an absolute path below is always longer; "a" below "." is
-	// not, as written).
-	slices.SortFunc(maybe, func(a, b string) int { return len(absPath(b)) - len(absPath(a)) })
+	for _, u := range nearest {
+		best := ""
+		for _, d := range tg {
+			if a := absPath(d); below(d, u) && len(a) > len(best) {
+				best = a
+			}
+		}
+		if best != "" {
+			parents[best] = true
+		}
+	}
+	// A terragrunt.hcl with no terraform block, include or .tf files is a
+	// parent only when a unit includes it; otherwise it is a unit (its
+	// configuration may be all generated). Taking a parent for a unit costs
+	// an unread state (terragrunt fails there); the other way round would
+	// lose a unit without a trace.
 	for _, m := range maybe {
-		// Units below make a parent; terraform roots below (a tools
-		// directory inside a unit) do not.
-		if !slices.ContainsFunc(found, func(r string) bool { return below(m, r) }) {
+		if !parents[absPath(m)] {
 			roots = append(roots, m)
-			found = append(found, m)
 		}
 	}
 	sort.Strings(roots)
 	return roots, unread, err
+}
+
+// terragruntIncludes returns the directories of the terragrunt.hcl files a
+// unit includes by a literal path, and whether it includes the nearest one
+// above it (find_in_parent_folders() or find_in_parent_folders("terragrunt.hcl")).
+// Other expressions are not followed.
+func terragruntIncludes(dir string) (dirs []string, nearest bool) {
+	name := filepath.Join(dir, "terragrunt.hcl")
+	src, err := os.ReadFile(name)
+	if err != nil {
+		return nil, false
+	}
+	f, diags := hclparse.NewParser().ParseHCL(src, name)
+	if diags.HasErrors() {
+		return nil, false
+	}
+	body, ok := f.Body.(*hclsyntax.Body)
+	if !ok {
+		return nil, false
+	}
+	for _, b := range body.Blocks {
+		if b.Type != "include" || b.Body.Attributes["path"] == nil {
+			continue
+		}
+		expr := b.Body.Attributes["path"].Expr
+		if call, ok := expr.(*hclsyntax.FunctionCallExpr); ok {
+			if call.Name != "find_in_parent_folders" {
+				continue
+			}
+			if len(call.Args) == 0 {
+				nearest = true
+			} else if v, ok := literal(call.Args[0]); ok && len(call.Args) == 1 && v == "terragrunt.hcl" {
+				nearest = true
+			}
+			continue
+		}
+		if v, ok := literal(expr); ok && filepath.Base(v) == "terragrunt.hcl" {
+			if !filepath.IsAbs(v) {
+				v = filepath.Join(dir, v)
+			}
+			dirs = append(dirs, filepath.Dir(v))
+		}
+	}
+	return dirs, nearest
+}
+
+// literal is the value of a string expression without variables or calls.
+func literal(expr hclsyntax.Expression) (string, bool) {
+	if len(expr.Variables()) > 0 {
+		return "", false
+	}
+	v, diags := expr.Value(nil)
+	if diags.HasErrors() || !v.IsKnown() || v.IsNull() || v.Type() != cty.String {
+		return "", false
+	}
+	return v.AsString(), true
 }
 
 func absPath(p string) string {
@@ -637,7 +710,7 @@ const (
 // block (source), an include of a parent, or .tf files next to it make a
 // unit. Without them it may still be one (remote_state with generate, in a
 // fresh checkout) or a parent such as a legacy top-level terragrunt.hcl:
-// FindRoots takes it for a parent only when units lie below it. A
+// FindRoots takes it for a parent only when a unit includes it. A
 // terragrunt.hcl that exists but cannot be read or parsed (a dangling link
 // too) is an error, not a missing unit.
 func TerragruntKind(dir string) (int, error) {
