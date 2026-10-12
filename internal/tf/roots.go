@@ -77,7 +77,7 @@ func isRoot(dir string) (bool, error) {
 		name := e.Name()
 		var f *hcl.File
 		switch {
-		case e.IsDir():
+		case e.IsDir() || IgnoredFile(name):
 			continue
 		case strings.HasSuffix(name, ".tf"):
 			f, _ = p.ParseHCLFile(filepath.Join(dir, name))
@@ -282,7 +282,7 @@ func ConfigImports(dir string) ([]Import, error) {
 		var f *hcl.File
 		path := filepath.Join(dir, e.Name())
 		switch {
-		case e.IsDir():
+		case e.IsDir() || IgnoredFile(e.Name()):
 			continue
 		case strings.HasSuffix(e.Name(), ".tf"):
 			f, _ = p.ParseHCLFile(path)
@@ -445,6 +445,13 @@ var (
 	aliasSchema    = &hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "alias"}}}
 )
 
+// IgnoredFile reports whether terraform skips a configuration file: hidden
+// files and editor backups (#name#, name~). Reading them would let a file
+// terraform never loads change what tforphans concludes.
+func IgnoredFile(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") || strings.HasPrefix(name, "#") && strings.HasSuffix(name, "#")
+}
+
 // ProviderConfigs returns, per local name, the root module's default
 // provider configuration (the provider block without an alias) as its HCL
 // tokens, so that only layout and comments are ignored; a provider without
@@ -462,7 +469,7 @@ func ProviderConfigs(dir string) (map[string]string, error) {
 	p := hclparse.NewParser()
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || strings.HasPrefix(name, "zz_tforphans_") || !(strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")) {
+		if e.IsDir() || IgnoredFile(name) || strings.HasPrefix(name, "zz_tforphans_") || !(strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")) {
 			continue
 		}
 		path := filepath.Join(dir, name)

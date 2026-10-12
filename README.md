@@ -174,7 +174,8 @@ tforphans -arg location=global,europe-north1   # google
 ```
 
 An argument can be limited to some types with `TYPE_GLOB:`, and then wins
-over the same argument without one for those types. Google Compute
+over the same argument without one for those types; the values of several
+such arguments that match a type are combined. Google Compute
 instances, disks and snapshots need a zone, which the list config does not
 require (the query fails with "Cannot determine zone" unless the provider
 block sets one), so the first scan of a GCP project usually needs:

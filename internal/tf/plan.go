@@ -231,18 +231,32 @@ func isFamilyName(addr, family string) bool {
 
 func planType(typ, local string, ls ListSchema, args []Arg) (Query, string) {
 	q := Query{Type: typ, Provider: local}
-	// An argument for matching types wins over one for all types; two
-	// values for one attribute would make terraform reject the query.
+	// Arguments for matching types win over ones for all types; the values
+	// of several matching ones are combined (two attributes of one name
+	// would make terraform reject the query).
 	supplied := map[string]bool{}
 	for _, scoped := range []bool{true, false} {
+		index := map[string]int{} // name -> position in q.Args, this pass
 		for _, a := range args {
-			if (a.Types != "") != scoped || supplied[a.Name] || scoped && !glob.Compile(a.Types).Match(typ) {
+			if (a.Types != "") != scoped || supplied[a.Name] && index[a.Name] == 0 || scoped && !glob.Compile(a.Types).Match(typ) {
 				continue
 			}
-			if at, ok := ls.Block.Attributes[a.Name]; ok && string(at.Type) == `"string"` {
-				q.Args = append(q.Args, a)
-				supplied[a.Name] = true
+			at, ok := ls.Block.Attributes[a.Name]
+			if !ok || string(at.Type) != `"string"` {
+				continue
 			}
+			if i := index[a.Name]; i > 0 {
+				merged := &q.Args[i-1]
+				for _, v := range a.Values {
+					if !slices.Contains(merged.Values, v) {
+						merged.Values = append(merged.Values, v)
+					}
+				}
+				continue
+			}
+			q.Args = append(q.Args, Arg{Types: a.Types, Name: a.Name, Values: slices.Clone(a.Values)})
+			index[a.Name] = len(q.Args)
+			supplied[a.Name] = true
 		}
 	}
 	var missing []string

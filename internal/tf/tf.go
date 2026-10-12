@@ -88,7 +88,7 @@ func laterOverrides(dir, name string) []string {
 	for _, e := range entries {
 		n := e.Name()
 		base := strings.TrimSuffix(strings.TrimSuffix(n, ".json"), ".tf")
-		if e.IsDir() || base == n || strings.HasPrefix(n, "zz_tforphans_") || !(base == "override" || strings.HasSuffix(base, "_override")) {
+		if e.IsDir() || IgnoredFile(n) || base == n || strings.HasPrefix(n, "zz_tforphans_") || !(base == "override" || strings.HasSuffix(base, "_override")) {
 			continue
 		}
 		if n > name {

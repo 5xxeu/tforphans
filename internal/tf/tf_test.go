@@ -419,6 +419,17 @@ func TestScopedArg(t *testing.T) {
 	if got["google_compute_disk"] != "zone=z1,z2 location=eu" || got["google_storage_bucket"] != "zone=all-z location=eu" {
 		t.Errorf("args %v", got)
 	}
+	// Two scoped arguments for one type: their values are combined.
+	disk, _ := ParseArg("google_compute_disk:zone=z3,z1")
+	p = BuildPlan(&s, nil, PlanOptions{Args: []Arg{a, disk}})
+	for _, q := range p.Queries {
+		if q.Type == "google_compute_disk" && (len(q.Args) != 1 || strings.Join(q.Args[0].Values, ",") != "z1,z2,z3") {
+			t.Errorf("overlapping args %+v", q.Args)
+		}
+	}
+	if a.Values[0] != "z1" || len(a.Values) != 2 {
+		t.Errorf("argument changed in place: %+v", a)
+	}
 }
 
 func TestClassify(t *testing.T) {
@@ -491,12 +502,21 @@ provider "awsx" {
 }
 `), 0o644)
 	os.WriteFile(filepath.Join(dir, "x_override.tf"), []byte(`provider "awsx" { profile = "other" }`), 0o644)
+	// Terraform skips hidden files and backups; so does the comparison.
+	os.WriteFile(filepath.Join(dir, ".backup.tf"), []byte(`provider "hidden" { project = "b" }`), 0o644)
+	os.WriteFile(filepath.Join(dir, "#auto.tf#"), []byte(`provider "backup" { project = "b" }`), 0o644)
 	got, _ = ProviderConfigs(dir)
 	if got["google"] == got["google-beta"] {
 		t.Errorf("string contents ignored: %q", got)
 	}
 	if got["aws"] == got["awsx"] {
 		t.Errorf("override ignored: %q", got)
+	}
+	if _, ok := got["hidden"]; ok {
+		t.Errorf("hidden file read: %q", got)
+	}
+	if _, ok := got["backup"]; ok {
+		t.Errorf("backup file read: %q", got)
 	}
 }
 
