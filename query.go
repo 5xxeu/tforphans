@@ -89,6 +89,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 
 	insts, n, err := pullRoot(ctx, o, root)
 	if err != nil {
+		if uninitialized(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	idx.Add(insts)

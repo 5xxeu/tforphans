@@ -123,7 +123,9 @@ func failureScopes(failed []tf.Failure, all []block, names map[string]map[string
 		f := &failed[i]
 		addr, key, ok := strings.Cut(f.Address, "[")
 		b, known := byAddr[addr]
-		if !ok || !known || b.scope == nil {
+		// A hidden block reads one scope only to tell objects of the other
+		// apart (see block.hidden): its failure concerns every scope.
+		if !ok || !known || b.scope == nil || b.hidden {
 			continue
 		}
 		if id, err := strconv.Unquote(strings.TrimSuffix(key, "]")); err == nil {

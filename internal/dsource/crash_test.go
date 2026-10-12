@@ -256,6 +256,8 @@ func TestFailureScopes(t *testing.T) {
 	all := []block{
 		{dsType: "cloudflare_zones", label: "all"},
 		{dsType: "cloudflare_dns_records", label: "z", scope: zones, parent: "data.cloudflare_zones.all"},
+		// Read only to tell account objects from zone ones (account_id=).
+		{dsType: "cloudflare_rulesets", label: "a", scope: &Scope{Arg: "account_id", Parent: "cloudflare_accounts"}, parent: "data.cloudflare_accounts.all", hidden: true},
 	}
 	names := map[string]map[string]string{"data.cloudflare_zones.all": {"z1": "example.com"}}
 	failed := []tf.Failure{
@@ -264,13 +266,14 @@ func TestFailureScopes(t *testing.T) {
 		{Address: `data.cloudflare_dns_records.z`},
 		{Address: `data.cloudflare_zones.all`},
 		{Address: "-scan-scope zone_id=nope"},
+		{Address: `data.cloudflare_rulesets.a["acc"]`},
 	}
 	failureScopes(failed, all, names)
 	var got []string
 	for _, f := range failed {
 		got = append(got, f.Scope)
 	}
-	if want := []string{"zone example.com", "zone z2", "", "", ""}; !slices.Equal(got, want) {
+	if want := []string{"zone example.com", "zone z2", "", "", "", ""}; !slices.Equal(got, want) {
 		t.Errorf("scopes %q, want %q", got, want)
 	}
 }

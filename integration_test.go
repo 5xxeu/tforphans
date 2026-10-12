@@ -734,13 +734,21 @@ func TestIntegrationUninitializedRoot(t *testing.T) {
 	}
 	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
 	write(t, filepath.Join(broken, "main.tf"), "terraform {\n  required_providers {\n    null = { source = \"hashicorp/null\" }\n  }\n}\n")
+	// Providers from dev_overrides need no init, a backend does: the
+	// schema may work and reading the state fail.
+	backend := filepath.Join(filepath.Dir(root), "backend")
+	if err := os.MkdirAll(backend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(backend, "main.tf"), "terraform {\n  backend \"local\" {\n    path = \"other.tfstate\"\n  }\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
 	write(t, filepath.Join(data, "thing", "a"), "")
 	t.Chdir(filepath.Dir(root))
-	code, stdout, stderr := runTool("-types", "fake_thing", "root", "broken")
-	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken is not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
+	code, stdout, stderr := runTool("-types", "fake_thing", "broken", "backend", "root")
+	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken is not initialized") ||
+		!strings.Contains(stderr, "backend is not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
 		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
-	if code, _, _ := runTool("-types", "fake_thing", "-strict", "root", "broken"); code != exitError {
+	if code, _, _ := runTool("-types", "fake_thing", "-strict", "broken", "backend", "root"); code != exitError {
 		t.Errorf("-strict with an uninitialized root: exit %d", code)
 	}
 }
