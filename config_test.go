@@ -86,6 +86,7 @@ func TestConfigRejected(t *testing.T) {
 		"terraform: ./evil\n":                   "only on the command line",
 		"o: ~/.profile.d/x\n":                   "only on the command line",
 		"allow-http: true\n":                    "only on the command line",
+		"terragrunt: true\n":                    "only on the command line",
 		"init: true\n":                          "only from a file given with -config",
 		"state: [https://evil.example/state]\n": "only from a file given with -config",
 		"state: [fake.tfstate]\n":               "only from a file given with -config",
@@ -123,7 +124,7 @@ func TestConfigRejected(t *testing.T) {
 	if o, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil || !o.init || len(o.states) != 1 {
 		t.Errorf("-config with trust keys: %+v, %v", o, err)
 	}
-	for _, conf := range []string{"plugin: [./list.sh]\n", "state: [https://gitlab.example/state]\n", "terraform: ./tf\n", "o: x.tf\n"} {
+	for _, conf := range []string{"plugin: [./list.sh]\n", "state: [https://gitlab.example/state]\n", "terraform: ./tf\n", "terragrunt: true\n", "o: x.tf\n"} {
 		os.WriteFile("audit.yaml", []byte(conf), 0o644)
 		if _, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err == nil || !strings.Contains(err.Error(), "only on the command line") {
 			t.Errorf("-config %q: %v", conf, err)

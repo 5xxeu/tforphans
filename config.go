@@ -16,12 +16,13 @@ import (
 const defaultConfigFile = ".tforphans.yaml"
 
 // commandLineOnly are keys no config file may set, not even one given with
-// -config: they run any command (plugin, terraform), send credentials to
+// -config: they run any command (plugin, terraform, terragrunt, which runs
+// the run_cmd and hooks of the units), send credentials to
 // an address of the file's choosing (state URLs, allow-http) or overwrite
 // any file (adopt -o). Config files live in repositories and change in
 // pull requests that a CI job then runs; such a change has to show in the
 // command itself.
-var commandLineOnly = []string{"plugin", "terraform", "allow-http", "o"}
+var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o"}
 
 // configOnlyExplicit are keys a config file found on its own may not set,
 // one given with -config may: they run the root's data sources (refresh
@@ -29,7 +30,7 @@ var commandLineOnly = []string{"plugin", "terraform", "allow-http", "o"}
 // attribute values into the output, or make results look more certain
 // than they are (a state file of its own, trusting cluster states, adopt
 // with unread states).
-var configOnlyExplicit = []string{"init", "terragrunt", "refresh", "allow-unpinned", "include-attrs",
+var configOnlyExplicit = []string{"init", "refresh", "allow-unpinned", "include-attrs",
 	"state", "proxmox-cluster-states", "plugin-cluster-states", "allow-incomplete"}
 
 // configPathKeys hold paths, which are relative to the config file.

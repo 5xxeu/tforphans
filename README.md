@@ -200,7 +200,7 @@ job may then run, so what a file may set depends on what it could do:
 
 | Keys | `.tforphans.yaml` | `-config FILE` |
 |---|---|---|
-| `plugin`, `terraform`, `allow-http`, `o`, `state` URLs | no | no |
+| `plugin`, `terraform`, `terragrunt`, `allow-http`, `o`, `state` URLs | no | no |
 | `init`, `refresh`, `allow-unpinned`, `include-attrs`, `state` files, `proxmox-cluster-states`, `plugin-cluster-states`, `allow-incomplete` | no | yes |
 | everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, ...) | yes | yes |
 
@@ -296,9 +296,11 @@ with 1.1.6), which renders the backend the unit's configuration describes,
 so remote state blocks, `generate` and includes all work. Terragrunt
 initializes a unit before reading it: it fetches the module source and
 providers into `.terragrunt-cache` next to `terragrunt.hcl`, as any
-terragrunt command does, which is why the flag is opt-in (and accepted
-from `-config FILE`, not from `.tforphans.yaml`). It runs the terraform
-of `-terraform`.
+terragrunt command does. Terragrunt also evaluates the units' HCL, which
+can run commands (`run_cmd`, hooks): the flag is opt-in and accepted only
+on the command line, like `-plugin`. It runs the terraform of
+`-terraform`. A `terragrunt.hcl` that cannot be read or parsed is an
+unread state (coverage incomplete, `adopt` refuses), not a missing unit.
 
 ```sh
 tforphans -no-query -scan cloudflare -state-roots live -terragrunt

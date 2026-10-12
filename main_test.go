@@ -222,3 +222,17 @@ func TestAdoptUnreadableDir(t *testing.T) {
 		t.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 }
+
+// A Terragrunt unit whose terragrunt.hcl does not parse may manage what is
+// found: adopt refuses, as with any unread state.
+func TestAdoptBrokenTerragruntUnit(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "app"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app", "terragrunt.hcl"), []byte("include \"root\" {\n"), 0o644)
+	plugin := `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci"}'`
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"adopt", "-no-query", "-plugin", plugin, "-state-roots", dir, "-terragrunt"}, &stdout, &stderr)
+	if code != exitError || stdout.Len() != 0 || !strings.Contains(stderr.String(), "not writing import blocks") || !strings.Contains(stderr.String(), "could not be parsed") {
+		t.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+}

@@ -35,14 +35,15 @@ import (
 // With units, a Terragrunt unit (see IsTerragruntUnit) counts as a root too;
 // its .terragrunt-cache is hidden and not walked into.
 //
-// Directories below dir that cannot be read (permission denied) are
-// returned as unread instead of failing the walk: a tree such as a home
-// directory has some.
-func FindRoots(dir string, units bool) (roots, unread []string, err error) {
+// Directories below dir that cannot be read (permission denied), and with
+// units a terragrunt.hcl that cannot be read or parsed, are returned as
+// unread instead of failing the walk: a tree such as a home directory has
+// some, and a root there may manage what is found.
+func FindRoots(dir string, units bool) (roots []string, unread []Unread, err error) {
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
-				unread = append(unread, path)
+				unread = append(unread, Unread{path, "directory could not be read (permission denied)"})
 				return filepath.SkipDir
 			}
 			return err
@@ -56,13 +57,16 @@ func FindRoots(dir string, units bool) (roots, unread []string, err error) {
 		ok, err := isRoot(path)
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
-				unread = append(unread, path)
+				unread = append(unread, Unread{path, "directory could not be read (permission denied)"})
 				return filepath.SkipDir
 			}
 			return err
 		}
 		if !ok && units {
-			ok = IsTerragruntUnit(path)
+			if ok, err = IsTerragruntUnit(path); err != nil {
+				unread = append(unread, Unread{path, err.Error()})
+				return nil
+			}
 		}
 		if ok {
 			roots = append(roots, path)
@@ -71,6 +75,11 @@ func FindRoots(dir string, units bool) (roots, unread []string, err error) {
 	})
 	sort.Strings(roots)
 	return roots, unread, err
+}
+
+// Unread is a directory FindRoots could not tell a root or not, and why.
+type Unread struct {
+	Path, Reason string
 }
 
 var (
@@ -578,22 +587,32 @@ func majorMinor(v string) (major, minor int, ok bool) {
 // IsTerragruntUnit reports a directory whose terragrunt.hcl deploys a module:
 // it has a terraform block (source) or includes a parent configuration. A
 // parent such as a legacy top-level terragrunt.hcl with only remote_state
-// has neither and is no unit.
-func IsTerragruntUnit(dir string) bool {
-	f, diags := hclparse.NewParser().ParseHCLFile(filepath.Join(dir, "terragrunt.hcl"))
-	if diags.HasErrors() || f == nil {
-		return false
+// has neither and is no unit. No terragrunt.hcl is no unit; one that cannot
+// be read or parsed is an error, not a missing unit.
+func IsTerragruntUnit(dir string) (bool, error) {
+	name := filepath.Join(dir, "terragrunt.hcl")
+	src, err := os.ReadFile(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("terragrunt.hcl could not be read: %w", err)
+	}
+	f, diags := hclparse.NewParser().ParseHCL(src, name)
+	if diags.HasErrors() {
+		d := diags.Errs()[0]
+		return false, fmt.Errorf("terragrunt.hcl could not be parsed: %s", d.Error())
 	}
 	body, ok := f.Body.(*hclsyntax.Body)
 	if !ok {
-		return false
+		return false, nil
 	}
 	for _, b := range body.Blocks {
 		if b.Type == "terraform" || b.Type == "include" {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // TerragruntStatePull reads the state of a Terragrunt unit with terragrunt,

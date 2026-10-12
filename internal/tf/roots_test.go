@@ -228,7 +228,7 @@ func TestFindRootsUnreadable(t *testing.T) {
 		t.Skip("permissions are not enforced here (root)")
 	}
 	roots, unread, err := FindRoots(dir, false)
-	if err != nil || len(roots) != 1 || len(unread) != 1 || !strings.HasSuffix(unread[0], "locked") {
+	if err != nil || len(roots) != 1 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "locked") {
 		t.Errorf("roots %v, unread %v, err %v", roots, unread, err)
 	}
 }
@@ -254,5 +254,12 @@ func TestTerragruntUnits(t *testing.T) {
 	}
 	if got, _, _ := FindRoots(dir, false); len(got) != 0 {
 		t.Errorf("without -terragrunt: %v", got)
+	}
+	// A unit whose terragrunt.hcl is broken is unread, not skipped.
+	os.MkdirAll(filepath.Join(dir, "broken"), 0o755)
+	os.WriteFile(filepath.Join(dir, "broken", "terragrunt.hcl"), []byte("include \"root\" {\n"), 0o644)
+	got, unread, err := FindRoots(dir, true)
+	if err != nil || len(got) != 2 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") || !strings.Contains(unread[0].Reason, "could not be parsed") {
+		t.Errorf("broken unit: %v %v %v", got, unread, err)
 	}
 }

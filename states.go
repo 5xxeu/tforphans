@@ -101,7 +101,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 		// A root there may manage what is found: like an unread state
 		// (adopt refuses, coverage is incomplete).
 		for _, u := range unread {
-			sum.UnreadStates = append(sum.UnreadStates, report.UnreadState{Root: u, Error: "directory could not be read (permission denied)"})
+			sum.UnreadStates = append(sum.UnreadStates, report.UnreadState{Root: u.Path, Error: u.Reason})
 		}
 		for _, d := range found {
 			abs, err := filepath.Abs(d)
@@ -150,7 +150,7 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 	}
 	// A Terragrunt unit: terragrunt renders the backend and initializes
 	// on its own. One state (units do not use workspaces), never refreshed.
-	if o.terragrunt && tf.IsTerragruntUnit(dir) {
+	if unit, _ := tf.IsTerragruntUnit(dir); o.terragrunt && unit {
 		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir)
 		if err != nil {
 			return nil, 0, err
