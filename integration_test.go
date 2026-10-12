@@ -258,13 +258,13 @@ resource "fake_thing" "x" { name = var.name }
 	if !strings.Contains(stdout, "stray") || strings.Contains(stdout, "other-") {
 		t.Errorf("orphans:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "uninit not read") || !strings.Contains(stderr, "pass -init") {
+	if !strings.Contains(stderr, "uninit: not initialized") || !strings.Contains(stderr, "pass -init") {
 		t.Errorf("uninitialized root not reported:\n%s", stderr)
 	}
 	if code, _, _ := runTool("-types", "fake_thing", "-state-roots", tree, "-strict"); code != exitError {
 		t.Errorf("-strict with an unreadable state: exit %d", code)
 	}
-	if !strings.Contains(stderr, "coverage: INCOMPLETE (1 states not read)") {
+	if !strings.Contains(stderr, "coverage: INCOMPLETE (1 states not read: ") {
 		t.Errorf("coverage verdict:\n%s", stderr)
 	}
 	// adopt would import the objects of the unread state a second time.
@@ -744,8 +744,8 @@ func TestIntegrationUninitializedRoot(t *testing.T) {
 	write(t, filepath.Join(data, "thing", "a"), "")
 	t.Chdir(filepath.Dir(root))
 	code, stdout, stderr := runTool("-types", "fake_thing", "broken", "backend", "root")
-	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken is not initialized") ||
-		!strings.Contains(stderr, "backend is not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
+	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "broken: not initialized") ||
+		!strings.Contains(stderr, "backend: not initialized") || !strings.Contains(stderr, "coverage: INCOMPLETE") {
 		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	if code, _, _ := runTool("-types", "fake_thing", "-strict", "broken", "backend", "root"); code != exitError {
@@ -772,5 +772,31 @@ func TestIntegrationRootThroughLink(t *testing.T) {
 	t.Chdir(work)
 	if code, stdout, stderr := runTool("-types", "fake_thing", "jump/../root"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") {
 		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}
+
+// TestIntegrationAPIOff: a listing whose API is not enabled (GCP) is no
+// gap, unless -strict-api.
+func TestIntegrationAPIOff(t *testing.T) {
+	_, root := setup(t)
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	t.Chdir(root)
+	t.Setenv("FAKE_FAIL", "thing:Compute Engine API has not been used in project p before or it is disabled. Enable it by visiting ...")
+	code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-format", "json")
+	if code != exitOK || !strings.Contains(stderr, "1 listings whose API is not enabled") {
+		t.Errorf("exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, `"api_not_enabled": 1`) || !strings.Contains(stdout, `"reasons": [`) {
+		t.Errorf("json:\n%s", stdout)
+	}
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-strict-api"); code != exitError {
+		t.Errorf("-strict-api: exit %d\n%s", code, stderr)
+	}
+	// A provider with only an alias: the user's block with that alias meets
+	// the disabled API, which covers the alias-only skip of fake_thing.
+	write(t, "main.tf", "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\nprovider \"fake\" {\n  alias = \"second\"\n}\n")
+	write(t, "mine.tfquery.hcl", "list \"fake_thing\" \"mine\" {\n  provider = fake.second\n}\n")
+	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOK {
+		t.Errorf("aliased block with the API off: exit %d\n%s", code, stderr)
 	}
 }

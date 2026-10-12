@@ -131,6 +131,9 @@ type options struct {
 	proxmoxStates   bool
 	pluginStates    bool
 	terraformBin    string
+	maxRoots        int
+	progress        io.Writer // progress lines of long steps (stderr)
+	strictAPI       bool
 	configFile      string // flags read from this file
 }
 
@@ -179,6 +182,8 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.BoolVar(&o.currentWS, "current-workspace", false, "read only the selected workspace of each root module instead of listing all workspaces")
 	fs.BoolVar(&o.anyVersion, "ignore-required-version", false, "lift the root modules' required_version with a temporary override file, so that a root pinned to an older Terraform can be queried (child modules' constraints still apply)")
 	fs.BoolVar(&o.refresh, "refresh", false, "read each root's state through terraform plan -refresh-only (no lock, nothing written) instead of state pull: state written before Terraform 1.12 gets resource identities, so matches are exact; slower, needs the root's credentials and variables")
+	fs.BoolVar(&o.strictAPI, "strict-api", false, "count listings that failed because the API is not enabled (GCP) as incomplete coverage; by default a disabled API is taken to hold no objects")
+	fs.IntVar(&o.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules than this, before terraform runs in them (0: no limit)")
 	fs.BoolVar(&o.init, "init", false, "run terraform init in root modules that are not initialized (creates .terraform there)")
 	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*), not from the root's provider block; repeatable")
 	fs.Var(&scanScopes, "scan-scope", "limit -scan to some zones or accounts: zone_id=ID_OR_NAME,... or account_id=...; with no value (account_id=) that scope is not read; \"state\" limits every other scope to the IDs found in the states read; repeatable")
@@ -348,6 +353,7 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return exitError
 	}
+	o.progress = stderr
 	if err := execute(ctx, o, stdout, stderr); err != nil {
 		var code exitCode
 		if errors.As(err, &code) {
@@ -595,17 +601,47 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
-	sum.Coverage = report.BuildCoverage(byTypeScope, sum.Checks, sum.Skipped, sum.Failed)
-	sum.Complete = !nothingChecked(o, sum) && len(sum.Failed) == 0 && len(sum.Warnings) == 0 &&
+	// A disabled API (GCP) can hold no objects: such listings stay in
+	// failed_queries but are no gap, unless -strict-api.
+	counting, skipped, checks := sum.Failed, sum.Skipped, sum.Checks
+	for _, f := range sum.Failed {
+		if f.Category == tf.FailAPIOff {
+			sum.APIOff++
+		}
+	}
+	if !o.strictAPI {
+		counting = nil
+		skipped = slices.Clone(sum.Skipped)
+		checks = slices.Clone(sum.Checks)
+		for _, f := range sum.Failed {
+			if f.Category == tf.FailAPIOff {
+				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
+				// The listing ran far enough to learn there is nothing:
+				// it stands for the check (an aliased block of the user's
+				// covers the alias-only skip of its provider).
+				if f.Root != "" {
+					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
+				}
+				continue
+			}
+			counting = append(counting, f)
+		}
+	}
+	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
+	sum.Complete = !nothingChecked(o, sum) && len(counting) == 0 && len(sum.Warnings) == 0 && len(sum.UnreadStates) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
-		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (written before Terraform 1.12 or by a provider without identities): they are matched by attributes, which is less certain. -refresh reads identities without writing anything; terraform apply -refresh-only with a current provider records them in state (it needs write access).", n, idx.Len()))
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)", n, idx.Len()))
 	}
 
 	switch {
 	case o.adopt && len(sum.UnreadStates) > 0 && !o.allowIncomplete:
 		printSummary(stderr, o, sum)
-		return fmt.Errorf("not writing import blocks: the state of %s could not be read, and its objects would be imported a second time; fix access, or pass -allow-incomplete", strings.Join(sum.UnreadStates, ", "))
+		var roots []string
+		for _, u := range sum.UnreadStates {
+			roots = append(roots, u.Root)
+		}
+		return fmt.Errorf("not writing import blocks: the state of %s could not be read, and its objects would be imported a second time; fix access, or pass -allow-incomplete", strings.Join(roots, ", "))
 	case o.adopt:
 		reserved := maps.Clone(idx.RootAddresses())
 		var imports []tf.Import

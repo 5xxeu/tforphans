@@ -64,9 +64,14 @@ instances have no identity;
 `-refresh` reads each root's state through `terraform plan -refresh-only`
 instead of `state pull`: the providers return identities for old state,
 nothing is written and no lock is taken (the plan file lives in a private
-temporary directory and is removed). It is slower, refreshes every
-resource with the root's credentials and needs the root's variables; when
-the plan fails, the stored state is read and a note says so.
+temporary directory and is removed). It costs a full refresh of every root
+it reads, `-state-roots` included: every resource is read from the API with
+the root's credentials (time and API quota; 1-2 minutes for a root of a few
+hundred resources is common) and the root's variables are needed. A line on
+stderr says when each root starts and how long it took. When the plan
+fails, the stored state is read and a note says so. Identities matter only
+for state written before Terraform 1.12; such state is matched by
+attributes otherwise, which found the same orphans in the runs so far.
 `terraform apply -refresh-only` with a current provider records identities
 in state for good (it writes the state, so it needs write access). The boot disk of a managed `google_compute_instance` counts as
 managed by it; disks attached with `attached_disk` do not, since they may
@@ -77,8 +82,14 @@ be created elsewhere. Whatever matches nothing is reported.
 Binaries for Linux, macOS and Windows are on the
 [releases page](https://github.com/5xxeu/tforphans/releases), with
 checksums, an SBOM and a build provenance attestation
-(`gh attestation verify tforphans_*.tar.gz -R 5xxeu/tforphans`). Or build
-it (Go 1.26 or newer):
+(`gh attestation verify tforphans_*.tar.gz -R 5xxeu/tforphans`). With
+Homebrew (macOS, Linux; from 0.1.1):
+
+```sh
+brew install 5xxeu/tap/tforphans
+```
+
+Or build it (Go 1.26 or newer):
 
 ```sh
 go install github.com/5xxeu/tforphans@latest
@@ -247,9 +258,14 @@ workspaces with `terraform state pull`. Terraform does the reading, so any
 backend works: S3, GCS, azurerm, GitLab/http, HCP Terraform. Up to 8 roots
 are read in parallel. A root that is not initialized, or whose state cannot
 be read, is reported as a warning (an error with `-strict`), because its
-resources may then show up as unmanaged. A workspace that fails does not
-drop the others: their states still count, and the warning names the
-workspace. `-init` runs `terraform init` in
+resources may then show up as unmanaged; the last line names each unread
+root with the line of the error that says why, and so does
+`summary.unread_states` (`[{"root": ..., "error": ...}]`). A workspace that
+fails does not drop the others: their states still count, and the warning
+names the workspace. Directories that cannot be read are skipped with a
+warning. More than `-max-roots` root modules (200 by default) stop the run
+before terraform starts in any of them: a wrong path (`..` relative to a
+config file somewhere else) can otherwise reach a whole home directory. `-init` runs `terraform init` in
 uninitialized roots first; it creates `.terraform` there and may write a
 lock file, so it is opt-in. A shared `TF_PLUGIN_CACHE_DIR` makes it fast.
 Reading a root needs working credentials for its backend (S3, GCS, ...);
@@ -417,6 +433,13 @@ accepts `provider` in an import block only while the configuration is still
 to be generated: after `-generate-config-out`, move the `provider` line of
 each import block into its generated resource before applying.
 
+Generated configuration holds what the provider reads back from the API.
+Some resources need more than that: write-only or secret arguments
+(passwords, API tokens), content the API does not return (the code of a
+`cloudflare_workers_script`, files uploaded once), or arguments that only
+shape creation. `terraform plan` after the import shows them as changes or
+missing values; fill them in by hand before applying.
+
 `adopt` exits 0 whether or not it found anything (1 on errors, and with
 `-strict` on incomplete coverage); the plain command is the one for CI
 checks.
@@ -445,7 +468,11 @@ without objects of the type. A row without `scope` stands for the type as
 a whole: a type listed without results, or a failure that concerns every
 scope. Only listings that ran count: a list block with `for_each = {}`
 checks nothing. Each orphan has a `scope`
-such as `zone example.com` when it is known. Every orphan has the same keys. `-include-attrs
+such as `zone example.com` when it is known. Every orphan has the same keys,
+so some are empty by design: `import_id` is empty when the import block uses
+the resource identity (everything `terraform query` lists; `adopt` writes
+`identity = {...}` then), and `provider` is empty for the provider's default
+configuration (it holds an alias such as `aws.prod` otherwise). `-include-attrs
 labels,creation_timestamp` adds those attributes to each orphan (to see how
 old an object is, or who owns it); attributes can hold secrets, so ask only
 for what you need. `-format summary` prints only tables of
@@ -755,9 +782,10 @@ line, never from a config file a merge request could change.
   roles, auto-created records). Put them in the ignore file, or use a
   preset (`-ignore-preset gcp-system`).
 - An API that is not enabled in a GCP project fails its queries ("API not
-  enabled"); this still counts as incomplete coverage for `-strict`, since
-  objects created before the API was disabled cannot be ruled out. Exclude
-  the types of APIs you never use with `-exclude-types`.
+  enabled"). Such listings stay in `failed_queries` and are counted in
+  `summary.api_not_enabled`, but they do not make coverage incomplete: a
+  disabled service shows and accepts no objects, and GCP refuses to disable
+  one that has some unless forced. `-strict-api` counts them as gaps.
 - The temporary files are written next to the configuration; there is no
   separate work directory, and a provider version cannot be overridden for
   the run (the root's installed providers are used).
@@ -790,7 +818,10 @@ CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, the unit tests with
 the race detector, golangci-lint, govulncheck and the integration tests
 against Terraform 1.15 and 1.16. A `v*` tag builds the release with
 GoReleaser (`.goreleaser.yaml`) as a draft, with checksums, SBOMs and a
-build provenance attestation.
+build provenance attestation, and pushes the Homebrew cask to
+`5xxeu/homebrew-tap` (secret `HOMEBREW_TAP_TOKEN`: a fine-grained token
+with contents write on that repository only). The cask points at the
+release files, so publish the draft soon after.
 
 The integration test uses a fake provider (things are files in a temporary
 directory) that implements list resources and resource identity, and runs

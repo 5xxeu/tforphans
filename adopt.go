@@ -71,6 +71,13 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 			sum.Warnings = append(sum.Warnings, fmt.Sprintf("%d objects have no valid resource type or provider name; no import blocks written for them", len(orphans)-n))
 		}
 	}
+	// Terraform 1.16 lifted this restriction; the hint goes to stderr,
+	// so it also reaches people who redirect stdout to a file.
+	providerHint := func() {
+		if slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.Provider != "" }) {
+			fmt.Fprintln(stderr, "With Terraform before 1.16, move the provider line of each import block into its generated resource before applying: older versions generate resources without it, and accept provider in an import block only while its configuration is still to be generated.")
+		}
+	}
 	head := adoptHeader(sum)
 	if o.out == "" {
 		if _, err := io.WriteString(stdout, head); err != nil {
@@ -78,6 +85,9 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		}
 		n, err := report.Import(stdout, orphans, reserved)
 		skipped(n)
+		if err == nil {
+			providerHint()
+		}
 		return err
 	}
 	f, err := os.OpenFile(o.out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
@@ -98,10 +108,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 	}
 	skipped(n)
 	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", n, o.out)
-	if slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.Provider != "" }) {
-		// Terraform 1.16 lifted this restriction.
-		fmt.Fprintln(stderr, "With Terraform before 1.16, move the provider line of each import block into its generated resource before applying: older versions generate resources without it, and accept provider in an import block only while its configuration is still to be generated.")
-	}
+	providerHint()
 	return nil
 }
 

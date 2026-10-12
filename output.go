@@ -179,6 +179,9 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		if len(s.NoList) > 0 {
 			beyond = append(beyond, fmt.Sprintf("%d providers without list resources", len(slices.Compact(slices.Sorted(slices.Values(s.NoList))))))
 		}
+		if s.APIOff > 0 && !o.strictAPI {
+			beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api counts them)", s.APIOff))
+		}
 		if len(beyond) == 0 {
 			fmt.Fprintln(w, "coverage: complete")
 			return
@@ -187,16 +190,25 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		return
 	}
 	var gaps []string
-	if n := len(s.Failed); n > 0 {
+	failed := len(s.Failed)
+	if !o.strictAPI {
+		failed -= s.APIOff
+	}
+	if n := failed; n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d failed or truncated listings", n))
 	}
 	if n := len(gapTypes); n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d types skipped that needed a check", n))
 	}
 	if n := len(s.UnreadStates); n > 0 {
-		gaps = append(gaps, fmt.Sprintf("%d states not read", n))
+		// Name them: a count alone sends people through every root.
+		var which []string
+		for _, u := range s.UnreadStates {
+			which = append(which, u.Root+": "+u.Error)
+		}
+		gaps = append(gaps, fmt.Sprintf("%d states not read: %s", n, report.Clean(strings.Join(firstN(which, 5), "; "))))
 	}
-	if n := len(s.Warnings) - len(s.UnreadStates); n > 0 {
+	if n := len(s.Warnings); n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d other warnings", n))
 	}
 	if len(gaps) == 0 {

@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -269,6 +270,8 @@ func TestBuildCoverage(t *testing.T) {
 		{Type: "net", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
 		{Type: "net2", Reason: "provider google-beta is configured only with aliases", Root: "prod", Provider: "google-beta"},
 		{Type: "rs", Reason: "no zone was listed to read it in", Kind: "zone"},
+		// Root b's API is off; zone a of the same type was read elsewhere.
+		{Type: "rec", Reason: tf.FailAPIOff, Excluded: true, Root: "b"},
 	}
 	checks := []tf.Check{
 		{Type: "rec", Scope: "zone a"}, {Type: "rec", Scope: "zone b"}, {Type: "rec", Scope: "zone d"},
@@ -296,6 +299,7 @@ func TestBuildCoverage(t *testing.T) {
 		"net/root prod incomplete [skipped: provider google-beta is configured only with aliases] 0/0/0/0",
 		"net2/ complete [] 0/0/0/0",
 		"none/ complete [] 0/0/0/0",
+		"rec/root b skipped [API not enabled] 0/0/0/0",
 		"rec/zone a complete [] 2/2/0/0",
 		"rec/zone b complete [] 1/0/0/1",
 		"rec/zone c incomplete [permission denied] 0/0/0/0",
@@ -353,5 +357,24 @@ func TestSummaryTableGap(t *testing.T) {
 	out := b.String()
 	if !regexp.MustCompile(`zoned\s+0\s+0\s+0\s+0\s+0\s+incomplete`).MatchString(out) || !strings.Contains(out, "skipped, needed a check (1): zoned") {
 		t.Errorf("summary:\n%s", out)
+	}
+}
+
+func TestNewUnreadState(t *testing.T) {
+	err := errors.Join(
+		errors.New("workspace a: terraform state pull: exit status 1\nError: Backend initialization required"),
+		errors.New("workspace b: terraform state pull: exit status 1\nError: Unsupported Terraform Core version\n\n  on main.tf line 2"))
+	if got := NewUnreadState("r", err).Error; got != "workspace a: Error: Backend initialization required; workspace b: Error: Unsupported Terraform Core version" {
+		t.Errorf("%q", got)
+	}
+	if got := NewUnreadState("r", errors.New("not initialized")).Error; got != "not initialized" {
+		t.Errorf("%q", got)
+	}
+	err = errors.Join(
+		errors.New("workspace a: terraform state pull: exit status 1\nError: Backend initialization required"),
+		errors.New("workspace b: decode state: unexpected end of JSON input"),
+		errors.New("workspace c: read: permission denied\nmore"))
+	if got := NewUnreadState("r", err).Error; got != "workspace a: Error: Backend initialization required; workspace b: decode state: unexpected end of JSON input; workspace c: read: permission denied" {
+		t.Errorf("%q", got)
 	}
 }

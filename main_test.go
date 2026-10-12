@@ -186,3 +186,39 @@ func TestScanHints(t *testing.T) {
 		t.Errorf("plan %q", p)
 	}
 }
+
+// -max-roots stops a -state-roots walk that found too much before terraform
+// runs anywhere.
+func TestMaxRoots(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{"a", "b", "c"} {
+		os.MkdirAll(filepath.Join(dir, d), 0o755)
+		os.WriteFile(filepath.Join(dir, d, "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644)
+	}
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-query", "-plugin", "true", "-state-roots", dir, "-max-roots", "2", "-terraform", "/nonexistent/terraform"}, io.Discard, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "more than -max-roots 2") {
+		t.Errorf("exit %d\n%s", code, stderr.String())
+	}
+}
+
+// A directory under -state-roots that cannot be read may hold a root that
+// manages what was found: adopt writes nothing, like for an unread state.
+func TestAdoptUnreadableDir(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	os.MkdirAll(locked, 0o755)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Skip(err)
+	}
+	defer os.Chmod(locked, 0o755)
+	if _, err := os.ReadDir(locked); err == nil {
+		t.Skip("permissions are not enforced here (root)")
+	}
+	plugin := `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci"}'`
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"adopt", "-no-query", "-plugin", plugin, "-state-roots", dir}, &stdout, &stderr)
+	if code != exitError || stdout.Len() != 0 || !strings.Contains(stderr.String(), "not writing import blocks") {
+		t.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+}

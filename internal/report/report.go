@@ -184,12 +184,53 @@ func (rule ignoreRule) matchConds(r model.Resource) bool {
 	return true
 }
 
+// UnreadState is a root module whose state could not be read, with the
+// line of the error that says why.
+type UnreadState struct {
+	Root  string `json:"root"`
+	Error string `json:"error"`
+}
+
+// NewUnreadState keeps the telling line of err: terraform's "Error: ..."
+// line when there is one, else the first.
+//
+// Errors of several workspaces ("workspace NAME: ...") are shortened one by
+// one and keep their names.
+func NewUnreadState(root string, err error) UnreadState {
+	var parts []string
+	ws, first, found := "", "", false
+	flush := func() {
+		if !found && first != "" && !slices.Contains(parts, first) {
+			parts = append(parts, first)
+		}
+	}
+	for _, l := range strings.Split(err.Error(), "\n") {
+		l = strings.TrimSpace(l)
+		if name, ok := strings.CutPrefix(l, "workspace "); ok {
+			if n, _, ok := strings.Cut(name, ": "); ok {
+				flush()
+				ws, first, found = "workspace "+n+": ", l, false
+				continue
+			}
+		}
+		if first == "" {
+			first = ws + l
+		}
+		if strings.HasPrefix(l, "Error: ") && !slices.Contains(parts, ws+l) {
+			parts = append(parts, ws+l)
+			found = true
+		}
+	}
+	flush()
+	return UnreadState{Root: root, Error: strings.Join(parts, "; ")}
+}
+
 // Summary describes how complete the scan was.
 type Summary struct {
 	States int `json:"states"`
 	// UnreadStates are root modules whose state could not be read in full:
 	// their objects may show as unmanaged.
-	UnreadStates []string `json:"unread_states,omitempty"`
+	UnreadStates []UnreadState `json:"unread_states,omitempty"`
 	// ManagedByIdentity counts managed objects matched by the resource
 	// identity in state; the others were matched by attributes.
 	ManagedByIdentity int `json:"managed_by_identity"`
@@ -204,6 +245,9 @@ type Summary struct {
 	Ignored   int `json:"ignored"`
 	Orphans   int `json:"orphans"`
 	Queried   int `json:"queried_types"`
+	// APIOff counts failed listings whose API is not enabled (they are in
+	// failed_queries too); they count as gaps only with -strict-api.
+	APIOff int `json:"api_not_enabled,omitempty"`
 	// Complete is false when something was not checked: failed or
 	// truncated listings, unread states, plugin errors, types that needed
 	// a check and were skipped.
@@ -338,6 +382,18 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 				scope = "root " + sk.Root
 			}
 			addReason(entry(sk.Type, scope), GapPrefix+sk.Reason)
+			continue
+		}
+		// A disabled API in one root says nothing about another root
+		// that listed the type: it keeps a row of its own.
+		if sk.Reason == tf.FailAPIOff && sk.Root != "" {
+			c := entry(sk.Type, "root "+sk.Root)
+			if c.Status == Complete {
+				c.Status = Skipped
+			}
+			if !slices.Contains(c.Reasons, sk.Reason) {
+				c.Reasons = append(c.Reasons, sk.Reason)
+			}
 			continue
 		}
 		if types[sk.Type] && !isSkipped[sk.Type] {
