@@ -236,12 +236,12 @@ type Index struct {
 	byValue    map[string][]*Instance // type \x00 key \x00 value
 	count      int
 	noIdentity int
-	owned      map[string]ownedBy // type \x00 owned-object key
-	root       map[string]bool    // resource addresses in root modules
+	owned      map[string][]ownedBy // type \x00 owned-object key
+	root       map[string]bool      // resource addresses in root modules
 }
 
 func NewIndex() *Index {
-	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string]ownedBy{}}
+	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string][]ownedBy{}}
 }
 
 // RootAddresses returns the <type>.<name> addresses that states already use
@@ -268,7 +268,7 @@ func (ix *Index) Add(instances []Instance) {
 				continue
 			}
 			for _, ref := range o.refs(in.Attributes) {
-				ix.owned[child+"\x00"+ref] = ownedBy{in, o.what}
+				ix.owned[child+"\x00"+ref] = append(ix.owned[child+"\x00"+ref], ownedBy{in, o.what})
 			}
 		}
 		if !strings.HasPrefix(in.Address, "module.") {
@@ -363,24 +363,31 @@ func (ix *Index) Match(r model.Resource) Match {
 		if o, ok := owners[r.Type]; ok {
 			full, short := o.key(r.Identity)
 			for _, k := range []string{full, short} {
-				by, ok := ix.owned[r.Type+"\x00"+k]
-				if !ok || k == "" {
+				if k == "" {
 					continue
 				}
-				// The parent must pass the checks a state instance of the
-				// object would: its provider and the object's scope.
-				if !model.SameProvider(r.ProviderSource, by.parent.Provider) {
-					continue
-				}
-				verified := k == full
-				if r.Scope != nil {
-					inScope, known := scopeCheck(r.Scope, by.parent.Type, by.parent)
-					if !inScope {
+				for _, by := range ix.owned[r.Type+"\x00"+k] {
+					// The parent must pass the checks a state instance of
+					// the object would: its provider and the object's scope.
+					if !model.SameProvider(r.ProviderSource, by.parent.Provider) {
 						continue
 					}
-					verified = verified && known
+					verified := k == full
+					if r.Scope != nil {
+						inScope, known := scopeCheck(r.Scope, by.parent.Type, by.parent)
+						if !inScope {
+							continue
+						}
+						verified = verified && known
+					}
+					m := Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified}
+					if verified {
+						return m
+					}
+					if !best.Managed {
+						best = m
+					}
 				}
-				return Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified}
 			}
 		}
 	}
@@ -454,6 +461,10 @@ var owners = map[string]owner{
 	},
 }
 
+// emptyIsUnknown are identity keys of an object's location, whose empty
+// value means unknown rather than a value to compare.
+var emptyIsUnknown = map[string]bool{"project": true, "account_id": true, "subscription_id": true, "region": true, "zone": true, "location": true}
+
 func matches(r model.Resource, in *Instance) (ok, verified bool) {
 	// Attribute names only loosely follow identity names (AWS identities
 	// carry account_id, which is not an attribute), so with the attribute
@@ -479,9 +490,11 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 		if !ok {
 			continue
 		}
-		// An empty value (google lists some objects with project "") is
-		// not known, so it neither conflicts nor confirms.
-		if w == "" {
+		// An empty location (google lists some objects with project "")
+		// is not known, so it neither conflicts nor confirms. An empty own
+		// ID (name, id) is no evidence of anything: it must not let the
+		// location alone match.
+		if w == "" && emptyIsUnknown[k] {
 			missing++
 			if isPrimary[k] {
 				primaryEmpty++
@@ -526,7 +539,7 @@ func (ix *Index) candidates(typ string, r model.Resource) []*Instance {
 		found := false
 		for _, k := range keys {
 			v, ok := model.Canonical(r.Identity[k])
-			if !ok || v == "" {
+			if !ok || v == "" && emptyIsUnknown[k] {
 				continue
 			}
 			list := ix.byValue[typ+"\x00"+k+"\x00"+v]

@@ -496,6 +496,11 @@ func TestMatchEmptyValue(t *testing.T) {
 			Identity: map[string]any{"name": "data", "zone": "z2", "project": ""}}, false, false},
 		{model.Resource{Type: "google_compute_instance", RequiredKeys: keys,
 			Identity: map[string]any{"name": "vm", "zone": "z1", "project": ""}}, true, false},
+		// An empty own ID is no evidence: project and zone alone do not match.
+		{model.Resource{Type: "google_compute_disk", RequiredKeys: keys, AttributeKeys: keys,
+			Identity: map[string]any{"name": "", "zone": "z1", "project": "p1"}}, false, false},
+		{model.Resource{Type: "google_compute_instance", RequiredKeys: keys,
+			Identity: map[string]any{"name": "", "zone": "z1", "project": "p1"}}, false, false},
 		// Nothing known but the empty value: no match.
 		{model.Resource{Type: "google_compute_disk", RequiredKeys: []string{"project"}, Identity: map[string]any{"project": ""}}, false, false},
 	} {
@@ -555,5 +560,18 @@ func TestMatchBootDisk(t *testing.T) {
 	r.ProviderSource = "registry.terraform.io/acme/google"
 	if m := ix.Match(r); m.Managed {
 		t.Errorf("other provider: %+v", m)
+	}
+	// Two states own the same disk under different providers: the later
+	// one does not hide the earlier.
+	other, _ := Parse([]byte(`{"version": 4, "resources": [
+  {"mode": "managed", "type": "google_compute_instance", "name": "copy", "provider": "provider[\"registry.terraform.io/acme/google\"]", "instances": [
+    {"attributes": {"boot_disk": [{"source": "projects/p1/zones/z1/disks/vm", "initialize_params": [{}]}]}}
+  ]}
+]}`))
+	ix.Add(other)
+	r = disk("vm", "z1", "p1")
+	r.ProviderSource = "registry.terraform.io/hashicorp/google"
+	if m := ix.Match(r); !m.Managed || !m.Verified || m.Address != "google_compute_instance.vm.boot_disk" {
+		t.Errorf("two owners: %+v", m)
 	}
 }
