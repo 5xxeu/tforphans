@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,6 +33,43 @@ vault_mount:sys
 		if got := ig.Match(c.r); got != c.want {
 			t.Errorf("Match(%+v) = %v", c.r, got)
 		}
+	}
+}
+
+func TestIgnoreConditions(t *testing.T) {
+	ig, err := ParseIgnore(strings.NewReader(`
+google_compute_disk name=pvc-*
+google_compute_instance attr.labels.goog-gke-node=*
+aws_iam_role:My role* account_id=111
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		r    model.Resource
+		want bool
+	}{
+		{model.Resource{Type: "google_compute_disk", Identity: map[string]any{"name": "pvc-1", "project": "p"}}, true},
+		// The project happens to start with pvc-: the condition is on name only.
+		{model.Resource{Type: "google_compute_disk", Identity: map[string]any{"name": "data", "project": "pvc-x"}}, false},
+		{model.Resource{Type: "google_compute_instance", Attributes: map[string]any{"labels": map[string]any{"goog-gke-node": ""}}}, true},
+		{model.Resource{Type: "google_compute_instance", Attributes: map[string]any{"labels": map[string]any{"env": "prod"}}}, false},
+		{model.Resource{Type: "google_compute_instance"}, false},
+		{model.Resource{Type: "aws_iam_role", DisplayName: "My role 1", Identity: map[string]any{"account_id": "111"}}, true},
+		{model.Resource{Type: "aws_iam_role", DisplayName: "My role 1", Identity: map[string]any{"account_id": "222"}}, false},
+	} {
+		if got := ig.Match(c.r); got != c.want {
+			t.Errorf("Match(%+v) = %v", c.r, got)
+		}
+	}
+	if got := ig.Attributes("google_compute_instance"); !slices.Equal(got, []string{"labels"}) {
+		t.Errorf("attributes %v", got)
+	}
+	if got := ig.Attributes("google_compute_disk"); got != nil {
+		t.Errorf("attributes %v", got)
+	}
+	if _, err := ParseIgnore(strings.NewReader("x labels.a=b\n")); err == nil {
+		t.Error("identity key with a path accepted")
 	}
 }
 
@@ -168,5 +206,26 @@ func TestImportNameFromIdentity(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "to = proxmox_virtual_environment_vm.vm_id_105\n") {
 		t.Errorf("output:\n%s", b.String())
+	}
+}
+
+func TestPresets(t *testing.T) {
+	for _, name := range Presets() {
+		if _, err := Preset(name); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	ig, err := Preset("gcp-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ig.Match(model.Resource{Type: "google_service_account", Identity: map[string]any{"email": "123-compute@developer.gserviceaccount.com", "project": "p"}}) {
+		t.Error("default compute service account not ignored")
+	}
+	if ig.Match(model.Resource{Type: "google_service_account", Identity: map[string]any{"email": "ci@p.iam.gserviceaccount.com", "project": "p"}}) {
+		t.Error("user service account ignored")
+	}
+	if _, err := Preset("../report"); err == nil {
+		t.Error("path accepted as a preset")
 	}
 }

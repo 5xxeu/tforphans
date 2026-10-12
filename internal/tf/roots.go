@@ -1,10 +1,11 @@
 package tf
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math/big"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
@@ -75,7 +77,7 @@ func isRoot(dir string) (bool, error) {
 		name := e.Name()
 		var f *hcl.File
 		switch {
-		case e.IsDir():
+		case e.IsDir() || IgnoredFile(name):
 			continue
 		case strings.HasSuffix(name, ".tf"):
 			f, _ = p.ParseHCLFile(filepath.Join(dir, name))
@@ -139,22 +141,53 @@ func (r Runner) Workspaces(ctx context.Context) ([]string, error) {
 		}
 		return nil, cmdError(args, stderr, err)
 	}
-	return parseWorkspaces(string(out)), nil
+	return parseWorkspaces(string(out))
 }
 
-// parseWorkspaces reads `terraform workspace list`. Lines that are not a
-// workspace name (notices of wrappers or remote backends) are skipped. A
-// name is what terraform accepts: unchanged by URL path escaping (so
-// "_prod" and "a+b" are names, text with spaces is not).
-func parseWorkspaces(out string) []string {
-	var ws []string
-	sc := bufio.NewScanner(strings.NewReader(out))
-	for sc.Scan() {
-		if name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(sc.Text()), "*")); name != "" && url.PathEscape(name) == name {
-			ws = append(ws, name)
+// workspaceLine is a line of the list: "* name" for the selected
+// workspace, "  name" for the others.
+var workspaceLine = regexp.MustCompile(`^(\*| ) (\S+)$`)
+
+// parseWorkspaces reads `terraform workspace list`. Backends and wrappers
+// print other text to the same stream, such as warnings that -no-color
+// renders without their frame, so a word wrapped onto its own line
+// ("instead.") must never pass for a workspace: pulling the state of a
+// workspace that does not exist makes some backends (S3) write an empty
+// one. Only the block of list lines that holds the selected workspace
+// counts, and a name is what terraform accepts: unchanged by URL path
+// escaping (so "_prod" and "a+b" are names, text with spaces is not).
+func parseWorkspaces(out string) ([]string, error) {
+	var block, ws []string
+	selected := 0
+	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+	for _, line := range append(lines, "") {
+		m := workspaceLine.FindStringSubmatch(line)
+		if m != nil && url.PathEscape(m[2]) == m[2] {
+			block = append(block, m[0])
+			continue
 		}
+		// The end of a block of list lines.
+		n := 0
+		for _, l := range block {
+			if l[0] == '*' {
+				n++
+			}
+		}
+		if n > 0 {
+			if ws != nil {
+				return nil, errors.New("unexpected output of terraform workspace list: more than one list")
+			}
+			for _, l := range block {
+				ws = append(ws, l[2:])
+			}
+			selected = n
+		}
+		block = nil
 	}
-	return ws
+	if selected != 1 {
+		return nil, errors.New("unexpected output of terraform workspace list: no single selected workspace (* name)")
+	}
+	return ws, nil
 }
 
 // UserList is one of the user's own list blocks.
@@ -180,7 +213,7 @@ func UserLists(dir string) (map[string]UserList, error) {
 	out := map[string]UserList{}
 	p := hclparse.NewParser()
 	for _, path := range files {
-		if strings.HasPrefix(filepath.Base(path), "zz_tforphans_") {
+		if name := filepath.Base(path); strings.HasPrefix(name, "zz_tforphans_") || IgnoredFile(name) {
 			continue
 		}
 		f, diags := p.ParseHCLFile(path)
@@ -249,7 +282,7 @@ func ConfigImports(dir string) ([]Import, error) {
 		var f *hcl.File
 		path := filepath.Join(dir, e.Name())
 		switch {
-		case e.IsDir():
+		case e.IsDir() || IgnoredFile(e.Name()):
 			continue
 		case strings.HasSuffix(e.Name(), ".tf"):
 			f, _ = p.ParseHCLFile(path)
@@ -405,4 +438,87 @@ func literalMap(expr hcl.Expression) map[string]string {
 		out[k] = c
 	}
 	return out
+}
+
+var (
+	providerSchema = &hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "provider", LabelNames: []string{"name"}}}}
+	aliasSchema    = &hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "alias"}}}
+)
+
+// IgnoredFile reports whether terraform skips a configuration file: hidden
+// files and editor backups (#name#, name~). Reading them would let a file
+// terraform never loads change what tforphans concludes.
+func IgnoredFile(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") || strings.HasPrefix(name, "#") && strings.HasSuffix(name, "#")
+}
+
+// ProviderConfigs returns, per local name, the root module's default
+// provider configuration (the provider block without an alias) as its HCL
+// tokens, so that only layout and comments are ignored; a provider without
+// one is absent, which is the same configuration as an empty block. Two
+// names with equal text configure the same account and project. A block
+// that cannot be compared (in a .tf.json file, or changed by an override
+// file) gets a text of its own that equals nothing.
+func ProviderConfigs(dir string) (map[string]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	overridden := map[string]string{}
+	p := hclparse.NewParser()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || IgnoredFile(name) || strings.HasPrefix(name, "zz_tforphans_") || !(strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		var f *hcl.File
+		if strings.HasSuffix(name, ".tf") {
+			f, _ = p.ParseHCLFile(path)
+		} else {
+			f, _ = p.ParseJSONFile(path)
+		}
+		if f == nil {
+			continue
+		}
+		base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".tf")
+		override := base == "override" || strings.HasSuffix(base, "_override")
+		content, _, _ := f.Body.PartialContent(providerSchema)
+		for i, b := range content.Blocks {
+			attrs, _, _ := b.Body.PartialContent(aliasSchema)
+			if _, aliased := attrs.Attributes["alias"]; aliased {
+				continue
+			}
+			unique := fmt.Sprintf("unique %s %d", path, i)
+			if override {
+				overridden[b.Labels[0]] = unique
+				continue
+			}
+			text := unique
+			if body, ok := b.Body.(*hclsyntax.Body); ok {
+				// The body's range includes its braces.
+				r := body.SrcRange
+				text = configTokens(f.Bytes[r.Start.Byte+1 : r.End.Byte-1])
+			}
+			out[b.Labels[0]] = text
+		}
+	}
+	maps.Copy(out, overridden)
+	return out, nil
+}
+
+// configTokens renders HCL source as its tokens without newlines and
+// comments; string contents stay as they are.
+func configTokens(src []byte) string {
+	tokens, _ := hclsyntax.LexConfig(src, "", hcl.InitialPos)
+	var parts []string
+	for _, t := range tokens {
+		switch t.Type {
+		case hclsyntax.TokenNewline, hclsyntax.TokenComment, hclsyntax.TokenEOF:
+			continue
+		}
+		parts = append(parts, string(t.Bytes))
+	}
+	return strings.Join(parts, "\x00")
 }

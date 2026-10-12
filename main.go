@@ -95,6 +95,8 @@ type options struct {
 	roots         []string
 	stateRoots    listFlag
 	init          bool
+	currentWS     bool // read only the selected workspace of each root
+	anyVersion    bool // lift the roots' required_version
 	states        listFlag
 	plugins       listFlag
 	scans         []string
@@ -106,6 +108,9 @@ type options struct {
 	adopt         bool   // "adopt" subcommand: write import blocks
 	out           string // adopt: output file, empty for stdout
 	ignorePath    string
+	presets       []string
+	includeAttrs  []string
+	ignore        *report.Ignore // loaded in execute
 	strict        bool
 	verbose       bool
 	printQuery    bool
@@ -138,28 +143,32 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fmt.Fprint(stderr, help)
 		fs.PrintDefaults()
 	}
-	var argFlags, include, exclude, scans listFlag
+	var argFlags, include, exclude, scans, presets, attrs listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
 	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are unverified, since state does not record the cluster")
 	fs.BoolVar(&o.pluginStates, "plugin-cluster-states", false, "state that every state given belongs to the cluster or account the plugins scan; without it results a plugin marks \"unverified\" (state does not record where they live) match only as unverified")
 	fs.BoolVar(&o.allowHTTP, "allow-http", false, "allow -state URLs over plain http (never with credentials)")
 	fs.BoolVar(&o.allowUnpinned, "allow-unpinned", false, "let -scan install the newest provider release when no root module pins its version")
+	fs.BoolVar(&o.currentWS, "current-workspace", false, "read only the selected workspace of each root module instead of listing all workspaces")
+	fs.BoolVar(&o.anyVersion, "ignore-required-version", false, "lift the root modules' required_version with a temporary override file, so that a root pinned to an older Terraform can be queried (child modules' constraints still apply)")
 	fs.BoolVar(&o.init, "init", false, "run terraform init in root modules that are not initialized (creates .terraform there)")
 	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*); repeatable")
 	fs.Var(&o.plugins, "plugin", "discovery command for providers without list support, run with sh -c; repeatable")
-	fs.Var(&argFlags, "arg", "fan list queries out over values of a list config argument, e.g. region=eu-north-1,us-east-1; repeatable")
+	fs.Var(&argFlags, "arg", "fan list queries out over values of a list config argument, e.g. region=eu-north-1,us-east-1; TYPE_GLOB:name=... limits it to matching types (google_compute_*:zone=europe-west1-b) and wins over the same name without one; repeatable")
 	fs.Var(&include, "types", "only query resource types matching these globs, e.g. aws_s3_*,aws_iam_role")
 	fs.Var(&exclude, "exclude-types", "do not query resource types matching these globs")
 	fs.IntVar(&o.limit, "limit", 100000, "maximum results per list query")
 	if o.adopt {
 		fs.StringVar(&o.out, "o", "", "write the import blocks to this new file instead of stdout")
 	} else {
-		fs.StringVar(&o.format, "format", "text", "output format: text or json")
+		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
 	}
-	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] lines (default "+defaultIgnoreFile+" if present)")
+	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...] lines (default "+defaultIgnoreFile+" if present)")
+	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable")
+	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
 	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, or matches that could not be verified (state without identity, Proxmox, plugin results marked unverified)")
-	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types")
+	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
 	fs.BoolVar(&o.printQuery, "print-query", false, "print the generated .tfquery.hcl for each root and exit")
 	fs.BoolVar(&o.noQuery, "no-query", false, "do not run terraform query: read the roots' states and run plugins only")
 	fs.StringVar(&o.terraformBin, "terraform", "terraform", "terraform binary")
@@ -178,7 +187,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 
 	switch o.format {
-	case "", "text", "json":
+	case "", "text", "json", "summary":
 	default:
 		return nil, fmt.Errorf("unknown -format %q", o.format)
 	}
@@ -190,11 +199,11 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		if err != nil {
 			return nil, err
 		}
-		i, ok := argIndex[parsed.Name]
+		i, ok := argIndex[parsed.Key()]
 		if !ok {
 			i = len(o.args)
-			argIndex[parsed.Name] = i
-			o.args = append(o.args, tf.Arg{Name: parsed.Name})
+			argIndex[parsed.Key()] = i
+			o.args = append(o.args, tf.Arg{Types: parsed.Types, Name: parsed.Name})
 		}
 		for _, v := range parsed.Values {
 			if !slices.Contains(o.args[i].Values, v) {
@@ -202,6 +211,13 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 			}
 		}
 	}
+	o.presets = presets.csv()
+	for _, p := range o.presets {
+		if _, err := report.Preset(p); err != nil {
+			return nil, err
+		}
+	}
+	o.includeAttrs = attrs.csv()
 	o.scans = scans.csv()
 	for _, s := range o.scans {
 		if _, ok := sources[s]; !ok {
@@ -263,6 +279,14 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("ignore file: %w", err)
 	}
+	for _, p := range o.presets {
+		pr, err := report.Preset(p)
+		if err != nil {
+			return err
+		}
+		ignore.Merge(pr)
+	}
+	o.ignore = ignore
 
 	var sum report.Summary
 	idx := state.NewIndex()
@@ -309,6 +333,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += res.Listed
+		sum.Ran += res.Listed
 		sum.Skipped = append(sum.Skipped, res.Skipped...)
 		// Import blocks need the provider's local name in that root when it
 		// is not the type prefix (cf = { source = "cloudflare/cloudflare" }).
@@ -356,19 +381,30 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	live = slices.DeleteFunc(live, func(r model.Resource) bool {
 		return len(o.include) > 0 && !o.include.Match(r.Type) || o.exclude.Match(r.Type)
 	})
+	scopes := slices.Clone(live) // every source's results, for -v
 	live = dedupe(live)
 	var orphans []model.Resource
+	sum.ByType = map[string]*report.TypeCount{}
 	for _, r := range live {
+		tc := sum.ByType[r.Type]
+		if tc == nil {
+			tc = &report.TypeCount{}
+			sum.ByType[r.Type] = tc
+		}
+		tc.Live++
 		switch m := idx.Match(r); {
 		case m.Managed:
 			sum.Managed++
+			tc.Managed++
 			if !m.Verified {
 				sum.Unverified++
 			}
 		case ignore.Match(r):
 			sum.Ignored++
+			tc.Ignored++
 		default:
 			orphans = append(orphans, r)
+			tc.Orphans++
 		}
 	}
 	sort.SliceStable(orphans, func(i, j int) bool {
@@ -378,6 +414,31 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		return orphans[i].DisplayName < orphans[j].DisplayName
 	})
 	sum.Live, sum.Orphans = len(live), len(orphans)
+	// Attributes fetched for ignore rules are not printed: an ignore file
+	// from someone else's repository could otherwise pull secrets
+	// (attr.password=*) into the JSON output.
+	for i := range orphans {
+		r := &orphans[i]
+		if r.Attributes == nil {
+			continue
+		}
+		keep := map[string]any{}
+		for _, a := range o.includeAttrs {
+			if v, ok := r.Attributes[a]; ok {
+				keep[a] = v
+			}
+		}
+		r.Attributes = nil
+		if len(keep) > 0 {
+			r.Attributes = keep
+		}
+	}
+	for i := range sum.Failed {
+		sum.Failed[i].Classify()
+	}
+	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (written before Terraform 1.12 or by a provider without identities): they are matched by attributes, which is less certain. terraform apply -refresh-only with a current provider records identities; it needs write access to the state.", n, idx.Len()))
+	}
 
 	switch {
 	case o.adopt:
@@ -414,6 +475,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
 	case o.format == "json":
 		err = report.JSON(stdout, orphans, sum)
+	case o.format == "summary":
+		err = report.SummaryTable(stdout, sum)
 	default:
 		err = report.Text(stdout, orphans)
 	}
@@ -421,6 +484,18 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		return err
 	}
 	printSummary(stderr, o, sum)
+	if o.verbose {
+		printScopes(stderr, scopes)
+	}
+	if nothingChecked(o, sum) {
+		msg := "no resource types were queried, so nothing could be found"
+		if len(sum.NoList) > 0 {
+			slices.Sort(sum.NoList)
+			msg += fmt.Sprintf(". These providers have no list resources in the installed version: %s. List resources need Terraform 1.14 and a provider release that adds them (see its changelog); upgrade the provider, or use -scan or -plugin", strings.Join(slices.Compact(sum.NoList), ", "))
+		}
+		fmt.Fprintln(stderr, "error:", report.Clean(msg))
+		return exitCode(exitError)
+	}
 
 	incomplete := len(sum.Failed) > 0 || len(sum.Warnings) > 0 || sum.Unverified > 0
 	switch {
@@ -516,7 +591,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 // scanRoot adds the root's state to idx and returns the live resources its
 // providers list.
 func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, sum *report.Summary, stdout io.Writer) ([]model.Resource, error) {
-	r := tf.Runner{Bin: o.terraformBin, Dir: root}
+	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion}
 	if !r.Initialized() && o.init {
 		if err := r.Init(ctx); err != nil {
 			return nil, err
@@ -544,11 +619,17 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly})
+	configs, err := tf.ProviderConfigs(root)
+	if err != nil {
+		return nil, err
+	}
+	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly,
+		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 }, ProviderConfigs: configs})
 	sum.Skipped = append(sum.Skipped, plan.Skipped...)
 	for _, n := range plan.Notes {
 		sum.Notes = append(sum.Notes, root+": "+n)
 	}
+	sum.NoList = append(sum.NoList, plan.NoList...)
 	if o.printQuery {
 		fmt.Fprintf(stdout, "# %s\n%s%s", root, plan.ProvidersHCL(), plan.HCL(o.limit))
 		return nil, nil
@@ -595,7 +676,33 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
+	// Whole objects are large; keep the attributes asked for. Generated
+	// blocks ask for them; the user's own blocks do only with their own
+	// include_resource = true.
+	noAttrs := map[string]bool{}
+	for i := range res.Found {
+		f := &res.Found[i]
+		if f.Attributes == nil {
+			block, _, _ := strings.Cut(f.ListAddress, "[")
+			if _, generated := byAddress[block]; !generated && len(o.wantedAttrs(f.Type)) > 0 && !noAttrs[block] {
+				noAttrs[block] = true
+				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs or attr. ignore rules", root, block))
+			}
+			continue
+		}
+		keep := map[string]any{}
+		for _, a := range o.wantedAttrs(f.Type) {
+			if v, ok := f.Attributes[a]; ok {
+				keep[a] = v
+			}
+		}
+		f.Attributes = nil
+		if len(keep) > 0 {
+			f.Attributes = keep
+		}
+	}
 	sum.Queried += len(plan.Queries) + len(userLists)
+	sum.Ran += res.Started
 	sum.Failed = append(sum.Failed, res.Failed...)
 	// Import blocks have to use the provider configuration the object was
 	// listed with: ours for generated blocks, the block's own (possibly an
@@ -622,6 +729,20 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	return res.Found, nil
 }
 
+// wantedAttrs returns the attributes to keep for a type: -include-attrs and
+// those the ignore rules look at.
+func (o *options) wantedAttrs(typ string) []string {
+	out := slices.Clone(o.includeAttrs)
+	if o.ignore != nil {
+		for _, a := range o.ignore.Attributes(typ) {
+			if !slices.Contains(out, a) {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
 // userListProvider resolves the provider address of a user's list block
 // from its provider argument ("aws", "aws.other"; empty means the type's
 // prefix, as terraform infers it): the root's required_providers, else the
@@ -646,10 +767,14 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 // the instances and the number of states read. A workspace that fails does
 // not stop the others: the instances read so far come back with the error.
 func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
-	r := tf.Runner{Bin: o.terraformBin, Dir: dir}
-	workspaces, err := r.Workspaces(ctx)
-	if err != nil {
-		return nil, 0, err
+	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
+	// "" is the selected workspace (no TF_WORKSPACE).
+	workspaces := []string{""}
+	if !o.currentWS {
+		var err error
+		if workspaces, err = r.Workspaces(ctx); err != nil {
+			return nil, 0, err
+		}
 	}
 	var all []state.Instance
 	var errs []error
@@ -736,7 +861,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 }
 
 func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
-	r := tf.Runner{Bin: o.terraformBin, Dir: dir}
+	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
 	if !r.Initialized() {
 		if !o.init {
 			return nil, 0, errors.New("not initialized (run terraform init there, or pass -init)")
@@ -751,19 +876,113 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 // dedupe drops resources listed more than once, for example by two roots
 // that share a provider account. Equal types and identities from different
 // providers are different objects; an unknown provider (a plugin) is taken
-// for the same one.
+// for the same one. An object whose location is unknown (project "") is
+// only merged with copies from the same list block: two roots can list
+// different projects' objects under the same name. Attributes of the
+// dropped copies are kept: one copy may come from a list block that did
+// not ask for them.
 func dedupe(rs []model.Resource) []model.Resource {
-	seen := map[string][]string{} // key -> provider addresses kept
+	seen := map[string][]int{} // key -> indexes in out
 	out := rs[:0]
 	for _, r := range rs {
 		k := r.Key()
-		if slices.ContainsFunc(seen[k], func(p string) bool { return model.SameProvider(p, r.ProviderSource) }) {
+		if state.UnknownLocation(r.Identity) {
+			k += "\x00" + r.Source + "\x00" + r.ListAddress
+		}
+		i := slices.IndexFunc(seen[k], func(j int) bool { return model.SameProvider(out[j].ProviderSource, r.ProviderSource) })
+		if i < 0 {
+			seen[k] = append(seen[k], len(out))
+			out = append(out, r)
 			continue
 		}
-		seen[k] = append(seen[k], r.ProviderSource)
-		out = append(out, r)
+		kept := &out[seen[k][i]]
+		for a, v := range r.Attributes {
+			if kept.Attributes == nil {
+				kept.Attributes = map[string]any{}
+			}
+			if _, ok := kept.Attributes[a]; !ok {
+				kept.Attributes[a] = v
+			}
+		}
 	}
 	return out
+}
+
+// printFailed prints the queries that did not list everything: each one
+// with -v or when there are few, otherwise one line per cause with the
+// types, so that a missing argument is not lost among disabled APIs.
+func printFailed(w io.Writer, o *options, failed []tf.Failure) {
+	if len(failed) <= 5 || o.verbose {
+		for _, f := range failed {
+			fmt.Fprintf(w, "warning: %s not fully listed (%s): %s\n", report.Clean(f.Address), f.Category, report.Clean(f.Message))
+		}
+	}
+	if len(failed) <= 5 {
+		return
+	}
+	byCat := map[string][]string{}
+	for _, f := range failed {
+		if !slices.Contains(byCat[f.Category], f.Type) {
+			byCat[f.Category] = append(byCat[f.Category], f.Type)
+		}
+	}
+	n := 0
+	for _, types := range byCat {
+		n += len(types)
+	}
+	hint := ""
+	if !o.verbose {
+		hint = " (-v for messages)"
+	}
+	fmt.Fprintf(w, "warning: %d resource types not fully listed%s:\n", n, hint)
+	for _, cat := range []string{tf.FailMissingArg, tf.FailDenied, tf.FailTruncated, tf.FailNotFound, tf.FailOther, tf.FailAPIOff} {
+		types := byCat[cat]
+		if len(types) == 0 {
+			continue
+		}
+		slices.Sort(types)
+		fmt.Fprintf(w, "  %s (%d): %s\n", cat, len(types), report.Clean(strings.Join(types, ", ")))
+		if cat == tf.FailMissingArg {
+			fmt.Fprintln(w, "    pass the argument with -arg, for one set of types if needed: -arg 'google_compute_*:zone=europe-west1-b,europe-west1-c'")
+		}
+	}
+}
+
+// scopeKeys are identity keys that tell which account a result came from.
+var scopeKeys = []string{"project", "account_id", "subscription_id"}
+
+// printScopes prints, per source, the accounts its results came from: with
+// credentials from the environment, a root can list another project than
+// the one its configuration manages.
+func printScopes(w io.Writer, live []model.Resource) {
+	seen := map[string]map[string]bool{}
+	var sources []string
+	for _, r := range live {
+		for _, k := range scopeKeys {
+			v, ok := model.Scalar(r.Identity[k])
+			if !ok || v == "" {
+				continue
+			}
+			if seen[r.Source] == nil {
+				seen[r.Source] = map[string]bool{}
+				sources = append(sources, r.Source)
+			}
+			seen[r.Source][k+" "+v] = true
+		}
+	}
+	slices.Sort(sources)
+	for _, src := range sources {
+		vals := slices.Sorted(maps.Keys(seen[src]))
+		fmt.Fprintf(w, "  %s: results from %s\n", report.Clean(src), report.Clean(strings.Join(vals, ", ")))
+	}
+}
+
+// nothingChecked reports a run that could not have found anything: no list
+// query or data source scan listed a type, and no plugin ran. To a CI job exit 0 would mean that
+// nothing is unmanaged.
+func nothingChecked(o *options, s report.Summary) bool {
+	// A plugin is a check of its own.
+	return s.Ran == 0 && len(o.plugins) == 0 && !o.printQuery
 }
 
 func printSummary(w io.Writer, o *options, s report.Summary) {
@@ -773,27 +992,12 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		fmt.Fprint(w, " (-v to list)")
 	}
 	fmt.Fprintln(w)
-	if s.Queried == 0 && len(o.plugins) == 0 && len(o.scans) == 0 && !o.printQuery {
-		fmt.Fprintln(w, "warning: no resource types were queried, so nothing could be found")
-	}
 	if o.verbose {
 		for _, sk := range s.Skipped {
 			fmt.Fprintf(w, "  skipped %s: %s\n", report.Clean(sk.Type), report.Clean(sk.Reason))
 		}
 	}
-	if len(s.Failed) > 5 && !o.verbose {
-		var types []string
-		for _, f := range s.Failed {
-			if !slices.Contains(types, f.Type) {
-				types = append(types, f.Type)
-			}
-		}
-		fmt.Fprintf(w, "warning: %d resource types not fully listed (-v for reasons): %s\n", len(types), report.Clean(strings.Join(types, ", ")))
-	} else {
-		for _, f := range s.Failed {
-			fmt.Fprintf(w, "warning: %s not fully listed: %s\n", report.Clean(f.Address), report.Clean(f.Message))
-		}
-	}
+	printFailed(w, o, s.Failed)
 	for _, msg := range s.Warnings {
 		fmt.Fprintln(w, "warning:", report.Clean(msg))
 	}

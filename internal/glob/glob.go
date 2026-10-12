@@ -44,6 +44,17 @@ func CompileList(patterns []string) List {
 	return l
 }
 
+// Names reports whether one of the patterns is s itself, not a wildcard
+// that happens to match it.
+func (l List) Names(s string) bool {
+	for _, p := range l {
+		if p.raw == s {
+			return true
+		}
+	}
+	return false
+}
+
 func (l List) Match(s string) bool {
 	for _, p := range l {
 		if p.Match(s) {

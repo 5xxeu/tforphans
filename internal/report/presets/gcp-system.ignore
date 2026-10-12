@@ -1,0 +1,20 @@
+# Objects that Google Cloud and GKE create on their own. Only marks a user
+# cannot give their own objects count: label keys starting with goog-,
+# which Google reserves, and service account and bucket names in Google's
+# own domains. Names alone (gke-*, k8s-*) are not enough: anyone who can
+# create a firewall rule can call it gke-public-ssh. Built from one large
+# project's results; check what it hides before relying on it.
+
+# GKE nodes, their boot disks and persistent volume disks
+google_compute_instance attr.labels.goog-gke-node=*
+google_compute_instance attr.labels.goog-k8s-cluster-name=*
+google_compute_disk attr.labels.goog-gke-node=*
+google_compute_disk attr.labels.goog-k8s-cluster-name=*
+google_compute_disk attr.labels.goog-gke-volume=*
+
+# Default service accounts (Google-owned domains)
+google_service_account email=*-compute@developer.gserviceaccount.com
+google_service_account email=*@appspot.gserviceaccount.com
+
+# App Engine buckets (only Google can create buckets under appspot.com)
+google_storage_bucket name=*.appspot.com

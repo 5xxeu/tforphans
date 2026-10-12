@@ -2,10 +2,12 @@ package tf
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/glob"
+	"github.com/5xxeu/tforphans/internal/model"
 )
 
 // LabelPrefix starts the labels of generated list blocks. It is not how
@@ -14,19 +16,29 @@ import (
 const LabelPrefix = "tfo_"
 
 // Arg fans every list query whose config has a string argument Name out
-// over Values, for example region=eu-north-1,us-east-1.
+// over Values, for example region=eu-north-1,us-east-1. Types, when set,
+// limits it to the resource types it matches
+// (google_compute_*:zone=europe-west1-b).
 type Arg struct {
+	Types  string
 	Name   string
 	Values []string
 }
 
+// Key identifies the argument among repeated -arg flags.
+func (a Arg) Key() string { return a.Types + ":" + a.Name }
+
 func ParseArg(s string) (Arg, error) {
 	name, vals, ok := strings.Cut(s, "=")
-	name = strings.TrimSpace(name)
-	if !ok || name == "" {
-		return Arg{}, fmt.Errorf("invalid -arg %q, want name=value[,value...]", s)
+	types, name, scoped := strings.Cut(name, ":")
+	if !scoped {
+		types, name = "", types
 	}
-	a := Arg{Name: name}
+	types, name = strings.TrimSpace(types), strings.TrimSpace(name)
+	if !ok || name == "" || scoped && types == "" {
+		return Arg{}, fmt.Errorf("invalid -arg %q, want [TYPE_GLOB:]name=value[,value...]", s)
+	}
+	a := Arg{Types: types, Name: name}
 	for _, v := range strings.Split(vals, ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			a.Values = append(a.Values, v)
@@ -48,12 +60,14 @@ type Query struct {
 	Source    string
 	Temporary bool
 	Args      []Arg // args the type's config accepts
+	// IncludeResource asks for the resource's attributes too.
+	IncludeResource bool
 }
 
 // Skip is a list-capable type that was not queried.
 type Skip struct {
-	Type   string
-	Reason string
+	Type   string `json:"type"`
+	Reason string `json:"reason"`
 }
 
 type Plan struct {
@@ -63,6 +77,9 @@ type Plan struct {
 	Declare map[string]string
 	// Notes explain whole providers left out (configured only with aliases).
 	Notes []string
+	// NoList are the providers whose installed version has no list
+	// resources at all.
+	NoList []string
 }
 
 type PlanOptions struct {
@@ -72,6 +89,19 @@ type PlanOptions struct {
 	// AliasOnly holds the local names the root configures only with
 	// aliases (see AliasOnly), with the aliases.
 	AliasOnly map[string][]string
+	// IncludeResource tells which types need their attributes; nil: none.
+	IncludeResource func(resourceType string) bool
+	// ProviderConfigs are the root's default provider configurations by
+	// local name (see ProviderConfigs).
+	ProviderConfigs map[string]string
+}
+
+// OptIn are list-capable types whose lists reach far beyond what a root
+// module manages (every project the credentials can see); they are queried
+// only when -types names them exactly.
+var OptIn = map[string]string{
+	"google_project": "lists every project the credentials can see, not only this root's",
+	"google_folder":  "lists folders across the organization, not only this root's",
 }
 
 // BuildPlan picks the list-capable resource types to query. Types whose list
@@ -98,6 +128,10 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 	}
 	for _, addr := range addrs {
 		ps := s.ProviderSchemas[addr]
+		if len(ps.ListResourceSchemas) == 0 {
+			p.NoList = append(p.NoList, addr)
+			continue
+		}
 		types := make([]string, 0, len(ps.ListResourceSchemas))
 		for t := range ps.ListResourceSchemas {
 			if (len(opt.Include) == 0 || opt.Include.Match(t)) && !opt.Exclude.Match(t) {
@@ -121,12 +155,17 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 			continue
 		}
 		for _, t := range types {
+			if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
+				p.Skipped = append(p.Skipped, Skip{t, reason + "; name it in -types to list it"})
+				continue
+			}
 			q, reason := planType(t, local, ps.ListResourceSchemas[t], opt.Args)
 			if reason != "" {
 				p.Skipped = append(p.Skipped, Skip{t, reason})
 				continue
 			}
 			q.Source, q.Temporary = addr, temporary
+			q.IncludeResource = opt.IncludeResource != nil && opt.IncludeResource(t)
 			p.Queries = append(p.Queries, q)
 			if temporary {
 				if p.Declare == nil {
@@ -136,15 +175,87 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 			}
 		}
 	}
+	p.dropTwins(opt.ProviderConfigs)
 	return p
+}
+
+// dropTwins keeps one query per type among providers that list the same
+// objects (google and google-beta) when the root configures them alike:
+// both would report every object, under identities that need not be equal.
+// Configured differently (another project), or given other -arg values,
+// both are queried.
+func (p *Plan) dropTwins(configs map[string]string) {
+	keep := map[string]int{} // type, family, configuration, args -> index in kept
+	var kept []Query
+	for _, q := range p.Queries {
+		cfg := ""
+		if !q.Temporary {
+			cfg = configs[q.Provider]
+		}
+		// Arguments too: a provider whose schema lacks one (-arg
+		// project=...) lists another place than the one that takes it.
+		var args []string
+		for _, a := range q.Args {
+			args = append(args, a.Name+"="+strings.Join(a.Values, ","))
+		}
+		sort.Strings(args)
+		fam := model.ProviderFamily(q.Source)
+		k := q.Type + "\x00" + fam + "\x00" + cfg + "\x00" + strings.Join(args, "\x00")
+		i, seen := keep[k]
+		if !seen {
+			keep[k] = len(kept)
+			kept = append(kept, q)
+			continue
+		}
+		// Equal configurations scan the same place; a name the root has
+		// needs no temporary declaration, then google beats google-beta.
+		drop, cur := q, kept[i]
+		if !q.Temporary && cur.Temporary || q.Temporary == cur.Temporary && isFamilyName(q.Source, fam) && !isFamilyName(cur.Source, fam) {
+			drop, kept[i] = cur, q
+		}
+		p.Skipped = append(p.Skipped, Skip{drop.Type, fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Provider, drop.Provider)})
+	}
+	p.Queries = kept
+	for local := range p.Declare {
+		if !slices.ContainsFunc(kept, func(q Query) bool { return q.Provider == local }) {
+			delete(p.Declare, local)
+		}
+	}
+}
+
+// isFamilyName reports whether addr is the provider its family is named
+// after (hashicorp/google, not hashicorp/google-beta).
+func isFamilyName(addr, family string) bool {
+	return strings.HasSuffix(strings.ToLower(addr), "/"+family) || strings.ToLower(addr) == family
 }
 
 func planType(typ, local string, ls ListSchema, args []Arg) (Query, string) {
 	q := Query{Type: typ, Provider: local}
+	// Arguments for matching types win over ones for all types; the values
+	// of several matching ones are combined (two attributes of one name
+	// would make terraform reject the query).
 	supplied := map[string]bool{}
-	for _, a := range args {
-		if at, ok := ls.Block.Attributes[a.Name]; ok && string(at.Type) == `"string"` {
-			q.Args = append(q.Args, a)
+	for _, scoped := range []bool{true, false} {
+		index := map[string]int{} // name -> position in q.Args, this pass
+		for _, a := range args {
+			if (a.Types != "") != scoped || supplied[a.Name] && index[a.Name] == 0 || scoped && !glob.Compile(a.Types).Match(typ) {
+				continue
+			}
+			at, ok := ls.Block.Attributes[a.Name]
+			if !ok || string(at.Type) != `"string"` {
+				continue
+			}
+			if i := index[a.Name]; i > 0 {
+				merged := &q.Args[i-1]
+				for _, v := range a.Values {
+					if !slices.Contains(merged.Values, v) {
+						merged.Values = append(merged.Values, v)
+					}
+				}
+				continue
+			}
+			q.Args = append(q.Args, Arg{Types: a.Types, Name: a.Name, Values: slices.Clone(a.Values)})
+			index[a.Name] = len(q.Args)
 			supplied[a.Name] = true
 		}
 	}
@@ -174,6 +285,9 @@ func (p Plan) HCL(limit int) []byte {
 		fmt.Fprintf(&b, "\nlist %q %q {\n", q.Type, q.Label())
 		fmt.Fprintf(&b, "  provider = %s\n", q.Provider)
 		fmt.Fprintf(&b, "  limit    = %d\n", limit)
+		if q.IncludeResource {
+			b.WriteString("  include_resource = true\n")
+		}
 		if len(q.Args) > 0 {
 			b.WriteString("  for_each = {\n")
 			for _, combo := range product(q.Args) {

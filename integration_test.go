@@ -502,3 +502,123 @@ func tail(s string) string {
 	}
 	return s
 }
+
+// TestIntegrationGCPFeedback covers a large GCP run's findings: a backend
+// warning before the workspace list, a root pinned to an older Terraform,
+// attributes for ignore rules and output, and runs that query nothing.
+func TestIntegrationGCPFeedback(t *testing.T) {
+	data, root := setup(t)
+	write(t, filepath.Join(root, "main.tf"), `
+terraform {
+  required_providers {
+    fake = { source = "example.com/fake/fake" }
+  }
+}
+resource "fake_thing" "a" { name = "managed-a" }
+`)
+	terraform(t, root, "apply", "-auto-approve", "-no-color")
+	for _, n := range []string{"orphan-1", "node-1"} {
+		write(t, filepath.Join(data, "thing", n), "")
+	}
+	t.Chdir(root)
+
+	// A wrapper that prints a backend warning to stdout, as the S3 backend
+	// does for dynamodb_table with -no-color, and logs the workspaces.
+	tfPath, err := exec.LookPath("terraform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(t.TempDir(), "calls")
+	wrapper := filepath.Join(t.TempDir(), "tfwrap")
+	write(t, wrapper, fmt.Sprintf(`#!/bin/sh
+echo "$* ws=${TF_WORKSPACE:-}" >> %q
+if [ "$1 $2" = "workspace list" ]; then
+  printf '\nWarning: Deprecated Parameter\n\nThe parameter "dynamodb_table" is deprecated. Use parameter "use_lockfile"\ninstead.\n\n'
+fi
+exec %q "$@"
+`, log, tfPath))
+	os.Chmod(wrapper, 0o755)
+	code, stdout, stderr := runTool("-terraform", wrapper, "-types", "fake_thing")
+	if code != exitOrphans || !strings.Contains(stderr, "3 live, 1 managed") {
+		t.Fatalf("with a backend warning: exit %d\n%s%s", code, stdout, stderr)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "instead.") || !strings.Contains(string(calls), "state pull -no-color ws=default") {
+		t.Errorf("terraform calls:\n%s", calls)
+	}
+	// -current-workspace does not list workspaces at all.
+	os.Remove(log)
+	if code, _, stderr := runTool("-terraform", wrapper, "-types", "fake_thing", "-current-workspace"); code != exitOrphans {
+		t.Errorf("-current-workspace: exit %d\n%s", code, stderr)
+	}
+	if calls, _ := os.ReadFile(log); strings.Contains(string(calls), "workspace list") || !strings.Contains(string(calls), "state pull -no-color ws=\n") {
+		t.Errorf("-current-workspace calls:\n%s", calls)
+	}
+
+	// Attributes: for -include-attrs, and for ignore rules on attributes.
+	write(t, ".tforphans-ignore", "fake_thing attr.name=node-*\n")
+	code, stdout, stderr = runTool("-types", "fake_thing", "-format", "json", "-include-attrs", "id")
+	if code != exitOrphans || !strings.Contains(stderr, "1 ignored") {
+		t.Fatalf("attributes: exit %d\n%s%s", code, stdout, stderr)
+	}
+	var out struct {
+		Orphans []struct {
+			DisplayName string         `json:"display_name"`
+			Provider    *string        `json:"provider"`
+			Attributes  map[string]any `json:"attributes"`
+		} `json:"orphans"`
+		Summary struct {
+			ByType map[string]struct{ Live, Orphans int } `json:"by_type"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range out.Orphans {
+		// id was asked for; name, which only the ignore rule looks at, is
+		// not printed.
+		if o.Provider == nil || o.Attributes["id"] != o.DisplayName || len(o.Attributes) != 1 {
+			t.Errorf("orphan %+v", o)
+		}
+	}
+	if bt := out.Summary.ByType["fake_thing"]; bt.Live != 3 || bt.Orphans != 1 || len(out.Orphans) != 1 {
+		t.Errorf("by_type %+v", out.Summary.ByType)
+	}
+	code, stdout, _ = runTool("-types", "fake_thing", "-format", "summary")
+	if code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stdout, "UNMANAGED") {
+		t.Errorf("-format summary: exit %d\n%s", code, stdout)
+	}
+	os.Remove(".tforphans-ignore")
+
+	// The user's own list block without include_resource: a note.
+	write(t, "mine.tfquery.hcl", "list \"fake_thing\" \"mine\" {\n  provider = fake\n}\n")
+	if code, _, stderr := runTool("-types", "fake_thing", "-include-attrs", "id"); code != exitOrphans || !strings.Contains(stderr, "list.fake_thing.mine has no include_resource") {
+		t.Errorf("user block without include_resource: exit %d\n%s", code, stderr)
+	}
+	os.Remove("mine.tfquery.hcl")
+
+	// Nothing queried is an error, not "nothing found"; so is a user's list
+	// block that runs no instance.
+	if code, _, stderr := runTool("-types", "no_such_type"); code != exitError || !strings.Contains(stderr, "no resource types were queried") {
+		t.Errorf("nothing queried: exit %d\n%s", code, stderr)
+	}
+	write(t, "empty.tfquery.hcl", "list \"fake_thing\" \"none\" {\n  provider = fake\n  for_each = {}\n}\n")
+	write(t, ".backup.tfquery.hcl", "this is not { valid hcl")
+	if code, _, stderr := runTool("-types", "no_such_type"); code != exitError || !strings.Contains(stderr, "no resource types were queried") {
+		t.Errorf("empty user block: exit %d\n%s", code, stderr)
+	}
+	os.Remove("empty.tfquery.hcl")
+	os.Remove(".backup.tfquery.hcl")
+
+	// A root pinned to an older Terraform.
+	write(t, filepath.Join(root, "versions.tf"), "terraform {\n  required_version = \"= 1.10.5\"\n}\n")
+	if code, _, stderr := runTool("-types", "fake_thing"); code != exitError || !strings.Contains(stderr, "Unsupported Terraform Core version") {
+		t.Errorf("pinned version: exit %d\n%s", code, stderr)
+	}
+	if code, _, stderr := runTool("-types", "fake_thing", "-ignore-required-version"); code != exitOrphans {
+		t.Errorf("-ignore-required-version: exit %d\n%s", code, stderr)
+	}
+	if left, _ := filepath.Glob("zz_tforphans_*"); len(left) > 0 {
+		t.Errorf("files left behind: %v", left)
+	}
+}

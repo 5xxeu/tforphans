@@ -22,10 +22,10 @@ type Resource struct {
 	// keys the same object differently.
 	AltIdentity map[string]map[string]any `json:"-"`
 	Identity    map[string]any            `json:"identity"`
-	DisplayName string                    `json:"display_name,omitempty"`
+	DisplayName string                    `json:"display_name"`
 	// ImportID is an optional legacy import ID. When set, generated import
 	// blocks use `id` instead of `identity`.
-	ImportID string `json:"import_id,omitempty"`
+	ImportID string `json:"import_id"`
 	// RequiredKeys lists identity attributes that must be present and equal
 	// in state for the resource to count as managed. Nil means all keys.
 	RequiredKeys []string `json:"-"`
@@ -35,19 +35,22 @@ type Resource struct {
 	AttributeKeys []string `json:"-"`
 	// Provider is the local provider name used to list the resource, when it
 	// is not implied by the type prefix (import blocks then need it).
-	Provider string `json:"provider,omitempty"`
+	Provider string `json:"provider"`
 	// ProviderSource is the address of the provider that listed the
 	// resource (registry.terraform.io/hashicorp/aws), "" when unknown (a
 	// plugin that does not say). State of another provider never manages
 	// it, except under AltTypes.
-	ProviderSource string `json:"provider_source,omitempty"`
+	ProviderSource string `json:"provider_source"`
 	// UndeclaredProvider is the provider address when the root module does
 	// not declare the provider at all (only child modules do).
-	UndeclaredProvider string `json:"undeclared_provider,omitempty"`
+	UndeclaredProvider string `json:"undeclared_provider"`
 	// ImportNote is a comment for the resource's import block.
 	ImportNote string `json:"-"`
+	// Attributes are the resource's attributes that were asked for
+	// (-include-attrs, or attr. conditions of ignore rules).
+	Attributes map[string]any `json:"attributes,omitempty"`
 	// ListAddress is the list block that found it (terraform query only).
-	ListAddress string `json:"list_address,omitempty"`
+	ListAddress string `json:"list_address"`
 	// Scope restricts which state instances may manage the object, for
 	// providers whose state does not record where an object lives (the
 	// Proxmox cluster). Nil means no restriction.
@@ -77,7 +80,7 @@ func SameProvider(a, b string) bool {
 	if a == "" || b == "" {
 		return true
 	}
-	return providerFamily(a) == providerFamily(b)
+	return ProviderFamily(a) == ProviderFamily(b)
 }
 
 var providerAliases = map[string]string{
@@ -85,7 +88,10 @@ var providerAliases = map[string]string{
 	"hashicorp/github":      "integrations/github",
 }
 
-func providerFamily(addr string) string {
+// ProviderFamily is the name SameProvider compares: namespace/type, with
+// providers that share resource types under one name (google-beta is
+// hashicorp/google).
+func ProviderFamily(addr string) string {
 	parts := strings.Split(strings.ToLower(addr), "/")
 	switch {
 	case len(parts) == 3 && (parts[0] == "registry.terraform.io" || parts[0] == "registry.opentofu.org"):

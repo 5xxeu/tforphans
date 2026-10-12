@@ -233,13 +233,15 @@ func httpClient() *http.Client {
 
 // Index looks up state instances by type and attribute values.
 type Index struct {
-	byValue map[string][]*Instance // type \x00 key \x00 value
-	count   int
-	root    map[string]bool // resource addresses in root modules
+	byValue    map[string][]*Instance // type \x00 key \x00 value
+	count      int
+	noIdentity int
+	owned      map[string][]ownedBy // type \x00 owned-object key
+	root       map[string]bool      // resource addresses in root modules
 }
 
 func NewIndex() *Index {
-	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}}
+	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string][]ownedBy{}}
 }
 
 // RootAddresses returns the <type>.<name> addresses that states already use
@@ -249,11 +251,26 @@ func (ix *Index) RootAddresses() map[string]bool { return ix.root }
 // Len returns the number of indexed instances.
 func (ix *Index) Len() int { return ix.count }
 
+// NoIdentity returns the number of indexed instances without a resource
+// identity, which can only be matched by attributes.
+func (ix *Index) NoIdentity() int { return ix.noIdentity }
+
 // Add indexes instances by every scalar identity and top-level attribute.
 func (ix *Index) Add(instances []Instance) {
 	for i := range instances {
 		in := &instances[i]
 		ix.count++
+		if len(in.Identity) == 0 {
+			ix.noIdentity++
+		}
+		for child, o := range owners {
+			if o.parent != in.Type {
+				continue
+			}
+			for _, ref := range o.refs(in.Attributes) {
+				ix.owned[child+"\x00"+ref] = append(ix.owned[child+"\x00"+ref], ownedBy{in, o.what})
+			}
+		}
 		if !strings.HasPrefix(in.Address, "module.") {
 			addr, _, _ := strings.Cut(in.Address, "[")
 			ix.root[addr] = true
@@ -342,7 +359,120 @@ func (ix *Index) Match(r model.Resource) Match {
 			}
 		}
 	}
+	if !best.Managed {
+		if o, ok := owners[r.Type]; ok {
+			full, short := o.key(r.Identity)
+			for _, k := range []string{full, short} {
+				if k == "" {
+					continue
+				}
+				for _, by := range ix.owned[r.Type+"\x00"+k] {
+					// The parent must pass the checks a state instance of
+					// the object would: its provider and the object's scope.
+					if !model.SameProvider(r.ProviderSource, by.parent.Provider) {
+						continue
+					}
+					verified := k == full
+					if r.Scope != nil {
+						inScope, known := scopeCheck(r.Scope, by.parent.Type, by.parent)
+						if !inScope {
+							continue
+						}
+						verified = verified && known
+					}
+					m := Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified}
+					if verified {
+						return m
+					}
+					if !best.Managed {
+						best = m
+					}
+				}
+			}
+		}
+	}
 	return best
+}
+
+// ownedBy is the managed instance that owns an object (see owners).
+type ownedBy struct {
+	parent *Instance
+	what   string
+}
+
+// owner describes objects that a managed resource of another type creates
+// and owns, which therefore have no state of their own: a boot disk that a
+// google_compute_instance creates from initialize_params. A boot disk given
+// as source, and disks attached with attached_disk, are not owned: they are
+// made, and may be managed or not, elsewhere.
+type owner struct {
+	parent string
+	what   string // the parent's attribute, for the reported address
+	// refs returns the owned objects' keys from the parent's attributes,
+	// each in a full and a short form.
+	refs func(attrs map[string]any) []string
+	// key returns the full key of a live object, or the short one when its
+	// project is not known; the short one cannot tell projects apart, so
+	// a match by it is unverified.
+	key func(identity map[string]any) (full, short string)
+}
+
+var owners = map[string]owner{
+	"google_compute_disk": {
+		parent: "google_compute_instance",
+		what:   "boot_disk",
+		refs: func(attrs map[string]any) []string {
+			var out []string
+			list, _ := attrs["boot_disk"].([]any)
+			for _, b := range list {
+				m, _ := b.(map[string]any)
+				// Only a disk the instance created from initialize_params is
+				// owned by it; one given as source was made elsewhere.
+				if params, _ := m["initialize_params"].([]any); len(params) == 0 {
+					continue
+				}
+				src, _ := m["source"].(string)
+				// A self link: .../projects/P/zones/Z/disks/N.
+				if i := strings.Index(src, "projects/"); i >= 0 {
+					full := src[i:]
+					out = append(out, full)
+					if _, short, ok := strings.Cut(full, "/zones/"); ok {
+						out = append(out, "zones/"+short)
+					}
+				}
+			}
+			return out
+		},
+		key: func(id map[string]any) (string, string) {
+			name, _ := model.Scalar(id["name"])
+			zone, _ := model.Scalar(id["zone"])
+			project, _ := model.Scalar(id["project"])
+			if name == "" || zone == "" {
+				return "", ""
+			}
+			short := "zones/" + zone + "/disks/" + name
+			if project == "" {
+				return "", short
+			}
+			// A known project must match: the short key is for an
+			// unknown one only.
+			return "projects/" + project + "/" + short, ""
+		},
+	},
+}
+
+// emptyIsUnknown are identity keys of an object's location, whose empty
+// value means unknown rather than a value to compare.
+var emptyIsUnknown = map[string]bool{"project": true, "account_id": true, "subscription_id": true, "region": true, "zone": true, "location": true}
+
+// UnknownLocation reports whether an identity has an empty location key.
+func UnknownLocation(identity map[string]any) bool {
+	for k := range emptyIsUnknown {
+		if v, ok := identity[k].(string); ok && v == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func matches(r model.Resource, in *Instance) (ok, verified bool) {
@@ -364,10 +494,21 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 	for _, k := range primary {
 		isPrimary[k] = true
 	}
-	equal, primaryEqual, missing := 0, 0, 0
+	equal, primaryEqual, primaryEmpty, missing := 0, 0, 0, 0
 	for k, want := range r.Identity {
 		w, ok := model.Canonical(want)
 		if !ok {
+			continue
+		}
+		// An empty location (google lists some objects with project "")
+		// is not known, so it neither conflicts nor confirms. An empty own
+		// ID (name, id) is no evidence of anything: it must not let the
+		// location alone match.
+		if w == "" && emptyIsUnknown[k] {
+			missing++
+			if isPrimary[k] {
+				primaryEmpty++
+			}
 			continue
 		}
 		got, ok := model.Canonical(src[k])
@@ -391,7 +532,7 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 		// account, a region) cannot confirm where the object lives.
 		return equal > 0, missing == 0
 	}
-	ok = primaryEqual > 0 && primaryEqual == len(isPrimary)
+	ok = primaryEqual > 0 && primaryEqual+primaryEmpty == len(isPrimary)
 	return ok, ok && missing == 0
 }
 
@@ -408,7 +549,7 @@ func (ix *Index) candidates(typ string, r model.Resource) []*Instance {
 		found := false
 		for _, k := range keys {
 			v, ok := model.Canonical(r.Identity[k])
-			if !ok {
+			if !ok || v == "" && emptyIsUnknown[k] {
 				continue
 			}
 			list := ix.byValue[typ+"\x00"+k+"\x00"+v]
