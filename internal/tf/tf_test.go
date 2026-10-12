@@ -390,6 +390,16 @@ func TestPlanOptIn(t *testing.T) {
 	if got := types(BuildPlan(&s, nil, PlanOptions{Include: glob.CompileList([]string{"google_project"})})); !slices.Equal(got, []string{"google_project"}) {
 		t.Errorf("named: %v", got)
 	}
+	// With only aliased configurations an opt-in type stays left out on
+	// purpose; the others are checks that were needed.
+	p = BuildPlan(&s, nil, PlanOptions{AliasOnly: map[string][]string{"google": {"prod"}}})
+	excluded := map[string]bool{}
+	for _, sk := range p.Skipped {
+		excluded[sk.Type] = sk.Excluded
+	}
+	if len(p.Queries) != 0 || !excluded["google_project"] || excluded["google_compute_network"] || len(excluded) != 2 {
+		t.Errorf("alias-only: queries %v, skipped %+v", types(p), p.Skipped)
+	}
 }
 
 func TestScopedArg(t *testing.T) {

@@ -379,7 +379,19 @@ func typeStatus(cov []Coverage) map[string]string {
 // SummaryTable prints the counts per type, types with orphans first, and
 // the types that were not fully listed.
 func SummaryTable(w io.Writer, s Summary) error {
-	if err := countTable(w, "TYPE", s.ByType, s, typeStatus(s.Coverage)); err != nil {
+	// Incomplete types without objects get a row too: a skipped or failed
+	// type is where unmanaged objects may hide.
+	byType := maps.Clone(s.ByType)
+	if byType == nil {
+		byType = map[string]*TypeCount{}
+	}
+	status := typeStatus(s.Coverage)
+	for t, st := range status {
+		if st == Incomplete && byType[t] == nil {
+			byType[t] = &TypeCount{}
+		}
+	}
+	if err := countTable(w, "TYPE", byType, s, status); err != nil {
 		return err
 	}
 	if len(s.ByScope) > 0 {
@@ -396,6 +408,18 @@ func SummaryTable(w io.Writer, s Summary) error {
 		}
 		if !slices.Contains(byCat[f.Category], f.Type) {
 			byCat[f.Category] = append(byCat[f.Category], f.Type)
+		}
+	}
+	const gap = "skipped, needed a check"
+	for _, c := range s.Coverage {
+		if !slices.ContainsFunc(c.Reasons, func(r string) bool { return strings.HasPrefix(r, GapPrefix) }) {
+			continue
+		}
+		if !slices.Contains(cats, gap) {
+			cats = append(cats, gap)
+		}
+		if !slices.Contains(byCat[gap], c.Type) {
+			byCat[gap] = append(byCat[gap], c.Type)
 		}
 	}
 	if len(cats) > 0 {

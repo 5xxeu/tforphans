@@ -172,9 +172,12 @@ a file.
 `.tforphans.yaml` is read on its own, so it may come with someone else's
 repository. Such a file cannot set what runs commands or the root's data
 sources, installs an unpinned provider, sends credentials, puts attribute
-values into the output or creates files: `plugin`, `terraform`, `init`,
-`refresh`, `allow-unpinned`, `allow-http`, `include-attrs`, `o` and `state`
-URLs are accepted only from a file given with `-config`.
+values into the output, creates files, or makes results look more certain
+than they are (a state file of its own counts as proof of management):
+`plugin`, `terraform`, `init`, `refresh`, `allow-unpinned`, `allow-http`,
+`include-attrs`, `o`, `state`, `proxmox-cluster-states`,
+`plugin-cluster-states` and `allow-incomplete` are accepted only from a
+file given with `-config`. The `plan:` line names the config file read.
 
 ### Resources in modules
 

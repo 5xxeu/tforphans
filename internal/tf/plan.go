@@ -162,6 +162,10 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		// that may reach another account through the environment.
 		if aliases := opt.AliasOnly[local]; !temporary && len(aliases) > 0 {
 			for _, t := range types {
+				if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
+					continue
+				}
 				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + local + " is configured only with aliases"})
 			}
 			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases (%s.%s), so its %d list-capable types were not queried with the empty default configuration; add your own list blocks with provider = %s.<alias> to a .tfquery.hcl file in the root",

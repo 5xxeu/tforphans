@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -321,5 +322,22 @@ func TestImportScope(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "  # in zone example.com\n") {
 		t.Errorf("import:\n%s", b.String())
+	}
+}
+
+// A type skipped where a check was needed shows in the summary table even
+// without objects, and is named among what was not fully listed.
+func TestSummaryTableGap(t *testing.T) {
+	s := Summary{
+		ByType:   map[string]*TypeCount{"rec": {Live: 1, Managed: 1}},
+		Coverage: BuildCoverage(map[[2]string]*TypeCount{{"rec", ""}: {Live: 1, Managed: 1}}, []tf.Check{{Type: "rec"}}, []tf.Skip{{Type: "zoned", Reason: "requires zone", Root: "prod"}}, nil),
+	}
+	var b bytes.Buffer
+	if err := SummaryTable(&b, s); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !regexp.MustCompile(`zoned\s+0\s+0\s+0\s+0\s+0\s+incomplete`).MatchString(out) || !strings.Contains(out, "skipped, needed a check (1): zoned") {
+		t.Errorf("summary:\n%s", out)
 	}
 }

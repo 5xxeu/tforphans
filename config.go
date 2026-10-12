@@ -18,9 +18,12 @@ const defaultConfigFile = ".tforphans.yaml"
 // configOnlyExplicit are keys a config file found on its own may not set:
 // they run commands or the root's data sources (refresh plans the root),
 // install providers, send credentials, put attribute values into the
-// output or create files (adopt -o), and the file may come with someone
-// else's repository. A file given with -config may.
-var configOnlyExplicit = []string{"plugin", "terraform", "init", "refresh", "allow-unpinned", "allow-http", "include-attrs", "o"}
+// output, create files (adopt -o), or make results look more certain than
+// they are (a state file of its own, trusting cluster states, adopt with
+// unread states), and the file may come with someone else's repository. A
+// file given with -config may.
+var configOnlyExplicit = []string{"plugin", "terraform", "init", "refresh", "allow-unpinned", "allow-http", "include-attrs", "o",
+	"state", "proxmox-cluster-states", "plugin-cluster-states", "allow-incomplete"}
 
 // configPathKeys hold paths, which are relative to the config file.
 var configPathKeys = []string{"state-roots", "state", "ignore", "o", "terraform"}
@@ -85,9 +88,6 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			return fmt.Errorf("%s: %s takes true or false", path, key)
 		}
 		for _, v := range vals {
-			if key == "state" && strings.Contains(v, "://") && !explicit {
-				return fmt.Errorf("%s: a state URL is accepted only from a file given with -config: it would receive the TF_HTTP_* credentials", path)
-			}
 			if slices.Contains(configPathKeys, key) && !strings.Contains(v, "://") && v != "-" && (key != "terraform" || strings.ContainsRune(v, '/')) {
 				v = configPath(dir, v)
 			}
