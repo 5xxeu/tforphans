@@ -13,8 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/report"
 )
 
 // TestIntegration runs the whole tool against a real terraform binary and the
@@ -682,5 +685,41 @@ exec %q "$@"
 	}
 	if left, _ := filepath.Glob("zz_tforphans_*"); len(left) > 0 {
 		t.Errorf("files left behind: %v", left)
+	}
+}
+
+// TestIntegrationTwoRootsCut: a listing cut short in one of two roots makes
+// every row of its type incomplete, also those with objects it returned.
+func TestIntegrationTwoRootsCut(t *testing.T) {
+	data, root := setup(t)
+	second := filepath.Join(filepath.Dir(root), "second")
+	if err := os.MkdirAll(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n"
+	write(t, filepath.Join(root, "main.tf"), conf)
+	write(t, filepath.Join(second, "main.tf"), conf)
+	for _, n := range []string{"a", "b", "c"} {
+		write(t, filepath.Join(data, "thing", n), "")
+	}
+	t.Chdir(filepath.Dir(root))
+	code, out, stderr := runTool("-types", "fake_thing", "-limit", "2", "-format", "json", "root", "second")
+	if code != exitOrphans {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	var rep struct {
+		Summary report.Summary `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, c := range rep.Summary.Coverage {
+		if c.Type == "fake_thing" {
+			rows = append(rows, fmt.Sprintf("%q %s %d", c.Scope, c.Status, c.Live))
+		}
+	}
+	if rep.Summary.Complete || len(rows) == 0 || slices.ContainsFunc(rows, func(r string) bool { return !strings.Contains(r, " incomplete ") || strings.Contains(r, "root ") }) {
+		t.Errorf("coverage %v, complete %v\n%s", rows, rep.Summary.Complete, stderr)
 	}
 }

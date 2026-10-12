@@ -121,3 +121,25 @@ func TestConfigRejected(t *testing.T) {
 		t.Errorf("-config with commands: %+v, %v", o, err)
 	}
 }
+
+// A terraform path runs in other directories (roots, temporary ones), so it
+// becomes absolute; a plain name stays a PATH lookup.
+func TestTerraformPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	cwd, _ := os.Getwd()
+	os.WriteFile("audit.yaml", []byte("terraform: ./tools/terraform\n"), 0o644)
+	for args, want := range map[string]string{
+		"-config audit.yaml":         filepath.Join(cwd, "tools", "terraform"),
+		"-terraform ./bin/terraform": filepath.Join(cwd, "bin", "terraform"),
+		"-terraform tofu":            "tofu",
+	} {
+		o, err := parseFlags(strings.Fields(args), io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.terraformBin != want {
+			t.Errorf("%s: %s, want %s", args, o.terraformBin, want)
+		}
+	}
+}

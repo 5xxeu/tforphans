@@ -199,6 +199,9 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 	if n := len(s.Warnings) - len(s.UnreadStates); n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d other warnings", n))
 	}
+	if len(gaps) == 0 {
+		gaps = append(gaps, "nothing was listed")
+	}
 	effect := "unmanaged objects there may be missing from the result"
 	if len(s.UnreadStates) > 0 {
 		effect += ", and objects of unread states may show as unmanaged"

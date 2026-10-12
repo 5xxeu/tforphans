@@ -17,6 +17,7 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -234,6 +235,16 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		}
 	} else {
 		o.configFile = ""
+	}
+	// terraform runs in each root and in temporary directories: a relative
+	// path (./tools/terraform) would be looked up there. A plain name
+	// stays a PATH lookup.
+	if strings.ContainsRune(o.terraformBin, '/') || strings.ContainsRune(o.terraformBin, filepath.Separator) {
+		abs, err := filepath.Abs(o.terraformBin)
+		if err != nil {
+			return nil, err
+		}
+		o.terraformBin = abs
 	}
 
 	switch o.format {
@@ -568,7 +579,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Failed[i].Classify()
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, sum.Checks, sum.Skipped, sum.Failed)
-	sum.Complete = len(sum.Failed) == 0 && len(sum.Warnings) == 0 &&
+	sum.Complete = !nothingChecked(o, sum) && len(sum.Failed) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (written before Terraform 1.12 or by a provider without identities): they are matched by attributes, which is less certain. -refresh reads identities without writing anything; terraform apply -refresh-only with a current provider records them in state (it needs write access).", n, idx.Len()))

@@ -136,13 +136,20 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
 	// What finished counts, not what was planned: a block with
-	// for_each = {} checks nothing. With several roots each one is a scope
-	// of its own, so that a root without objects keeps its row.
-	rootScope := ""
-	if len(o.roots) > 1 {
-		rootScope = "root " + root
+	// for_each = {} checks nothing. The objects found give their own rows
+	// (project, account); a root that listed a type and found none of it
+	// gets a row of its own when there are several roots. A failure keeps
+	// no scope and so concerns every row of its type: the objects of a
+	// listing cut short may sit in any of them.
+	found := map[string]bool{}
+	for _, f := range res.Found {
+		found[f.Type] = true
 	}
 	for _, d := range res.Done {
+		rootScope := ""
+		if len(o.roots) > 1 && !found[d.Type] {
+			rootScope = "root " + root
+		}
 		block, _, _ := strings.Cut(d.Address, "[")
 		local := ""
 		if q, ok := byAddress[block]; ok {
@@ -151,11 +158,6 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			local, _, _ = strings.Cut(d.Type, "_")
 		}
 		sum.Checks = append(sum.Checks, tf.Check{Type: d.Type, Scope: rootScope, Root: root, Provider: local})
-	}
-	for i := range res.Failed {
-		if res.Failed[i].Scope == "" {
-			res.Failed[i].Scope = rootScope
-		}
 	}
 	sum.Ran += res.Started
 	sum.Failed = append(sum.Failed, res.Failed...)
