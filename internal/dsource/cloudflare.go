@@ -71,7 +71,8 @@ var cloudflareManagedRulesets = map[string]bool{
 // default-network flag, would let a hand-made object hide): Cloudflare's
 // managed rulesets, Universal SSL packs (only "advanced" can be ordered),
 // managed Gateway certificates, records owned by other objects, built-in
-// DLP entries, and singletons that have resources of their own.
+// DLP entries, the resource library catalog, and singletons that have
+// resources of their own.
 func cloudflareKeep(resourceType string, item map[string]any) bool {
 	switch resourceType {
 	case "cloudflare_ruleset":
@@ -100,6 +101,9 @@ func cloudflareKeep(resourceType string, item map[string]any) bool {
 				return false
 			}
 		}
+	case "cloudflare_zero_trust_resource_library_application":
+		// Cloudflare's catalog of known applications, in every account.
+		return item["application_source"] != "cloudflare"
 	case "cloudflare_zero_trust_device_custom_profile":
 		// The default profile is cloudflare_zero_trust_device_default_profile.
 		if item["default"] == true {

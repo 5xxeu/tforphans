@@ -100,6 +100,11 @@ type options struct {
 	states        listFlag
 	plugins       listFlag
 	scans         []string
+	scanScope     map[string][]string // -scan-scope ARG=values
+	scopeState    bool                // -scan-scope state
+	refresh       bool
+	mu            sync.Mutex
+	stateNotes    []string // notes of state reading, from several goroutines
 	args          []tf.Arg
 	include       glob.List
 	exclude       glob.List
@@ -143,7 +148,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fmt.Fprint(stderr, help)
 		fs.PrintDefaults()
 	}
-	var argFlags, include, exclude, scans, presets, attrs listFlag
+	var argFlags, include, exclude, scans, presets, attrs, scanScopes listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
 	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are unverified, since state does not record the cluster")
@@ -152,8 +157,10 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.BoolVar(&o.allowUnpinned, "allow-unpinned", false, "let -scan install the newest provider release when no root module pins its version")
 	fs.BoolVar(&o.currentWS, "current-workspace", false, "read only the selected workspace of each root module instead of listing all workspaces")
 	fs.BoolVar(&o.anyVersion, "ignore-required-version", false, "lift the root modules' required_version with a temporary override file, so that a root pinned to an older Terraform can be queried (child modules' constraints still apply)")
+	fs.BoolVar(&o.refresh, "refresh", false, "read each root's state through terraform plan -refresh-only (no lock, nothing written) instead of state pull: state written before Terraform 1.12 gets resource identities, so matches are exact; slower, needs the root's credentials and variables")
 	fs.BoolVar(&o.init, "init", false, "run terraform init in root modules that are not initialized (creates .terraform there)")
-	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*); repeatable")
+	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*), not from the root's provider block; repeatable")
+	fs.Var(&scanScopes, "scan-scope", "limit -scan to some zones or accounts: zone_id=ID_OR_NAME,... or account_id=...; with no value (account_id=) that scope is not read; \"state\" limits every other scope to the IDs found in the states read; repeatable")
 	fs.Var(&o.plugins, "plugin", "discovery command for providers without list support, run with sh -c; repeatable")
 	fs.Var(&argFlags, "arg", "fan list queries out over values of a list config argument, e.g. region=eu-north-1,us-east-1; TYPE_GLOB:name=... limits it to matching types (google_compute_*:zone=europe-west1-b) and wins over the same name without one; repeatable")
 	fs.Var(&include, "types", "only query resource types matching these globs, e.g. aws_s3_*,aws_iam_role")
@@ -222,6 +229,34 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	for _, s := range o.scans {
 		if _, ok := sources[s]; !ok {
 			return nil, fmt.Errorf("unknown -scan %q", s)
+		}
+	}
+	for _, sc := range scanScopes {
+		if sc == "state" {
+			o.scopeState = true
+			continue
+		}
+		arg, vals, ok := strings.Cut(sc, "=")
+		known := false
+		for _, name := range o.scans {
+			for _, s := range sources[name].Scopes {
+				known = known || s.Arg == arg
+			}
+		}
+		if !ok || !known {
+			return nil, fmt.Errorf("-scan-scope %q: want state or ARG=VALUE,... where ARG is a scope of the scanned providers (zone_id, account_id for cloudflare)", sc)
+		}
+		if o.scanScope == nil {
+			o.scanScope = map[string][]string{}
+		}
+		// No values (account_id=) reads nothing of that scope.
+		if _, ok := o.scanScope[arg]; !ok {
+			o.scanScope[arg] = []string{}
+		}
+		for _, v := range strings.Split(vals, ",") {
+			if v = strings.TrimSpace(v); v != "" && !slices.Contains(o.scanScope[arg], v) {
+				o.scanScope[arg] = append(o.scanScope[arg], v)
+			}
 		}
 	}
 	o.include = glob.CompileList(include.csv())
@@ -318,15 +353,43 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if o.printQuery {
 		return nil
 	}
+	sum.Notes = append(sum.Notes, o.stateNotes...)
+	if len(o.scans) > 0 && len(o.stateRoots) == 0 && o.scanScope == nil && !o.scopeState {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("-scan lists whole accounts, but only %d states were read: objects that other root modules manage show up as unmanaged. Read every root's state with -state-roots DIR, or narrow the scan with -scan-scope zone_id=ID_OR_NAME or -scan-scope state.", sum.States))
+	}
+	if o.scopeState && sum.States == 0 {
+		return errors.New("-scan-scope state: no state was read (-state, -state-roots or root modules)")
+	}
 	for _, name := range o.scans {
 		a := sources[name]
 		versionRoot := dsource.VersionRoot(slices.Concat(o.roots, stateDirs), a.Provider)
+		scope := maps.Clone(o.scanScope)
+		if o.scopeState {
+			if scope == nil {
+				scope = map[string][]string{}
+			}
+			for _, sc := range a.Scopes {
+				if _, ok := scope[sc.Arg]; !ok {
+					// Parent objects (zones) are in state under their own
+					// id; their children carry it as zone_id.
+					vals := idx.Values("", sc.Arg)
+					for _, v := range idx.Values(strings.TrimSuffix(sc.Parent, "s"), "id") {
+						if !slices.Contains(vals, v) {
+							vals = append(vals, v)
+						}
+					}
+					scope[sc.Arg] = vals
+				}
+			}
+		}
 		res, err := dsource.Run(ctx, a, dsource.Options{
 			TerraformBin:  o.terraformBin,
 			VersionRoot:   versionRoot,
 			Include:       o.include,
 			Exclude:       o.exclude,
 			AllowUnpinned: o.allowUnpinned,
+			Progress:      func(msg string) { fmt.Fprintln(stderr, "note:", msg) },
+			Scope:         scope,
 		})
 		if err != nil {
 			return err
@@ -385,29 +448,61 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	live = dedupe(live)
 	var orphans []model.Resource
 	sum.ByType = map[string]*report.TypeCount{}
-	for _, r := range live {
-		tc := sum.ByType[r.Type]
-		if tc == nil {
-			tc = &report.TypeCount{}
-			sum.ByType[r.Type] = tc
+	byScope := map[string]*report.TypeCount{}
+	for i := range live {
+		r := &live[i]
+		if r.ScopeName == "" {
+			r.ScopeName = scopeName(r.Identity)
 		}
-		tc.Live++
-		switch m := idx.Match(r); {
+		where := r.ScopeName
+		if where == "" {
+			where = "unknown"
+		}
+		counts := []*report.TypeCount{sum.ByType[r.Type], byScope[where]}
+		if counts[0] == nil {
+			counts[0] = &report.TypeCount{}
+			sum.ByType[r.Type] = counts[0]
+		}
+		if counts[1] == nil {
+			counts[1] = &report.TypeCount{}
+			byScope[where] = counts[1]
+		}
+		for _, tc := range counts {
+			tc.Live++
+		}
+		switch m := idx.Match(*r); {
 		case m.Managed:
 			sum.Managed++
-			tc.Managed++
+			if m.ByIdentity {
+				sum.ManagedByIdentity++
+			}
+			for _, tc := range counts {
+				tc.Managed++
+			}
 			if !m.Verified {
 				sum.Unverified++
+				sum.UnverifiedMatches = append(sum.UnverifiedMatches, report.UnverifiedMatch{Type: r.Type, DisplayName: r.DisplayName, Identity: r.IdentityString(), Address: m.Address})
 			}
-		case ignore.Match(r):
+		case ignore.Match(*r):
 			sum.Ignored++
-			tc.Ignored++
+			for _, tc := range counts {
+				tc.Ignored++
+			}
 		default:
-			orphans = append(orphans, r)
-			tc.Orphans++
+			orphans = append(orphans, *r)
+			for _, tc := range counts {
+				tc.Orphans++
+			}
 		}
 	}
+	// Scopes are worth a breakdown when there are several.
+	if len(byScope) > 1 || len(byScope) == 1 && byScope["unknown"] == nil {
+		sum.ByScope = byScope
+	}
 	sort.SliceStable(orphans, func(i, j int) bool {
+		if orphans[i].ScopeName != orphans[j].ScopeName {
+			return orphans[i].ScopeName < orphans[j].ScopeName
+		}
 		if orphans[i].Type != orphans[j].Type {
 			return orphans[i].Type < orphans[j].Type
 		}
@@ -437,7 +532,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Failed[i].Classify()
 	}
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
-		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (written before Terraform 1.12 or by a provider without identities): they are matched by attributes, which is less certain. terraform apply -refresh-only with a current provider records identities; it needs write access to the state.", n, idx.Len()))
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (written before Terraform 1.12 or by a provider without identities): they are matched by attributes, which is less certain. -refresh reads identities without writing anything; terraform apply -refresh-only with a current provider records them in state (it needs write access).", n, idx.Len()))
 	}
 
 	switch {
@@ -591,6 +686,11 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 // scanRoot adds the root's state to idx and returns the live resources its
 // providers list.
 func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, sum *report.Summary, stdout io.Writer) ([]model.Resource, error) {
+	// Leftovers of a killed run must go before the configuration is read:
+	// its provider override would count as a declaration.
+	if err := tf.RemoveStale(root); err != nil {
+		return nil, err
+	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion}
 	if !r.Initialized() && o.init {
 		if err := r.Init(ctx); err != nil {
@@ -784,6 +884,23 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, in
 			return all, n, errors.Join(append(errs, ctx.Err())...)
 		}
 		r.Workspace = ws
+		if o.refresh {
+			raw, err := r.RefreshedState(ctx)
+			if err == nil {
+				var insts []state.Instance
+				if insts, err = state.ParseShow(raw); err == nil {
+					all = append(all, insts...)
+					n++
+					continue
+				}
+			}
+			if ctx.Err() != nil {
+				return all, n, errors.Join(append(errs, ctx.Err())...)
+			}
+			o.mu.Lock()
+			o.stateNotes = append(o.stateNotes, fmt.Sprintf("%s: -refresh failed, the stored state was read instead: %v", dir, inWorkspace(ws, err)))
+			o.mu.Unlock()
+		}
 		raw, err := r.StatePull(ctx)
 		if err != nil {
 			errs = append(errs, inWorkspace(ws, err))
@@ -861,6 +978,9 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 }
 
 func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
+	if err := tf.RemoveStale(dir); err != nil {
+		return nil, 0, err
+	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
 	if !r.Initialized() {
 		if !o.init {
@@ -935,7 +1055,7 @@ func printFailed(w io.Writer, o *options, failed []tf.Failure) {
 		hint = " (-v for messages)"
 	}
 	fmt.Fprintf(w, "warning: %d resource types not fully listed%s:\n", n, hint)
-	for _, cat := range []string{tf.FailMissingArg, tf.FailDenied, tf.FailTruncated, tf.FailNotFound, tf.FailOther, tf.FailAPIOff} {
+	for _, cat := range []string{tf.FailCrash, tf.FailMissingArg, tf.FailDenied, tf.FailTruncated, tf.FailNotFound, tf.FailRejected, tf.FailRetired, tf.FailProvider, tf.FailOther, tf.FailAPIOff} {
 		types := byCat[cat]
 		if len(types) == 0 {
 			continue
@@ -950,6 +1070,18 @@ func printFailed(w io.Writer, o *options, failed []tf.Failure) {
 
 // scopeKeys are identity keys that tell which account a result came from.
 var scopeKeys = []string{"project", "account_id", "subscription_id"}
+
+// scopeName names the account of an object from its identity, for people:
+// "project my-project"; "" when the identity does not say.
+func scopeName(identity map[string]any) string {
+	var parts []string
+	for _, k := range scopeKeys {
+		if v, ok := model.Scalar(identity[k]); ok && v != "" {
+			parts = append(parts, k+" "+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
 
 // printScopes prints, per source, the accounts its results came from: with
 // credentials from the environment, a root can list another project than
@@ -992,6 +1124,11 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		fmt.Fprint(w, " (-v to list)")
 	}
 	fmt.Fprintln(w)
+	if s.Managed > 0 {
+		// How certain "managed" is: an identity names the object exactly,
+		// attributes may miss its account.
+		fmt.Fprintf(w, "managed objects matched by identity: %d, by attributes: %d, unverified: %d\n", s.ManagedByIdentity, s.Managed-s.ManagedByIdentity, s.Unverified)
+	}
 	if o.verbose {
 		for _, sk := range s.Skipped {
 			fmt.Fprintf(w, "  skipped %s: %s\n", report.Clean(sk.Type), report.Clean(sk.Reason))
@@ -1004,7 +1141,16 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 	for _, msg := range s.Notes {
 		fmt.Fprintln(w, "note:", report.Clean(msg))
 	}
+	if s.Unverified > 0 && o.verbose {
+		for _, u := range s.UnverifiedMatches {
+			fmt.Fprintf(w, "  unverified %s %s (%s) matched %s\n", report.Clean(u.Type), report.Clean(u.DisplayName), report.Clean(u.Identity), report.Clean(u.Address))
+		}
+	}
 	if s.Unverified > 0 {
-		fmt.Fprintf(w, "warning: %d objects matched state only by ID: their account, subscription or cluster could not be checked; with states of several accounts or clusters they may be unmanaged. State without resource identity: refresh it with a current provider (terraform apply -refresh-only) to record identities. Proxmox and plugin results marked unverified: state does not record the cluster; scan one cluster with its own states and pass -proxmox-cluster-states or -plugin-cluster-states.\n", s.Unverified)
+		hint := ""
+		if !o.verbose {
+			hint = " -v lists them."
+		}
+		fmt.Fprintf(w, "warning: %d objects matched state only by ID: their account, subscription or cluster could not be checked; with states of several accounts or clusters they may be unmanaged. State without resource identity: pass -refresh to read identities without writing anything, or record them with terraform apply -refresh-only and a current provider. Proxmox and plugin results marked unverified: state does not record the cluster; scan one cluster with its own states and pass -proxmox-cluster-states or -plugin-cluster-states.%s\n", s.Unverified, hint)
 	}
 }

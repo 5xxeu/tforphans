@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/list"
 	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
@@ -50,13 +52,20 @@ func (p *fakeProvider) Schema(context.Context, provider.SchemaRequest, *provider
 func (p *fakeProvider) Configure(context.Context, provider.ConfigureRequest, *provider.ConfigureResponse) {
 }
 
-func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource { return nil }
+func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource {
+	return []func() datasource.DataSource{
+		func() datasource.DataSource { return &plural{kind: "zone"} },
+		func() datasource.DataSource { return &plural{kind: "record"} },
+	}
+}
 
 func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		func() resource.Resource { return &thing{kind: "thing"} },
 		func() resource.Resource { return &thing{kind: "broken"} },
 		func() resource.Resource { return &thing{kind: "zoned"} },
+		func() resource.Resource { return &thing{kind: "zone"} },
+		func() resource.Resource { return &thing{kind: "record"} },
 	}
 }
 
@@ -187,5 +196,54 @@ func (t *thing) List(ctx context.Context, req list.ListRequest, stream *list.Lis
 				return
 			}
 		}
+	}
+}
+
+// plural implements the data sources fake_zones (a file per zone in
+// $FAKE_DIR/zone) and fake_records (files in $FAKE_DIR/record/<zone_id>),
+// shaped like cloudflare 5.x: result[] of objects with an id.
+// FAKE_PANIC=record:<zone> crashes the provider reading that zone's records.
+type plural struct{ kind string }
+
+var itemType = map[string]attr.Type{"id": types.StringType, "name": types.StringType}
+
+func (p *plural) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_" + p.kind + "s"
+}
+
+func (p *plural) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	attrs := map[string]dsschema.Attribute{
+		"result": dsschema.ListNestedAttribute{Computed: true, NestedObject: dsschema.NestedAttributeObject{Attributes: map[string]dsschema.Attribute{
+			"id":   dsschema.StringAttribute{Computed: true},
+			"name": dsschema.StringAttribute{Computed: true},
+		}}},
+	}
+	if p.kind == "record" {
+		attrs["zone_id"] = dsschema.StringAttribute{Optional: true}
+	}
+	resp.Schema = dsschema.Schema{Attributes: attrs}
+}
+
+func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	dir := filepath.Join(os.Getenv("FAKE_DIR"), p.kind)
+	var zone types.String
+	if p.kind == "record" {
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("zone_id"), &zone)...)
+		dir = filepath.Join(dir, zone.ValueString())
+		if os.Getenv("FAKE_PANIC") == "record:"+zone.ValueString() {
+			panic("fake provider crash")
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	var items []attr.Value
+	for _, e := range entries {
+		items = append(items, types.ObjectValueMust(itemType, map[string]attr.Value{
+			"id": types.StringValue(e.Name()), "name": types.StringValue(e.Name() + ".name"),
+		}))
+	}
+	list := types.ListValueMust(types.ObjectType{AttrTypes: itemType}, items)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("result"), list)...)
+	if p.kind == "record" {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("zone_id"), zone)...)
 	}
 }

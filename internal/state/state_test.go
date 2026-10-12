@@ -574,4 +574,16 @@ func TestMatchBootDisk(t *testing.T) {
 	if m := ix.Match(r); !m.Managed || !m.Verified || m.Address != "google_compute_instance.vm.boot_disk" {
 		t.Errorf("two owners: %+v", m)
 	}
+	// A state instance of the disk without its project matches only
+	// unverified; the owner, which names the project, still verifies it.
+	partial, _ := Parse([]byte(`{"version": 4, "resources": [
+  {"mode": "managed", "type": "google_compute_disk", "name": "partial", "provider": "provider[\"registry.terraform.io/hashicorp/google\"]", "instances": [
+    {"identity": {"name": "vm", "zone": "z1"}, "attributes": {"name": "vm", "zone": "z1"}}
+  ]}
+]}`))
+	ix.Add(partial)
+	r.RequiredKeys = []string{"name", "zone"}
+	if m := ix.Match(r); !m.Managed || !m.Verified || m.Address != "google_compute_instance.vm.boot_disk" {
+		t.Errorf("owner after an unverified match: %+v", m)
+	}
 }

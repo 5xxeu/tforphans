@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/proc"
 )
 
 // Failure is a list block that reported an error, so its type was not fully
@@ -31,6 +33,10 @@ const (
 	FailDenied     = "permission denied"
 	FailNotFound   = "not found"
 	FailTruncated  = "truncated"
+	FailCrash      = "crashed"
+	FailRetired    = "API retired"
+	FailProvider   = "provider bug"
+	FailRejected   = "request rejected (feature not on the plan?)"
 	FailOther      = "other"
 )
 
@@ -48,16 +54,24 @@ func (f *Failure) Classify() {
 		return false
 	}
 	switch {
+	case strings.HasPrefix(m, "crashed") || strings.Contains(m, " crashed: "):
+		f.Category = FailCrash
 	case has("service_disabled", "has not been used in project", "api has not been enabled", "it is disabled. enable it"):
 		f.Category = FailAPIOff
 	case has("cannot determine zone", "cannot determine region", "missing required argument", "is required", "must be set"):
 		f.Category = FailMissingArg
-	case has("permission_denied", "permission denied", "accessdenied", "access denied", "unauthorized", "forbidden", "error 403", "statuscode: 403"):
+	case has("permission_denied", "permission denied", "accessdenied", "access denied", "unauthorized", "forbidden", "error 403", "statuscode: 403", "authentication error"):
 		f.Category = FailDenied
 	case has("its limit", "max_items", "there may be more"):
 		f.Category = FailTruncated
 	case has("not_found", "not found", "error 404", "statuscode: 404"):
 		f.Category = FailNotFound
+	case has("410 gone", "api.deprecated"):
+		f.Category = FailRetired
+	case has("report this issue to the provider developers", "rfc3339 string value is null"):
+		f.Category = FailProvider
+	case has("400 bad request"):
+		f.Category = FailRejected
 	default:
 		f.Category = FailOther
 	}
@@ -109,6 +123,30 @@ func writeTemp(path string, data []byte) error {
 	return f.Close()
 }
 
+// RemoveStale removes the temporary files of tforphans runs whose process
+// no longer exists (killed before it could clean up), and fails when a
+// running one still has files in dir.
+func RemoveStale(dir string) error {
+	stale, _ := filepath.Glob(filepath.Join(dir, "zz_tforphans_*"))
+	var busy []string
+	for _, path := range stale {
+		digits, _, _ := strings.Cut(strings.TrimPrefix(filepath.Base(path), "zz_tforphans_"), "_")
+		digits, _, _ = strings.Cut(digits, ".")
+		pid, err := strconv.Atoi(digits)
+		if err != nil || pid == os.Getpid() || proc.Alive(pid) {
+			busy = append(busy, path)
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	if len(busy) > 0 {
+		return fmt.Errorf("%s holds files of another tforphans run that may still be working; wait for it, or remove them: %s", dir, strings.Join(busy, ", "))
+	}
+	return nil
+}
+
 // Query writes the plan's list blocks (and temporary provider declarations)
 // next to the module's configuration, runs
 // `terraform query -json` and removes the files again. List blocks the user
@@ -120,9 +158,10 @@ func writeTemp(path string, data []byte) error {
 // keys returns the identity keys of the objects a list block finds.
 func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string) int, keys KeysFunc) (*QueryResult, error) {
 	// Files left by a run that was killed would clash with this one (same
-	// labels) or keep changing the configuration: say so plainly.
-	if stale, _ := filepath.Glob(filepath.Join(r.Dir, "zz_tforphans_*")); len(stale) > 0 {
-		return nil, fmt.Errorf("%s holds files of an interrupted tforphans run; remove them: %s", r.Dir, strings.Join(stale, ", "))
+	// labels) or keep changing the configuration. Those of a process that
+	// is gone are removed; another run still working here is an error.
+	if err := RemoveStale(r.Dir); err != nil {
+		return nil, err
 	}
 	base := filepath.Join(r.Dir, fmt.Sprintf("zz_tforphans_%d", os.Getpid()))
 	if providers := p.ProvidersHCL(); providers != nil {

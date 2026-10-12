@@ -190,11 +190,16 @@ type Summary struct {
 	// Unverified counts objects matched by ID only: state without
 	// identity could not confirm their account or subscription.
 	Unverified int `json:"unverified_matches"`
-	Live       int `json:"live"`
-	Managed    int `json:"managed"`
-	Ignored    int `json:"ignored"`
-	Orphans    int `json:"orphans"`
-	Queried    int `json:"queried_types"`
+	// UnverifiedMatches lists those objects with the state instance.
+	UnverifiedMatches []UnverifiedMatch `json:"unverified,omitempty"`
+	// ManagedByIdentity counts managed objects matched by the resource
+	// identity in state; the others were matched by attributes.
+	ManagedByIdentity int `json:"managed_by_identity"`
+	Live              int `json:"live"`
+	Managed           int `json:"managed"`
+	Ignored           int `json:"ignored"`
+	Orphans           int `json:"orphans"`
+	Queried           int `json:"queried_types"`
 	// Ran counts list block instances that started and types that scans
 	// listed: what was actually checked, unlike Queried, which counts
 	// blocks (a block with for_each = {} runs nothing).
@@ -208,6 +213,9 @@ type Summary struct {
 	NoList []string `json:"providers_without_list,omitempty"`
 	// ByType counts the live objects of each type by outcome.
 	ByType map[string]*TypeCount `json:"by_type"`
+	// ByScope counts them by where they live ("zone example.com", "project
+	// p"), when that is known.
+	ByScope map[string]*TypeCount `json:"by_scope,omitempty"`
 }
 
 type TypeCount struct {
@@ -219,37 +227,70 @@ type TypeCount struct {
 
 // SummaryTable prints the counts per type, types with orphans first, and
 // the types that were not fully listed.
+// UnverifiedMatch is a live object matched to state without proof that
+// the state instance is in the same account or cluster.
+type UnverifiedMatch struct {
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+	Identity    string `json:"identity"`
+	Address     string `json:"state_address"`
+}
+
 func SummaryTable(w io.Writer, s Summary) error {
-	types := slices.Collect(maps.Keys(s.ByType))
-	sort.Slice(types, func(i, j int) bool {
-		a, b := s.ByType[types[i]], s.ByType[types[j]]
+	if err := countTable(w, "TYPE", s.ByType, s); err != nil {
+		return err
+	}
+	if len(s.ByScope) > 0 {
+		fmt.Fprintln(w)
+		if err := countTable(w, "SCOPE", s.ByScope, s); err != nil {
+			return err
+		}
+	}
+	byCat := map[string][]string{}
+	var cats []string
+	for _, f := range s.Failed {
+		if !slices.Contains(cats, f.Category) {
+			cats = append(cats, f.Category)
+		}
+		if !slices.Contains(byCat[f.Category], f.Type) {
+			byCat[f.Category] = append(byCat[f.Category], f.Type)
+		}
+	}
+	if len(cats) > 0 {
+		fmt.Fprintln(w, "\nnot fully listed:")
+	}
+	slices.Sort(cats)
+	for _, c := range cats {
+		types := byCat[c]
+		slices.Sort(types)
+		if c == "" {
+			c = "failed"
+		}
+		if _, err := fmt.Fprintf(w, "  %s (%d): %s\n", c, len(types), Clean(strings.Join(types, ", "))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// countTable prints counts by type or scope, most unmanaged first.
+func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summary) error {
+	keys := slices.Collect(maps.Keys(counts))
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := counts[keys[i]], counts[keys[j]]
 		if a.Orphans != b.Orphans {
 			return a.Orphans > b.Orphans
 		}
-		return types[i] < types[j]
+		return keys[i] < keys[j]
 	})
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "TYPE\tLIVE\tMANAGED\tIGNORED\tUNMANAGED\t")
-	for _, t := range types {
-		c := s.ByType[t]
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t\n", Clean(t), c.Live, c.Managed, c.Ignored, c.Orphans)
+	fmt.Fprintln(tw, title+"\tLIVE\tMANAGED\tIGNORED\tUNMANAGED\t")
+	for _, k := range keys {
+		c := counts[k]
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t\n", Clean(k), c.Live, c.Managed, c.Ignored, c.Orphans)
 	}
 	fmt.Fprintf(tw, "total\t%d\t%d\t%d\t%d\t\n", s.Live, s.Managed, s.Ignored, s.Orphans)
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	var failed []string
-	for _, f := range s.Failed {
-		if !slices.Contains(failed, f.Type) {
-			failed = append(failed, f.Type)
-		}
-	}
-	if len(failed) > 0 {
-		slices.Sort(failed)
-		_, err := fmt.Fprintf(w, "\nnot fully listed (%d): %s\n", len(failed), Clean(strings.Join(failed, ", ")))
-		return err
-	}
-	return nil
+	return tw.Flush()
 }
 
 func Text(w io.Writer, orphans []model.Resource) error {
@@ -257,9 +298,16 @@ func Text(w io.Writer, orphans []model.Resource) error {
 		_, err := fmt.Fprintln(w, "No unmanaged resources found.")
 		return err
 	}
+	scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	if scoped {
+		fmt.Fprint(tw, "SCOPE\t")
+	}
 	fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE")
 	for _, r := range orphans {
+		if scoped {
+			fmt.Fprintf(tw, "%s\t", Clean(r.ScopeName))
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", Clean(r.Type), Clean(r.DisplayName), Clean(r.IdentityString()), Clean(r.Source))
 	}
 	return tw.Flush()

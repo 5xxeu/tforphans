@@ -3,6 +3,7 @@ package tf
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -441,6 +442,12 @@ func TestClassify(t *testing.T) {
 		{"returned 100 results, its limit; there may be more", FailTruncated},
 		{"googleapi: Error 404: Requested entity was not found.", FailNotFound},
 		{"did not finish", FailOther},
+		{"crashed: panic: inconsistent list element types", FailCrash},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/user/tokens": 403 Forbidden`, FailDenied},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/filters": 410 Gone { "result": null, "success": false, "errors": [ { "code": 10020, "message": "filters.api.deprecated" } ] }`, FailRetired},
+		{"unexpected resource configure type: Expected *cloudflare.Client, got: *cloudflare.Client. Please report this issue to the provider developers.", FailProvider},
+		{"RFC3339 ValueRFC3339Time Error: RFC3339 string value is null", FailProvider},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/custom_certificates": 400 Bad Request`, FailRejected},
 	} {
 		f := Failure{Message: c.msg}
 		f.Classify()
@@ -522,11 +529,39 @@ provider "awsx" {
 
 func TestLaterOverrides(t *testing.T) {
 	dir := t.TempDir()
-	for _, n := range []string{"main.tf", "aa_override.tf", "zzz_override.tf", "override.tf.json", "zz_tforphans_1_override.tf"} {
+	// zzzz_override.json is not configuration (only .tf.json is).
+	for _, n := range []string{"main.tf", "aa_override.tf", "zzz_override.tf", "zzzz_override.json", "zzzz_override.tf.json", "override.tf.json", "zz_tforphans_1_override.tf"} {
 		os.WriteFile(filepath.Join(dir, n), nil, 0o644)
 	}
 	got := laterOverrides(dir, "zz_tforphans_9_version_override.tf")
-	if !slices.Equal(got, []string{"zzz_override.tf"}) {
+	if !slices.Equal(got, []string{"zzz_override.tf", "zzzz_override.tf.json"}) {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestRemoveStale(t *testing.T) {
+	dir := t.TempDir()
+	// A process that cannot exist (beyond any pid_max) left files.
+	gone := filepath.Join(dir, "zz_tforphans_99999999.tfquery.hcl")
+	goneOverride := filepath.Join(dir, "zz_tforphans_99999999_override.tf")
+	os.WriteFile(gone, nil, 0o644)
+	os.WriteFile(goneOverride, nil, 0o644)
+	if err := RemoveStale(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(gone); err == nil {
+		t.Error("file of a dead run kept")
+	}
+	if _, err := os.Stat(goneOverride); err == nil {
+		t.Error("override of a dead run kept")
+	}
+	// The parent process (the test runner) is alive: its files stay.
+	busy := filepath.Join(dir, fmt.Sprintf("zz_tforphans_%d.tfquery.hcl", os.Getppid()))
+	os.WriteFile(busy, nil, 0o644)
+	if err := RemoveStale(dir); err == nil {
+		t.Error("files of a running process removed")
+	}
+	if _, err := os.Stat(busy); err != nil {
+		t.Error(err)
 	}
 }

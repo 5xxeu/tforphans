@@ -1,0 +1,16 @@
+# Objects that Cloudflare creates with settings, for -scan cloudflare.
+# Cloudflare's own managed rulesets, Universal SSL packs, built-in DLP
+# entries and the resource library catalog are dropped by the scan itself
+# (by fields users cannot set); this preset adds what can only be told by
+# fields a user could set too, where hiding a hand-made object does no harm.
+
+# The entrypoint ruleset of URL normalization (cloudflare_url_normalization_settings).
+# The phase can only run Cloudflare's normalization, so a hidden ruleset
+# here cannot do anything else.
+cloudflare_ruleset attr.phase=http_request_sanitize
+
+# Not included: "default" entrypoint rulesets and notification policies.
+# They are made in the dashboard when someone configures rules or alerts
+# there, which is configuration outside Terraform. Hide them knowingly with
+# your own rule, for example:
+#   cloudflare_notification_policy:Default*
