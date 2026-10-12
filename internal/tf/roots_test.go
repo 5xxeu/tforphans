@@ -241,6 +241,8 @@ func TestTerragruntUnits(t *testing.T) {
 		"app/terragrunt.hcl":                   "include \"root\" {\n  path = find_in_parent_folders(\"root.hcl\")\n}\n",
 		"db/terragrunt.hcl":                    "terraform {\n  source = \"../modules/db\"\n}\n",
 		"modules/db/main.tf":                   "resource \"terraform_data\" \"x\" {}\n",
+		"local/terragrunt.hcl":                 "remote_state {\n  backend = \"s3\"\n}\n", // fresh checkout: no backend.tf yet
+		"local/main.tf":                        "resource \"terraform_data\" \"x\" {}\n",
 		"app/.terragrunt-cache/x/y/backend.tf": "terraform {\n  backend \"s3\" {}\n}\n",
 	}
 	for name, body := range files {
@@ -248,7 +250,7 @@ func TestTerragruntUnits(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
 	}
 	got, _, err := FindRoots(dir, true)
-	want := []string{filepath.Join(dir, "app"), filepath.Join(dir, "db")}
+	want := []string{filepath.Join(dir, "app"), filepath.Join(dir, "db"), filepath.Join(dir, "local")}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("units: %v, %v", got, err)
 	}
@@ -259,14 +261,14 @@ func TestTerragruntUnits(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "broken"), 0o755)
 	os.WriteFile(filepath.Join(dir, "broken", "terragrunt.hcl"), []byte("include \"root\" {\n"), 0o644)
 	got, unread, err := FindRoots(dir, true)
-	if err != nil || len(got) != 2 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") || !strings.Contains(unread[0].Reason, "could not be parsed") {
+	if err != nil || len(got) != 3 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") || !strings.Contains(unread[0].Reason, "could not be parsed") {
 		t.Errorf("broken unit: %v %v %v", got, unread, err)
 	}
 	// Also in a directory that is a terraform root as well (left over from
 	// before the move to Terragrunt).
 	os.WriteFile(filepath.Join(dir, "broken", "terraform.tfstate"), []byte("{}"), 0o644)
 	got, unread, err = FindRoots(dir, true)
-	if err != nil || len(got) != 2 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") {
+	if err != nil || len(got) != 3 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") {
 		t.Errorf("broken unit in a terraform root: %v %v %v", got, unread, err)
 	}
 	if got, unread, _ := FindRoots(dir, false); len(got) != 1 || len(unread) != 0 {

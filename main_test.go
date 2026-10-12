@@ -236,3 +236,16 @@ func TestAdoptBrokenTerragruntUnit(t *testing.T) {
 		t.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 }
+
+// A unit given as a root argument would be queried with terraform and its
+// .tf backend, not terragrunt's: refused with -terragrunt.
+func TestTerragruntUnitAsRoot(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "app"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app", "terragrunt.hcl"), []byte("terraform {\n  source = \"../m\"\n}\n"), 0o644)
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-query", "-plugin", "true", "-state-roots", dir, "-terragrunt", filepath.Join(dir, "app")}, &stdout, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "is a Terragrunt unit") {
+		t.Errorf("exit %d\n%s", code, stderr.String())
+	}
+}

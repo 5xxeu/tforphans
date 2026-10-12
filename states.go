@@ -87,6 +87,21 @@ func inWorkspace(ws string, err error) error {
 // incomplete, not wrong.
 func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *report.Summary) ([]string, error) {
 	skip := map[string]bool{}
+	// A root argument is queried with terraform, which reads the backend of
+	// its .tf files, not the one terragrunt renders: a unit there would
+	// stand in with a stale state (or none).
+	for _, r := range o.roots {
+		if !o.terragrunt {
+			break
+		}
+		unit, err := tf.IsTerragruntUnit(r)
+		if err != nil {
+			return nil, fmt.Errorf("root %s: %w", r, err)
+		}
+		if unit {
+			return nil, fmt.Errorf("root %s is a Terragrunt unit: terraform query does not run in units, give its directory to -state-roots only", r)
+		}
+	}
 	for _, r := range o.roots {
 		if abs, err := filepath.Abs(r); err == nil {
 			skip[abs] = true

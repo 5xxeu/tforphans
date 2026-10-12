@@ -290,7 +290,8 @@ State must be raw state (`terraform state pull`), not `terraform show -json`.
 
 `-terragrunt` makes `-state-roots` read Terragrunt units too: directories
 whose `terragrunt.hcl` has a `terraform` block or an `include`, such as
-`live/prod/app` under a `root.hcl`. Each unit's state is read with
+`live/prod/app` under a `root.hcl`, or sits next to `.tf` files of its
+own. Each unit's state is read with
 `terragrunt run -- state pull` (Terragrunt 0.73 or newer in `PATH`; tested
 with 1.1.6), which renders the backend the unit's configuration describes,
 so remote state blocks, `generate` and includes all work. Terragrunt
@@ -300,7 +301,9 @@ terragrunt command does. Terragrunt also evaluates the units' HCL, which
 can run commands (`run_cmd`, hooks): the flag is opt-in and accepted only
 on the command line, like `-plugin`. It runs the terraform of
 `-terraform`. A `terragrunt.hcl` that cannot be read or parsed is an
-unread state (coverage incomplete, `adopt` refuses), not a missing unit.
+unread state (coverage incomplete, `adopt` refuses), not a missing unit. A
+unit cannot be a root argument as well: terraform query would read the
+backend of its `.tf` files, not the one terragrunt renders.
 
 ```sh
 tforphans -no-query -scan cloudflare -state-roots live -terragrunt

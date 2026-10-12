@@ -590,10 +590,11 @@ func majorMinor(v string) (major, minor int, ok bool) {
 }
 
 // IsTerragruntUnit reports a directory whose terragrunt.hcl deploys a module:
-// it has a terraform block (source) or includes a parent configuration. A
+// it has a terraform block (source), includes a parent configuration, or
+// sits next to .tf files of its own (a unit with only remote_state). A
 // parent such as a legacy top-level terragrunt.hcl with only remote_state
-// has neither and is no unit. No terragrunt.hcl is no unit; one that cannot
-// be read or parsed is an error, not a missing unit.
+// and no .tf files is no unit. No terragrunt.hcl is no unit; one that
+// cannot be read or parsed is an error, not a missing unit.
 func IsTerragruntUnit(dir string) (bool, error) {
 	name := filepath.Join(dir, "terragrunt.hcl")
 	src, err := os.ReadFile(name)
@@ -614,6 +615,15 @@ func IsTerragruntUnit(dir string) (bool, error) {
 	}
 	for _, b := range body.Blocks {
 		if b.Type == "terraform" || b.Type == "include" {
+			return true, nil
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, fmt.Errorf("terragrunt.hcl: directory could not be read: %w", err)
+	}
+	for _, e := range entries {
+		if n := e.Name(); !e.IsDir() && (strings.HasSuffix(n, ".tf") || strings.HasSuffix(n, ".tf.json")) {
 			return true, nil
 		}
 	}
