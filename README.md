@@ -84,9 +84,20 @@ it (Go 1.26 or newer):
 go install github.com/5xxeu/tforphans@latest
 ```
 
-Requires Terraform 1.14 or newer in `PATH` (or `-terraform /path/to/bin`);
-the tests run against 1.15 and 1.16. OpenTofu has no `query` command yet;
-with it only `-no-query` mode works.
+Terraform in `PATH` (or `-terraform /path/to/bin`). What needs which
+version:
+
+| What | Terraform |
+|---|---|
+| Listing with `terraform query` (the default) | 1.14 or newer; tforphans checks and says so |
+| Matching by resource identity | state written by 1.12 or newer with a provider that records identities; older state is matched by attributes (less certain, see `-refresh`) |
+| `adopt` import blocks with `identity` | 1.12; with `id` 1.5 |
+| `-no-query` with `-state`, `-state-roots`, `-scan`, `-plugin` | no query needed; tested only with 1.15 and 1.16 so far |
+
+The tests run against 1.15 and 1.16. Roots that are queried must allow
+1.14 in their `required_version` (`-ignore-required-version` overrides it
+for the run); roots whose state is only read need not. OpenTofu has no
+`query` command yet; with it only `-no-query` mode can work (not tested).
 
 ## Usage
 
@@ -662,6 +673,31 @@ no list queries; it needs at least one `-scan` or `-plugin`. [examples/plugins/v
 covers Vault auth methods, roles, secret engines and policies with the
 `vault` CLI and `jq`, and marks every object `unverified`: scan one Vault
 per run with its own states and `-plugin-cluster-states`.
+
+## In CI
+
+A scheduled job that fails when something is unmanaged or could not be
+checked, with the JSON report as an artifact (GitLab):
+
+```yaml
+tforphans:
+  stage: audit
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - terraform -chdir=infra init -input=false
+    - tforphans -config audits/aws.yaml -strict -format json > tforphans.json
+  artifacts:
+    when: always
+    paths: [tforphans.json]
+```
+
+Exit status `2` means unmanaged objects, `1` an error or, with `-strict`,
+incomplete coverage; `jq '.orphans'` and `jq '.summary.coverage[] |
+select(.status != "complete")'` show what to look at. Run it on a schedule
+or on the default branch, with read-only credentials: commands
+(`-plugin`, `-terraform`) and state URLs come only from the job's command
+line, never from a config file a merge request could change.
 
 ## Security
 

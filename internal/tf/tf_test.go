@@ -586,3 +586,16 @@ func TestRemoveStale(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestMajorMinor(t *testing.T) {
+	for v, want := range map[string][2]int{"1.13.5": {1, 13}, "1.14.0-beta1": {1, 14}, "1.16": {1, 16}, "2.0.0": {2, 0}} {
+		if ma, mi, ok := majorMinor(v); !ok || ma != want[0] || mi != want[1] {
+			t.Errorf("%s: %d.%d %v", v, ma, mi, ok)
+		}
+	}
+	for _, v := range []string{"", "1", "x.y"} {
+		if _, _, ok := majorMinor(v); ok {
+			t.Errorf("%q read as a version", v)
+		}
+	}
+}

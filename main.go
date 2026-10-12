@@ -402,6 +402,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "plan:", report.Clean(runPlan(o, stateDirs)))
 	}
 	sum.Notes = append(sum.Notes, scanHints(o, stateDirs)...)
+	if !o.noQuery && len(o.roots) > 0 {
+		if err := (tf.Runner{Bin: o.terraformBin, Dir: o.roots[0]}).QueryVersion(ctx); err != nil {
+			return err
+		}
+	}
 	var live []model.Resource
 	for _, root := range o.roots {
 		found, err := scanRoot(ctx, o, root, idx, &sum, stdout)

@@ -191,6 +191,10 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	// Terraform before 1.14 and OpenTofu print this (on stdout).
+	if runErr != nil && strings.Contains(string(out)+string(stderr), `no command named "query"`) {
+		return nil, fmt.Errorf("%s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin))
+	}
 	res, fatal, err := ParseQueryStream(out, r.Dir, keys, limitFor)
 	if err != nil {
 		return nil, err
