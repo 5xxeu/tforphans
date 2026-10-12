@@ -264,7 +264,7 @@ resource "fake_thing" "x" { name = var.name }
 	if code, _, _ := runTool("-types", "fake_thing", "-state-roots", tree, "-strict"); code != exitError {
 		t.Errorf("-strict with an unreadable state: exit %d", code)
 	}
-	if !strings.Contains(stderr, "coverage: INCOMPLETE (1 states not read)") {
+	if !strings.Contains(stderr, "coverage: INCOMPLETE (1 states not read: ") {
 		t.Errorf("coverage verdict:\n%s", stderr)
 	}
 	// adopt would import the objects of the unread state a second time.
@@ -772,5 +772,24 @@ func TestIntegrationRootThroughLink(t *testing.T) {
 	t.Chdir(work)
 	if code, stdout, stderr := runTool("-types", "fake_thing", "jump/../root"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") {
 		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}
+
+// TestIntegrationAPIOff: a listing whose API is not enabled (GCP) is no
+// gap, unless -strict-api.
+func TestIntegrationAPIOff(t *testing.T) {
+	_, root := setup(t)
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	t.Chdir(root)
+	t.Setenv("FAKE_FAIL", "thing:Compute Engine API has not been used in project p before or it is disabled. Enable it by visiting ...")
+	code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-format", "json")
+	if code != exitOK || !strings.Contains(stderr, "1 listings whose API is not enabled") {
+		t.Errorf("exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, `"api_not_enabled": 1`) || !strings.Contains(stdout, `"reasons": [`) {
+		t.Errorf("json:\n%s", stdout)
+	}
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-strict-api"); code != exitError {
+		t.Errorf("-strict-api: exit %d\n%s", code, stderr)
 	}
 }

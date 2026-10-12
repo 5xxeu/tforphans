@@ -36,7 +36,7 @@ func TestFindRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := FindRoots(dir)
+	got, _, err := FindRoots(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,5 +210,25 @@ vault_policy.list vault_policy provider=vault.other id= identity=map[ids:["x",2]
 vault_policy.ci vault_policy provider= id=ci identity=map[]`
 	if strings.Join(lines, "\n") != want {
 		t.Errorf("got:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// A directory that cannot be read is reported, not fatal.
+func TestFindRootsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{"ok", "locked"} {
+		os.MkdirAll(filepath.Join(dir, d), 0o755)
+		os.WriteFile(filepath.Join(dir, d, "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644)
+	}
+	if err := os.Chmod(filepath.Join(dir, "locked"), 0); err != nil {
+		t.Skip(err)
+	}
+	defer os.Chmod(filepath.Join(dir, "locked"), 0o755)
+	if _, err := os.ReadDir(filepath.Join(dir, "locked")); err == nil {
+		t.Skip("permissions are not enforced here (root)")
+	}
+	roots, unread, err := FindRoots(dir)
+	if err != nil || len(roots) != 1 || len(unread) != 1 || !strings.HasSuffix(unread[0], "locked") {
+		t.Errorf("roots %v, unread %v, err %v", roots, unread, err)
 	}
 }

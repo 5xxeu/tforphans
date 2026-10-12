@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/state"
@@ -34,7 +37,12 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, in
 		}
 		r.Workspace = ws
 		if o.refresh {
+			// A refresh plans the whole root: minutes on a large one, so
+			// say what is going on.
+			start := time.Now()
+			o.progressf("refreshing %s", inWorkspaceName(dir, ws))
 			raw, err := r.RefreshedState(ctx)
+			o.progressf("refreshed %s in %s", inWorkspaceName(dir, ws), time.Since(start).Round(time.Second))
 			if err == nil {
 				var insts []state.Instance
 				if insts, err = state.ParseShow(raw); err == nil {
@@ -86,9 +94,12 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	}
 	var dirs []string
 	for _, tree := range o.stateRoots {
-		found, err := tf.FindRoots(tree)
+		found, unread, err := tf.FindRoots(tree)
 		if err != nil {
 			return nil, fmt.Errorf("-state-roots %s: %w", tree, err)
+		}
+		if len(unread) > 0 {
+			sum.Warnings = append(sum.Warnings, fmt.Sprintf("-state-roots %s: %d directories could not be read (permission denied), root modules there were not read: %s", tree, len(unread), strings.Join(firstN(unread, 5), ", ")))
 		}
 		for _, d := range found {
 			abs, err := filepath.Abs(d)
@@ -102,6 +113,11 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 		}
 	}
 
+	// A path that is wrong (.. from the wrong directory) can reach a whole
+	// home directory: stop before terraform runs in all of it.
+	if o.maxRoots > 0 && len(dirs) > o.maxRoots {
+		return nil, fmt.Errorf("-state-roots found %d root modules under %s, more than -max-roots %d: check the paths (relative paths of a config file are relative to the file), or raise -max-roots", len(dirs), strings.Join(o.stateRoots, ", "), o.maxRoots)
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
@@ -118,7 +134,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 			idx.Add(insts)
 			sum.States += n
 			if err != nil {
-				sum.UnreadStates = append(sum.UnreadStates, d)
+				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(d, err))
 				sum.Warnings = append(sum.Warnings, fmt.Sprintf("state of %s not read in full, its resources may show as unmanaged: %v", d, err))
 			}
 		}()
@@ -141,4 +157,31 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 		}
 	}
 	return pullRoot(ctx, o, dir)
+}
+
+// firstN returns at most n elements and a count of the rest.
+func firstN(xs []string, n int) []string {
+	if len(xs) <= n {
+		return xs
+	}
+	return append(slices.Clone(xs[:n]), fmt.Sprintf("and %d more", len(xs)-n))
+}
+
+// inWorkspaceName names a root and, when not the selected one, its
+// workspace.
+func inWorkspaceName(dir, ws string) string {
+	if ws == "" {
+		return dir
+	}
+	return dir + " (workspace " + ws + ")"
+}
+
+// progressf prints a progress line on stderr for long steps.
+func (o *options) progressf(format string, args ...any) {
+	if o.progress == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintln(o.progress, report.Clean(fmt.Sprintf(format, args...)))
 }

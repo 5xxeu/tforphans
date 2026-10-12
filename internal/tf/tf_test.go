@@ -202,7 +202,7 @@ func TestParseQueryStreamUnfinished(t *testing.T) {
 		t.Errorf("limit only: failed=%v explained=%v", res.Failed, res.explained())
 	}
 	// Terraform's default limit gets a hint where to raise it.
-	if res, _, _ := ParseQueryStream([]byte(limitOnly), "root", noKeys, func(string) int { return 100 }); len(res.Failed) != 1 || !strings.Contains(res.Failed[0].Message, "add limit = N to the block") {
+	if res, _, _ := ParseQueryStream([]byte(limitOnly), "root", noKeys, func(string) int { return 100 }); len(res.Failed) != 1 || !strings.Contains(res.Failed[0].Message, "add limit = N to it") {
 		t.Errorf("default limit: %+v", res.Failed)
 	}
 	if res, _, _ := ParseQueryStream([]byte(strings.ReplaceAll(limitOnly, `"total":100`, `"total":50`)), "root", noKeys, func(string) int { return 50 }); len(res.Failed) != 1 || !strings.Contains(res.Failed[0].Message, "raise limit in the list block") {

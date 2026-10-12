@@ -31,10 +31,17 @@ import (
 // trees, which hold copies and fixtures rather than live roots. Local state
 // of non-default workspaces (terraform.tfstate.d) marks its parent as a
 // root and is not walked into.
-func FindRoots(dir string) ([]string, error) {
-	var roots []string
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+//
+// Directories below dir that cannot be read (permission denied) are
+// returned as unread instead of failing the walk: a tree such as a home
+// directory has some.
+func FindRoots(dir string) (roots, unread []string, err error) {
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path != dir && errors.Is(err, fs.ErrPermission) {
+				unread = append(unread, path)
+				return filepath.SkipDir
+			}
 			return err
 		}
 		if !d.IsDir() {
@@ -45,6 +52,10 @@ func FindRoots(dir string) ([]string, error) {
 		}
 		ok, err := isRoot(path)
 		if err != nil {
+			if path != dir && errors.Is(err, fs.ErrPermission) {
+				unread = append(unread, path)
+				return filepath.SkipDir
+			}
 			return err
 		}
 		if ok {
@@ -53,7 +64,7 @@ func FindRoots(dir string) ([]string, error) {
 		return nil
 	})
 	sort.Strings(roots)
-	return roots, err
+	return roots, unread, err
 }
 
 var (

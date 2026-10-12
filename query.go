@@ -36,7 +36,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		if initialized || o.init {
 			return false
 		}
-		sum.UnreadStates = append(sum.UnreadStates, root)
+		sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
 		sum.Warnings = append(sum.Warnings, fmt.Sprintf("%s is not initialized: not queried and its state not read, so its objects may show as unmanaged and its providers' objects are missing (run terraform init there, or pass -init): %v", root, err))
 		return true
 	}

@@ -293,7 +293,7 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 			case limit > 0 && c.Total >= limit:
 				hint := "; raise limit in the list block, or -limit for the generated ones"
 				if limit == DefaultListLimit {
-					hint = fmt.Sprintf("; %d is Terraform's default when a list block sets no limit: add limit = N to the block", DefaultListLimit)
+					hint = fmt.Sprintf("; %d is Terraform's default when a list block of yours sets no limit: add limit = N to it (generated blocks take -limit)", DefaultListLimit)
 				}
 				res.Failed = append(res.Failed, Failure{Address: c.Address, Type: c.ResourceType,
 					Message: fmt.Sprintf("returned %d results, its limit; there may be more%s", c.Total, hint)})

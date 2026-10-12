@@ -186,3 +186,18 @@ func TestScanHints(t *testing.T) {
 		t.Errorf("plan %q", p)
 	}
 }
+
+// -max-roots stops a -state-roots walk that found too much before terraform
+// runs anywhere.
+func TestMaxRoots(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{"a", "b", "c"} {
+		os.MkdirAll(filepath.Join(dir, d), 0o755)
+		os.WriteFile(filepath.Join(dir, d, "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644)
+	}
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-query", "-plugin", "true", "-state-roots", dir, "-max-roots", "2", "-terraform", "/nonexistent/terraform"}, io.Discard, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "more than -max-roots 2") {
+		t.Errorf("exit %d\n%s", code, stderr.String())
+	}
+}

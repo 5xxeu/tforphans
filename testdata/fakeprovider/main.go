@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -171,6 +172,13 @@ func (t *thing) List(ctx context.Context, req list.ListRequest, stream *list.Lis
 	// FAKE_PANIC=<kind> crashes the provider while listing that kind.
 	if os.Getenv("FAKE_PANIC") == t.kind {
 		panic("fake provider crash")
+	}
+	// FAKE_FAIL=<kind>:<message> makes listing that kind fail with message.
+	if kind, msg, ok := strings.Cut(os.Getenv("FAKE_FAIL"), ":"); ok && kind == t.kind {
+		var d diag.Diagnostics
+		d.AddError("Error listing", msg)
+		stream.Results = list.ListResultsStreamDiagnostics(d)
+		return
 	}
 	if t.kind == "broken" {
 		var d diag.Diagnostics

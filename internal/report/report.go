@@ -184,12 +184,33 @@ func (rule ignoreRule) matchConds(r model.Resource) bool {
 	return true
 }
 
+// UnreadState is a root module whose state could not be read, with the
+// line of the error that says why.
+type UnreadState struct {
+	Root  string `json:"root"`
+	Error string `json:"error"`
+}
+
+// NewUnreadState keeps the telling line of err: terraform's "Error: ..."
+// line when there is one, else the first.
+func NewUnreadState(root string, err error) UnreadState {
+	lines := strings.Split(err.Error(), "\n")
+	msg := lines[0]
+	for _, l := range lines {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "Error: ") {
+			msg = l
+			break
+		}
+	}
+	return UnreadState{Root: root, Error: msg}
+}
+
 // Summary describes how complete the scan was.
 type Summary struct {
 	States int `json:"states"`
 	// UnreadStates are root modules whose state could not be read in full:
 	// their objects may show as unmanaged.
-	UnreadStates []string `json:"unread_states,omitempty"`
+	UnreadStates []UnreadState `json:"unread_states,omitempty"`
 	// ManagedByIdentity counts managed objects matched by the resource
 	// identity in state; the others were matched by attributes.
 	ManagedByIdentity int `json:"managed_by_identity"`
@@ -204,6 +225,9 @@ type Summary struct {
 	Ignored   int `json:"ignored"`
 	Orphans   int `json:"orphans"`
 	Queried   int `json:"queried_types"`
+	// APIOff counts failed listings whose API is not enabled: they are in
+	// failed_queries but not counted as gaps (unless -strict-api).
+	APIOff int `json:"api_not_enabled,omitempty"`
 	// Complete is false when something was not checked: failed or
 	// truncated listings, unread states, plugin errors, types that needed
 	// a check and were skipped.
