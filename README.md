@@ -368,8 +368,9 @@ still listed. When the provider or terraform crashes (a panic names no
 data source), the data sources are read again in halves until the crash
 is pinned to a data source and, for those read per zone or account, to the
 zones or accounts that crash; those are reported as "crashed" and the rest
-is listed as usual. This takes extra runs (at most 80), and a note says
-so while it happens. With
+is listed as usual. This takes extra runs (at most 80; what is still
+suspect after them is reported as crashed), and a note says so while it
+happens. With
 `-strict` such gaps are errors; leave out products you do not use with
 `-exclude-types`.
 
@@ -473,7 +474,10 @@ reported as skipped). A zone stack whose state names its account (an
 account-level object, or any `account_id`) gets the account's objects
 listed as well; `-scan-scope account_id=` (no value) leaves out
 account-level objects, and works with `state` for the zones:
-`-scan-scope state -scan-scope account_id=`.
+`-scan-scope state -scan-scope account_id=`. Some zone listings return
+account objects too (Access applications); the account listing of such a
+data source is still read, only to drop them, and if it fails the type
+counts as not fully listed.
 Without `-scan-scope` and `-state-roots` a note points this out. Every
 object carries its zone or account (`scope` in JSON, a column in the
 table), and `-format summary` counts them per zone.

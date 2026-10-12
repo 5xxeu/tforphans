@@ -162,6 +162,9 @@ type Result struct {
 // that tests can reach it.
 var maxItems = 1000000
 
+// hiddenNote starts the failures of hidden blocks (see block.hidden).
+const hiddenNote = "read only to tell objects of this scope from those of the scope asked for, which may now include some of them: "
+
 // maxProbes bounds the extra runs spent isolating a crash.
 const maxProbes = 80
 
@@ -213,16 +216,9 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 		return out, stderr, runErr, nil
 	}
-	probes := 0
-	probe := func(set []block) (bool, []byte, error) {
-		if len(set) == 0 {
-			return false, nil, nil
-		}
-		// A crash every part repeats (terraform failing for another reason)
-		// must not cost hundreds of runs.
-		if probes++; probes > maxProbes {
-			return false, nil, fmt.Errorf("the crash could not be pinned down in %d runs", maxProbes)
-		}
+	// A crash every part repeats (terraform failing for another reason, or
+	// crashing in many zones) must not cost hundreds of runs.
+	probe := budget(func(set []block) (bool, []byte, error) {
 		out, stderr, runErr, err := apply(set)
 		if err != nil || runErr == nil {
 			if err != nil {
@@ -233,7 +229,11 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 		errs, fatal := applyErrors(out)
 		return crashed(stderr, errs, fatal), nil, nil
-	}
+	}, maxProbes, func() {
+		if opt.Progress != nil {
+			opt.Progress(fmt.Sprintf("%s: the crash was not pinned down in %d extra runs; what is still suspect is reported as crashed", a.Name, maxProbes))
+		}
+	})
 	var failures []failure
 	for len(blocks) > 0 {
 		out, stderr, runErr, err := apply(blocks)
@@ -251,6 +251,8 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			}
 			if why != "" {
 				why = "crashed: " + tf.OneLine(why, 200)
+			} else {
+				why = "crashed: terraform or the provider stopped without a message"
 			}
 			keep, failed, err := isolate(blocks, why, probe)
 			if err != nil {
@@ -296,34 +298,11 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 	}
 	res.Listed = len(listed)
-	// Every failed scope is a gap, even when another scope listed the type:
-	// a 403 on the account must not hide behind a working zone listing.
-	// Only an error the adapter knows to mean "this data source does not
-	// take this scope" is dropped, and only when another scope worked.
-	byAddr := map[string]block{}
-	for _, b := range all {
-		byAddr[b.addr()] = b
-	}
-	for _, f := range failures {
-		if byAddr[f.block].hidden {
-			continue
-		}
-		if len(byAddr[f.block].listings) == 0 {
-			// A context data source: the adapter treats it as missing.
-			res.Failed = append(res.Failed, tf.Failure{Address: f.address, Type: byAddr[f.block].dsType, Message: f.message})
-			continue
-		}
-		for _, l := range byAddr[f.block].listings {
-			if listed[l.resourceType] && a.NotApplicable != nil && a.NotApplicable(f.message) {
-				continue
-			}
-			res.Failed = append(res.Failed, tf.Failure{Address: f.address, Type: l.resourceType, Message: f.message})
-		}
-	}
+	res.Failed = append(res.Failed, reportFailures(failures, all, listed, a)...)
 	if len(blocks) == 0 {
 		return res, nil
 	}
-	cut, err := truncated(stateData, slices.DeleteFunc(slices.Clone(blocks), func(b block) bool { return b.hidden }), a)
+	cut, err := truncated(stateData, blocks, a)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", a.Name, err)
 	}
@@ -907,7 +886,7 @@ func truncated(stateData []byte, blocks []block, a Adapter) ([]tf.Failure, error
 				addr = fmt.Sprintf("%s[%q]", addr, key)
 			}
 			for _, l := range b.listings {
-				out = append(out, tf.Failure{Address: addr, Type: l.resourceType, Message: fmt.Sprintf("returned %d objects, its max_items; there may be more", n)})
+				out = append(out, tf.Failure{Address: addr, Type: l.resourceType, Message: note(b) + fmt.Sprintf("returned %d objects, its max_items; there may be more", n)})
 			}
 		}
 	}
@@ -916,10 +895,49 @@ func truncated(stateData []byte, blocks []block, a Adapter) ([]tf.Failure, error
 			continue
 		}
 		for _, l := range b.listings {
-			out = append(out, tf.Failure{Address: b.addr(), Type: l.resourceType, Message: b.parent + " returned its max_items; parents beyond it were not read"})
+			out = append(out, tf.Failure{Address: b.addr(), Type: l.resourceType, Message: note(b) + b.parent + " returned its max_items; parents beyond it were not read"})
 		}
 	}
 	return out, nil
+}
+
+// reportFailures turns failed blocks and instances into failures per
+// resource type. Every failed scope is a gap, even when another scope listed
+// the type: a 403 on the account must not hide behind a working zone
+// listing. Only an error the adapter knows to mean "this data source does
+// not take this scope" is dropped, and only when another scope worked.
+func reportFailures(failures []failure, all []block, listed map[string]bool, a Adapter) []tf.Failure {
+	byAddr := map[string]block{}
+	for _, b := range all {
+		byAddr[b.addr()] = b
+	}
+	var out []tf.Failure
+	for _, f := range failures {
+		b := byAddr[f.block]
+		f.message = note(b) + f.message
+		if len(b.listings) == 0 {
+			// A context data source: the adapter treats it as missing.
+			out = append(out, tf.Failure{Address: f.address, Type: b.dsType, Message: f.message})
+			continue
+		}
+		for _, l := range b.listings {
+			if listed[l.resourceType] && a.NotApplicable != nil && a.NotApplicable(f.message) {
+				continue
+			}
+			out = append(out, tf.Failure{Address: f.address, Type: l.resourceType, Message: f.message})
+		}
+	}
+	return out
+}
+
+// note is the start of a block's failure messages: a hidden block's
+// failure means that objects of its scope, which the listing asked for may
+// return too, can no longer be told apart (see block.hidden).
+func note(b block) string {
+	if b.hidden {
+		return hiddenNote
+	}
+	return ""
 }
 
 // listItems returns the objects of one data source instance.

@@ -52,7 +52,7 @@ type prober func(blocks []block) (crash bool, state []byte, err error)
 // cannot be pinned down (it does not happen with any half).
 func isolate(blocks []block, why string, probe prober) (keep []block, failed []failure, err error) {
 	if why == "" {
-		why = "terraform or the provider crashed"
+		why = "crashed: terraform or the provider stopped without a message"
 	}
 	isParent := map[string]bool{}
 	for _, b := range blocks {
@@ -208,6 +208,26 @@ func isolateInstances(b block, parents []block, why string, probe prober) (*bloc
 		failed = append(failed, failure{block: b.addr(), address: fmt.Sprintf("%s[%q]", b.addr(), k), message: why})
 	}
 	return &b, failed, nil
+}
+
+// budget bounds the probe runs. Past the bound every probe counts as a
+// crash without running: isolate then gives up on what is still suspect
+// (it is reported as crashed) instead of failing the whole scan. exhausted
+// is called once when that happens.
+func budget(probe prober, max int, exhausted func()) prober {
+	n := 0
+	return func(set []block) (bool, []byte, error) {
+		if len(set) == 0 {
+			return false, nil, nil
+		}
+		if n++; n > max {
+			if n == max+1 && exhausted != nil {
+				exhausted()
+			}
+			return true, nil, nil
+		}
+		return probe(set)
+	}
 }
 
 // bisect returns the members of set (known to crash as a whole) that crash

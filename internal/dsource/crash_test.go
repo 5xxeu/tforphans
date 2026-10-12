@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 func TestCrashed(t *testing.T) {
@@ -156,5 +158,75 @@ func TestLimitScopeHidden(t *testing.T) {
 	out := collapse([]scoped{res("acct", "account_id", true), res("acct", "zone_id", false), res("zoned", "zone_id", false)})
 	if len(out) != 1 || out[0].Identity["id"] != "zoned" {
 		t.Errorf("collapse %v", out)
+	}
+}
+
+// TestIsolateBudget: a block crashing in every one of 40 zones needs more
+// runs than allowed; it is reported as crashed and the scan goes on.
+func TestIsolateBudget(t *testing.T) {
+	zones := &Cloudflare.Scopes[1]
+	blocks := []block{
+		{dsType: "cloudflare_zones", label: "all"},
+		{dsType: "cloudflare_dns_records", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all"},
+		{dsType: "cloudflare_rulesets", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all"},
+	}
+	var state strings.Builder
+	state.WriteString(`{"resources": [{"mode": "data", "type": "cloudflare_zones", "name": "all", "instances": [{"attributes": {"result": [`)
+	for i := range 40 {
+		if i > 0 {
+			state.WriteString(",")
+		}
+		fmt.Fprintf(&state, `{"id": "z%d"}`, i)
+	}
+	state.WriteString(`]}}]}]}`)
+	exhausted := 0
+	probe := budget(func(set []block) (bool, []byte, error) {
+		for _, b := range set {
+			if b.dsType == "cloudflare_dns_records" {
+				return true, nil, nil
+			}
+		}
+		return false, []byte(state.String()), nil
+	}, 10, func() { exhausted++ })
+	keep, failed, err := isolate(blocks, "", probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted != 1 {
+		t.Errorf("exhausted %d times", exhausted)
+	}
+	var kept []string
+	for _, b := range keep {
+		kept = append(kept, b.addr())
+	}
+	if strings.Join(kept, " ") != "data.cloudflare_zones.all data.cloudflare_rulesets.by_zone_id" {
+		t.Errorf("kept %v", kept)
+	}
+	if len(failed) != 1 || failed[0].address != "data.cloudflare_dns_records.by_zone_id" {
+		t.Errorf("failed %v", failed)
+	}
+	f := tf.Failure{Message: failed[0].message}
+	f.Classify()
+	if f.Category != tf.FailCrash {
+		t.Errorf("a crash without a message: category %q (%s)", f.Category, f.Message)
+	}
+}
+
+// TestReportHiddenFailure: a hidden listing that failed is a gap of the
+// type it lists, since account objects in zone listings can no longer be
+// told apart; an error meaning "wrong scope" is still dropped.
+func TestReportHiddenFailure(t *testing.T) {
+	zones, accounts := &Cloudflare.Scopes[1], &Cloudflare.Scopes[0]
+	all := []block{
+		{dsType: "cloudflare_rulesets", label: "by_account_id", scope: accounts, parent: "data.cloudflare_accounts.all", hidden: true, listings: []listing{{resourceType: "cloudflare_ruleset", scope: accounts}}},
+		{dsType: "cloudflare_rulesets", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all", listings: []listing{{resourceType: "cloudflare_ruleset", scope: zones}}},
+	}
+	listed := map[string]bool{"cloudflare_ruleset": true}
+	got := reportFailures([]failure{{block: "data.cloudflare_rulesets.by_account_id", address: `data.cloudflare_rulesets.by_account_id["a1"]`, message: "403 Forbidden"}}, all, listed, Cloudflare)
+	if len(got) != 1 || got[0].Type != "cloudflare_ruleset" || !strings.HasPrefix(got[0].Message, hiddenNote) {
+		t.Errorf("got %+v", got)
+	}
+	if got := reportFailures([]failure{{block: "data.cloudflare_rulesets.by_account_id", message: "missing required account_id parameter"}}, all, listed, Cloudflare); len(got) != 0 {
+		t.Errorf("not applicable reported: %+v", got)
 	}
 }
