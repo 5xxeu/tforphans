@@ -239,6 +239,16 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	// terraform runs in each root and in temporary directories: a relative
 	// path (./tools/terraform) would be looked up there. A plain name
 	// stays a PATH lookup.
+	// Root paths are joined with file names later (filepath.Join cleans):
+	// resolve links first, so that jump/../prod means what terraform,
+	// running in it, takes it for.
+	for _, list := range [][]string{o.roots, o.stateRoots} {
+		for i, p := range list {
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				list[i] = real
+			}
+		}
+	}
 	if strings.ContainsAny(o.terraformBin, "/"+string(filepath.Separator)) && !filepath.IsAbs(o.terraformBin) {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -637,6 +647,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	if err != nil {
 		return err
+	}
+	// adopt may warn about objects it could not write: the verdict and
+	// -strict must see that too.
+	if len(sum.Warnings) > 0 {
+		sum.Complete = false
 	}
 	printSummary(stderr, o, sum)
 	if o.verbose {

@@ -752,3 +752,25 @@ func TestIntegrationUninitializedRoot(t *testing.T) {
 		t.Errorf("-strict with an uninitialized root: exit %d", code)
 	}
 }
+
+// TestIntegrationRootThroughLink: jump/../root, with jump a link, is the
+// root the system takes it for, also for the temporary query files.
+func TestIntegrationRootThroughLink(t *testing.T) {
+	data, root := setup(t)
+	tmp := filepath.Dir(root)
+	work := filepath.Join(tmp, "work")
+	for _, d := range []string{work, filepath.Join(tmp, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(tmp, "sub"), filepath.Join(work, "jump")); err != nil {
+		t.Skip(err)
+	}
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	write(t, filepath.Join(data, "thing", "a"), "")
+	t.Chdir(work)
+	if code, stdout, stderr := runTool("-types", "fake_thing", "jump/../root"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") {
+		t.Errorf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}

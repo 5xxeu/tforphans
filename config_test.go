@@ -69,7 +69,9 @@ limit: 5
 	// is in.
 	real, _ := filepath.EvalSymlinks(sub)
 	sep := string(filepath.Separator)
-	if !slices.Equal(o.roots, []string{real + sep + "../infra"}) || !slices.Equal(o.stateRoots, []string{real + sep + "teams", "/abs/tree"}) ||
+	// infra exists: its links are resolved (so is the temporary directory).
+	realDir, _ := filepath.EvalSymlinks(dir)
+	if !slices.Equal(o.roots, []string{filepath.Join(realDir, "infra")}) || !slices.Equal(o.stateRoots, []string{real + sep + "teams", "/abs/tree"}) ||
 		o.ignorePath != real+sep+"ignore.txt" {
 		t.Errorf("-config elsewhere: %+v", o)
 	}
@@ -194,9 +196,10 @@ func TestConfigInside(t *testing.T) {
 	if err != nil || len(o.roots) != 1 {
 		t.Fatalf("-config: %+v, %v", o, err)
 	}
-	got, _ := filepath.EvalSymlinks(o.roots[0])
+	// Resolved for good: later joins (temporary query files) must land
+	// where terraform runs.
 	want, _ := filepath.EvalSymlinks(filepath.Join(outside, "target"))
-	if got != want {
-		t.Errorf("-config root %s resolves to %s, want %s", o.roots[0], got, want)
+	if o.roots[0] != want {
+		t.Errorf("-config root %s, want %s", o.roots[0], want)
 	}
 }
