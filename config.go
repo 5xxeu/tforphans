@@ -15,22 +15,29 @@ import (
 // defaultConfigFile is read from the current directory when present.
 const defaultConfigFile = ".tforphans.yaml"
 
-// configOnlyExplicit are keys a config file found on its own may not set:
-// they run commands or the root's data sources (refresh plans the root),
-// install providers, send credentials, put attribute values into the
-// output, create files (adopt -o), or make results look more certain than
-// they are (a state file of its own, trusting cluster states, adopt with
-// unread states), and the file may come with someone else's repository. A
-// file given with -config may.
-var configOnlyExplicit = []string{"plugin", "terraform", "init", "refresh", "allow-unpinned", "allow-http", "include-attrs", "o",
+// commandLineOnly are keys no config file may set, not even one given with
+// -config: they run any command (plugin, terraform), send credentials to
+// an address of the file's choosing (state URLs, allow-http) or overwrite
+// any file (adopt -o). Config files live in repositories and change in
+// pull requests that a CI job then runs; such a change has to show in the
+// command itself.
+var commandLineOnly = []string{"plugin", "terraform", "allow-http", "o"}
+
+// configOnlyExplicit are keys a config file found on its own may not set,
+// one given with -config may: they run the root's data sources (refresh
+// plans the root) or terraform init, install an unpinned provider, put
+// attribute values into the output, or make results look more certain
+// than they are (a state file of its own, trusting cluster states, adopt
+// with unread states).
+var configOnlyExplicit = []string{"init", "refresh", "allow-unpinned", "include-attrs",
 	"state", "proxmox-cluster-states", "plugin-cluster-states", "allow-incomplete"}
 
 // configPathKeys hold paths, which are relative to the config file.
-var configPathKeys = []string{"state-roots", "state", "ignore", "o", "terraform"}
+var configPathKeys = []string{"state-roots", "state", "ignore"}
 
 // modeOnly are flags of one mode (adopt or not): a config file shared by
 // both may set them, and the other mode skips them.
-var modeOnly = []string{"format", "o", "allow-incomplete"}
+var modeOnly = []string{"format", "allow-incomplete"}
 
 // applyConfig sets the flags a config file gives and the command line does
 // not. Keys are flag names; a list stands for a repeated flag, and roots for
@@ -45,12 +52,25 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	dir, err := filepath.Abs(filepath.Dir(path))
+	// The directory the file really is in: a link on the way to it counts
+	// as the system resolves it.
+	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return err
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if cwd, err = filepath.EvalSymlinks(cwd); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(real) {
+		real = filepath.Join(cwd, real)
+	}
+	dir := filepath.Dir(real)
 	// Paths of a file in the current directory stay as written.
-	if cwd, err := os.Getwd(); err == nil && cwd == dir {
+	if dir == cwd {
 		dir = ""
 	}
 	set := map[string]bool{}
@@ -79,6 +99,8 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 		}
 		f := fs.Lookup(key)
 		switch {
+		case slices.Contains(commandLineOnly, key):
+			return fmt.Errorf("%s: %s is accepted only on the command line: it runs a command, sends credentials or writes a file, and a change to a config file should not be enough for that", path, key)
 		case f == nil && slices.Contains(modeOnly, key):
 			continue
 		case f == nil || key == "config" || key == "no-config":
@@ -92,11 +114,12 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			return fmt.Errorf("%s: %s takes true or false", path, key)
 		}
 		for _, v := range vals {
-			// Only state takes a URL or - (stdin); for the other keys
-			// "x://y" is a path like any other.
-			isPath := slices.Contains(configPathKeys, key) && (key != "terraform" || strings.ContainsAny(v, "/"+string(filepath.Separator))) &&
-				(key != "state" || !strings.Contains(v, "://") && v != "-")
-			if isPath {
+			// A state URL would receive the TF_HTTP_* credentials; for
+			// the other keys "x://y" is a path like any other.
+			if key == "state" && strings.Contains(v, "://") {
+				return fmt.Errorf("%s: state: a URL is accepted only on the command line, since it receives the TF_HTTP_* credentials", path)
+			}
+			if slices.Contains(configPathKeys, key) && (key != "state" || v != "-") {
 				p, err := inside(configPath(dir, v), explicit)
 				if err != nil {
 					return fmt.Errorf("%s: %s: %w", path, key, err)
@@ -180,5 +203,7 @@ func configPath(dir, p string) string {
 	if filepath.IsAbs(p) || dir == "" {
 		return p
 	}
-	return filepath.Join(dir, p)
+	// Not Join, for the same reason: jump/../prod with a link jump has to
+	// end where the system would take it.
+	return dir + string(filepath.Separator) + p
 }

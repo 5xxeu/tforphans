@@ -239,12 +239,14 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	// terraform runs in each root and in temporary directories: a relative
 	// path (./tools/terraform) would be looked up there. A plain name
 	// stays a PATH lookup.
-	if strings.ContainsRune(o.terraformBin, '/') || strings.ContainsRune(o.terraformBin, filepath.Separator) {
-		abs, err := filepath.Abs(o.terraformBin)
+	if strings.ContainsAny(o.terraformBin, "/"+string(filepath.Separator)) && !filepath.IsAbs(o.terraformBin) {
+		cwd, err := os.Getwd()
 		if err != nil {
 			return nil, err
 		}
-		o.terraformBin = abs
+		// Not Abs, which cleans: a link before .. must count as the
+		// system resolves it.
+		o.terraformBin = cwd + string(filepath.Separator) + o.terraformBin
 	}
 
 	switch o.format {
