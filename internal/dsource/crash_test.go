@@ -119,7 +119,8 @@ func TestIsolateNotReproduced(t *testing.T) {
 	if err != nil || len(keep) != 2 || len(failed) != 0 {
 		t.Errorf("keep %v failed %v err %v", keep, failed, err)
 	}
-	probe := budget(func(set []block) (bool, []byte, error) { return len(set) == 2, nil, nil }, 6, nil)
+	n := 0
+	probe := budget(func(set []block) (bool, []byte, error) { return len(set) == 2, nil, nil }, &n, 6, nil)
 	for range 10 {
 		keep, failed, err = isolate(blocks, "", probe)
 		if err != nil {
@@ -196,7 +197,7 @@ func TestIsolateBudget(t *testing.T) {
 		fmt.Fprintf(&state, `{"id": "z%d"}`, i)
 	}
 	state.WriteString(`]}}]}]}`)
-	exhausted := 0
+	exhausted, spent := 0, 0
 	probe := budget(func(set []block) (bool, []byte, error) {
 		for _, b := range set {
 			if b.dsType == "cloudflare_dns_records" {
@@ -204,7 +205,7 @@ func TestIsolateBudget(t *testing.T) {
 			}
 		}
 		return false, []byte(state.String()), nil
-	}, 10, func() { exhausted++ })
+	}, &spent, 10, func() { exhausted++ })
 	keep, failed, err := isolate(blocks, "", probe)
 	if err != nil {
 		t.Fatal(err)
@@ -245,5 +246,31 @@ func TestReportHiddenFailure(t *testing.T) {
 	}
 	if got := reportFailures([]failure{{block: "data.cloudflare_rulesets.by_account_id", message: "missing required account_id parameter"}}, all, listed, Cloudflare); len(got) != 0 {
 		t.Errorf("not applicable reported: %+v", got)
+	}
+}
+
+// A failure of one zone names the zone; one of a whole block or of an
+// unscoped block concerns every scope.
+func TestFailureScopes(t *testing.T) {
+	zones := &Scope{Arg: "zone_id", Parent: "cloudflare_zones"}
+	all := []block{
+		{dsType: "cloudflare_zones", label: "all"},
+		{dsType: "cloudflare_dns_records", label: "z", scope: zones, parent: "data.cloudflare_zones.all"},
+	}
+	names := map[string]map[string]string{"data.cloudflare_zones.all": {"z1": "example.com"}}
+	failed := []tf.Failure{
+		{Address: `data.cloudflare_dns_records.z["z1"]`},
+		{Address: `data.cloudflare_dns_records.z["z2"]`},
+		{Address: `data.cloudflare_dns_records.z`},
+		{Address: `data.cloudflare_zones.all`},
+		{Address: "-scan-scope zone_id=nope"},
+	}
+	failureScopes(failed, all, names)
+	var got []string
+	for _, f := range failed {
+		got = append(got, f.Scope)
+	}
+	if want := []string{"zone example.com", "zone z2", "", "", ""}; !slices.Equal(got, want) {
+		t.Errorf("scopes %q, want %q", got, want)
 	}
 }

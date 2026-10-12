@@ -2,11 +2,13 @@ package report
 
 import (
 	"bytes"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 func TestIgnore(t *testing.T) {
@@ -150,7 +152,7 @@ func TestImportRejectsInjection(t *testing.T) {
 
 func TestTextStripsControlCharacters(t *testing.T) {
 	var b bytes.Buffer
-	if err := Text(&b, []model.Resource{{Type: "t", DisplayName: "vm\x1b]0;owned\x07\x1b[31m", Identity: map[string]any{"id": "x"}}}); err != nil {
+	if err := Text(&b, []model.Resource{{Type: "t", DisplayName: "vm\x1b]0;owned\x07\x1b[31m", Identity: map[string]any{"id": "x"}}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.ContainsAny(b.String(), "\x1b\x07") {
@@ -239,5 +241,70 @@ func TestPresets(t *testing.T) {
 	}
 	if _, err := Preset("../report"); err == nil {
 		t.Error("path accepted as a preset")
+	}
+}
+
+// Coverage per type and scope: a failure of one zone makes only that zone
+// incomplete, one without a scope every row of its type; a type listed with
+// no objects is complete, and one skipped in a root but listed elsewhere is
+// not reported as skipped.
+func TestBuildCoverage(t *testing.T) {
+	counts := map[[2]string]*TypeCount{
+		{"rec", "zone a"}:  {Live: 2, Managed: 2},
+		{"rec", "zone b"}:  {Live: 1, Orphans: 1},
+		{"rule", "zone a"}: {Live: 1, Uncertain: 1},
+	}
+	failed := []tf.Failure{
+		{Type: "rec", Scope: "zone c", Category: tf.FailDenied},
+		{Type: "rule", Category: tf.FailTruncated},
+		{Type: "acct", Category: tf.FailDenied},
+	}
+	skipped := []tf.Skip{{Type: "empty", Reason: "needs region"}, {Type: "gone", Reason: "no data source"}}
+	got := BuildCoverage(counts, []string{"rec", "rule", "empty", "none"}, skipped, failed)
+	var lines []string
+	for _, c := range got {
+		lines = append(lines, fmt.Sprintf("%s/%s %s %v %d/%d/%d/%d", c.Type, c.Scope, c.Status, c.Reasons, c.Live, c.Managed, c.Uncertain, c.Orphans))
+	}
+	want := []string{
+		"acct/ incomplete [permission denied] 0/0/0/0",
+		"empty/ complete [] 0/0/0/0",
+		"gone/ skipped [no data source] 0/0/0/0",
+		"none/ complete [] 0/0/0/0",
+		"rec/zone a complete [] 2/2/0/0",
+		"rec/zone b complete [] 1/0/0/1",
+		"rec/zone c incomplete [permission denied] 0/0/0/0",
+		"rule/zone a incomplete [truncated] 1/0/1/0",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("coverage:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+	st := typeStatus(got)
+	if st["rec"] != Incomplete || st["gone"] != Skipped || st["none"] != Complete {
+		t.Errorf("type status %v", st)
+	}
+}
+
+// Text output lists uncertain objects apart from the unmanaged ones.
+func TestTextUncertain(t *testing.T) {
+	var b bytes.Buffer
+	u := []Uncertain{{Resource: model.Resource{Type: "t", DisplayName: "vm", Identity: map[string]any{"id": "1"}, Source: "proxmox"}, StateAddress: "t.vm"}}
+	if err := Text(&b, nil, u); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !strings.Contains(out, "No unmanaged resources found.") || !strings.Contains(out, "Uncertain") || !strings.Contains(out, "t.vm") {
+		t.Errorf("text:\n%s", out)
+	}
+}
+
+// Import blocks of scoped objects say where the object lives.
+func TestImportScope(t *testing.T) {
+	var b bytes.Buffer
+	r := model.Resource{Type: "cloudflare_dns_record", DisplayName: "www", ImportID: "z/1", ScopeName: "zone example.com"}
+	if _, err := Import(&b, []model.Resource{r}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "  # in zone example.com\n") {
+		t.Errorf("import:\n%s", b.String())
 	}
 }

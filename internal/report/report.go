@@ -81,7 +81,7 @@ func ParseIgnore(r io.Reader) (*Ignore, error) {
 			if c.attr {
 				c.path = strings.Split(m[2], ".")
 			} else if strings.Contains(m[2], ".") {
-				return nil, fmt.Errorf("line %d: %s: identity keys have no path; attribute paths start with attr.", n, words[len(words)-1])
+				return nil, fmt.Errorf("line %d: %s: identity keys have no path; attribute paths start with \"attr.\"", n, words[len(words)-1])
 			}
 			conds = append([]ignoreCond{c}, conds...)
 			words = words[:len(words)-1]
@@ -187,23 +187,33 @@ func (rule ignoreRule) matchConds(r model.Resource) bool {
 // Summary describes how complete the scan was.
 type Summary struct {
 	States int `json:"states"`
-	// Unverified counts objects matched by ID only: state without
-	// identity could not confirm their account or subscription.
-	Unverified int `json:"unverified_matches"`
-	// UnverifiedMatches lists those objects with the state instance.
-	UnverifiedMatches []UnverifiedMatch `json:"unverified,omitempty"`
+	// UnreadStates are root modules whose state could not be read in full:
+	// their objects may show as unmanaged.
+	UnreadStates []string `json:"unread_states,omitempty"`
 	// ManagedByIdentity counts managed objects matched by the resource
 	// identity in state; the others were matched by attributes.
 	ManagedByIdentity int `json:"managed_by_identity"`
 	Live              int `json:"live"`
-	Managed           int `json:"managed"`
-	Ignored           int `json:"ignored"`
-	Orphans           int `json:"orphans"`
-	Queried           int `json:"queried_types"`
+	// Managed counts objects matched to state, with their account or
+	// cluster confirmed.
+	Managed int `json:"managed"`
+	// Uncertain counts objects matched to state whose account or cluster
+	// state could not confirm (no identity, Proxmox, plugin results marked
+	// unverified): managed, or an object of the same ID elsewhere.
+	Uncertain int `json:"uncertain"`
+	Ignored   int `json:"ignored"`
+	Orphans   int `json:"orphans"`
+	Queried   int `json:"queried_types"`
+	// Complete is false when something was not checked: failed or
+	// truncated listings, unread states, plugin errors.
+	Complete bool `json:"complete"`
 	// Ran counts list block instances that started and types that scans
 	// listed: what was actually checked, unlike Queried, which counts
 	// blocks (a block with for_each = {} runs nothing).
-	Ran      int          `json:"-"`
+	Ran int `json:"-"`
+	// Listed are the types that were queried or scanned, with or without
+	// results.
+	Listed   []string     `json:"-"`
 	Skipped  []tf.Skip    `json:"skipped_types,omitempty"`
 	Failed   []tf.Failure `json:"failed_queries,omitempty"`
 	Warnings []string     `json:"warnings,omitempty"`
@@ -216,33 +226,135 @@ type Summary struct {
 	// ByScope counts them by where they live ("zone example.com", "project
 	// p"), when that is known.
 	ByScope map[string]*TypeCount `json:"by_scope,omitempty"`
+	// Coverage says for every type and scope whether it was listed in full.
+	Coverage []Coverage `json:"coverage"`
 }
 
 type TypeCount struct {
-	Live    int `json:"live"`
-	Managed int `json:"managed"`
-	Ignored int `json:"ignored"`
-	Orphans int `json:"orphans"`
+	Live      int `json:"live"`
+	Managed   int `json:"managed"`
+	Uncertain int `json:"uncertain"`
+	Ignored   int `json:"ignored"`
+	Orphans   int `json:"orphans"`
+}
+
+// Uncertain is a live object matched to state without proof that the state
+// instance is in the same account or cluster.
+type Uncertain struct {
+	model.Resource
+	StateAddress string `json:"state_address"`
+}
+
+// Coverage statuses.
+const (
+	Complete   = "complete"   // listed, nothing failed
+	Incomplete = "incomplete" // a listing failed or was cut off
+	Skipped    = "skipped"    // the type cannot be listed (see skipped_types)
+)
+
+// Coverage is how far one type was listed in one scope. Scope "" stands for
+// the type as a whole: a failure without a scope concerns all of them.
+type Coverage struct {
+	Type   string `json:"type"`
+	Scope  string `json:"scope,omitempty"`
+	Status string `json:"status"`
+	// Reasons are the failure categories (see failed_queries) or the
+	// reason a type was skipped.
+	Reasons []string `json:"reasons,omitempty"`
+	TypeCount
+}
+
+// BuildCoverage combines the counts per type and scope with the types that
+// were listed, skipped and failed. A type that was listed somewhere is not
+// reported as skipped: another root could not list it, but that alone is
+// not a gap. failed must be classified.
+func BuildCoverage(counts map[[2]string]*TypeCount, listed []string, skipped []tf.Skip, failed []tf.Failure) []Coverage {
+	byKey := map[[2]string]*Coverage{}
+	types := map[string]bool{}
+	entry := func(typ, scope string) *Coverage {
+		k := [2]string{typ, scope}
+		if byKey[k] == nil {
+			byKey[k] = &Coverage{Type: typ, Scope: scope, Status: Complete}
+			types[typ] = true
+		}
+		return byKey[k]
+	}
+	for k, c := range counts {
+		entry(k[0], k[1]).TypeCount = *c
+	}
+	for _, t := range listed {
+		if !types[t] {
+			entry(t, "")
+		}
+	}
+	addReason := func(c *Coverage, why string) {
+		c.Status = Incomplete
+		if !slices.Contains(c.Reasons, why) {
+			c.Reasons = append(c.Reasons, why)
+		}
+	}
+	for _, f := range failed {
+		why := f.Category
+		if why == "" {
+			why = tf.FailOther
+		}
+		if f.Scope != "" || !types[f.Type] {
+			addReason(entry(f.Type, f.Scope), why)
+			continue
+		}
+		for _, c := range byKey {
+			if c.Type == f.Type {
+				addReason(c, why)
+			}
+		}
+	}
+	isSkipped := map[string]bool{}
+	for _, sk := range skipped {
+		if types[sk.Type] && !isSkipped[sk.Type] {
+			continue
+		}
+		isSkipped[sk.Type] = true
+		c := entry(sk.Type, "")
+		c.Status = Skipped
+		if !slices.Contains(c.Reasons, sk.Reason) {
+			c.Reasons = append(c.Reasons, sk.Reason)
+		}
+	}
+	out := make([]Coverage, 0, len(byKey))
+	for _, c := range byKey {
+		slices.Sort(c.Reasons)
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Type != out[j].Type {
+			return out[i].Type < out[j].Type
+		}
+		return out[i].Scope < out[j].Scope
+	})
+	return out
+}
+
+// typeStatus folds the coverage of each type over its scopes: incomplete
+// when one scope is.
+func typeStatus(cov []Coverage) map[string]string {
+	out := map[string]string{}
+	for _, c := range cov {
+		if out[c.Type] == "" || c.Status == Incomplete {
+			out[c.Type] = c.Status
+		}
+	}
+	return out
 }
 
 // SummaryTable prints the counts per type, types with orphans first, and
 // the types that were not fully listed.
-// UnverifiedMatch is a live object matched to state without proof that
-// the state instance is in the same account or cluster.
-type UnverifiedMatch struct {
-	Type        string `json:"type"`
-	DisplayName string `json:"display_name"`
-	Identity    string `json:"identity"`
-	Address     string `json:"state_address"`
-}
-
 func SummaryTable(w io.Writer, s Summary) error {
-	if err := countTable(w, "TYPE", s.ByType, s); err != nil {
+	if err := countTable(w, "TYPE", s.ByType, s, typeStatus(s.Coverage)); err != nil {
 		return err
 	}
 	if len(s.ByScope) > 0 {
 		fmt.Fprintln(w)
-		if err := countTable(w, "SCOPE", s.ByScope, s); err != nil {
+		if err := countTable(w, "SCOPE", s.ByScope, s, nil); err != nil {
 			return err
 		}
 	}
@@ -273,56 +385,96 @@ func SummaryTable(w io.Writer, s Summary) error {
 	return nil
 }
 
-// countTable prints counts by type or scope, most unmanaged first.
-func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summary) error {
+// countTable prints counts by type or scope, most unmanaged first, with the
+// coverage of each row when status is given.
+func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summary, status map[string]string) error {
 	keys := slices.Collect(maps.Keys(counts))
 	sort.Slice(keys, func(i, j int) bool {
 		a, b := counts[keys[i]], counts[keys[j]]
 		if a.Orphans != b.Orphans {
 			return a.Orphans > b.Orphans
 		}
+		if a.Uncertain != b.Uncertain {
+			return a.Uncertain > b.Uncertain
+		}
 		return keys[i] < keys[j]
 	})
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, title+"\tLIVE\tMANAGED\tIGNORED\tUNMANAGED\t")
+	fmt.Fprint(tw, title+"\tLIVE\tMANAGED\tUNCERTAIN\tIGNORED\tUNMANAGED\t")
+	if status != nil {
+		fmt.Fprint(tw, "COVERAGE\t")
+	}
+	fmt.Fprintln(tw)
 	for _, k := range keys {
 		c := counts[k]
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t\n", Clean(k), c.Live, c.Managed, c.Ignored, c.Orphans)
-	}
-	fmt.Fprintf(tw, "total\t%d\t%d\t%d\t%d\t\n", s.Live, s.Managed, s.Ignored, s.Orphans)
-	return tw.Flush()
-}
-
-func Text(w io.Writer, orphans []model.Resource) error {
-	if len(orphans) == 0 {
-		_, err := fmt.Fprintln(w, "No unmanaged resources found.")
-		return err
-	}
-	scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	if scoped {
-		fmt.Fprint(tw, "SCOPE\t")
-	}
-	fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE")
-	for _, r := range orphans {
-		if scoped {
-			fmt.Fprintf(tw, "%s\t", Clean(r.ScopeName))
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t", Clean(k), c.Live, c.Managed, c.Uncertain, c.Ignored, c.Orphans)
+		if status != nil {
+			fmt.Fprintf(tw, "%s\t", status[k])
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", Clean(r.Type), Clean(r.DisplayName), Clean(r.IdentityString()), Clean(r.Source))
+		fmt.Fprintln(tw)
+	}
+	fmt.Fprintf(tw, "total\t%d\t%d\t%d\t%d\t%d\t", s.Live, s.Managed, s.Uncertain, s.Ignored, s.Orphans)
+	if status != nil {
+		total := Complete
+		if !s.Complete {
+			total = Incomplete
+		}
+		fmt.Fprintf(tw, "%s\t", total)
+	}
+	fmt.Fprintln(tw)
+	return tw.Flush()
+}
+
+// Text prints the unmanaged objects, then those that may be managed.
+func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
+	if len(orphans) == 0 {
+		fmt.Fprintln(w, "No unmanaged resources found.")
+	} else {
+		scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
+		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		if scoped {
+			fmt.Fprint(tw, "SCOPE\t")
+		}
+		fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE")
+		for _, r := range orphans {
+			if scoped {
+				fmt.Fprintf(tw, "%s\t", Clean(r.ScopeName))
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", Clean(r.Type), Clean(r.DisplayName), Clean(r.IdentityString()), Clean(r.Source))
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if len(uncertain) == 0 {
+		return nil
+	}
+	fmt.Fprintln(w, "\nUncertain (matched to state, but the state cannot confirm the account or cluster):")
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE\tSTATE ADDRESS")
+	for _, u := range uncertain {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", Clean(u.Type), Clean(u.DisplayName), Clean(u.IdentityString()), Clean(u.Source), Clean(u.StateAddress))
 	}
 	return tw.Flush()
 }
 
-func JSON(w io.Writer, orphans []model.Resource, s Summary) error {
+func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summary) error {
 	if orphans == nil {
 		orphans = []model.Resource{}
+	}
+	if uncertain == nil {
+		uncertain = []Uncertain{}
+	}
+	if s.Coverage == nil {
+		s.Coverage = []Coverage{}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(struct {
-		Orphans []model.Resource `json:"orphans"`
-		Summary Summary          `json:"summary"`
-	}{orphans, s})
+		Orphans   []model.Resource `json:"orphans"`
+		Uncertain []Uncertain      `json:"uncertain"`
+		Summary   Summary          `json:"summary"`
+	}{orphans, uncertain, s})
 }
 
 // Import writes Terraform import blocks for the orphans. Feed them to
@@ -374,6 +526,9 @@ func Import(w io.Writer, orphans []model.Resource, reserved map[string]bool) (in
 		}
 		if r.UndeclaredProvider != "" {
 			fmt.Fprintf(&b, "  # the root module does not declare %s: add it to required_providers\n  # (and set provider = <its local name>), or move this block into the module\n", Clean(r.UndeclaredProvider))
+		}
+		if r.ScopeName != "" {
+			fmt.Fprintf(&b, "  # in %s\n", Clean(r.ScopeName))
 		}
 		if r.ImportNote != "" {
 			for _, line := range strings.Split(r.ImportNote, "\n") {

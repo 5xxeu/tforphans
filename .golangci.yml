@@ -1,0 +1,20 @@
+version: "2"
+linters:
+  settings:
+    errcheck:
+      # Output to the terminal and cleanup of temporary files: a failure
+      # there has nothing better to do than the code already does.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - os.Remove
+        - os.RemoveAll
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1003", "-ST1016", "-ST1020", "-ST1021", "-ST1022", "-QF*"]
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]

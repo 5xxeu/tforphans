@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,7 +52,15 @@ type scanOutput struct {
 		Identity map[string]any `json:"identity"`
 	} `json:"orphans"`
 	Summary struct {
-		Live   int `json:"live"`
+		Live     int  `json:"live"`
+		Complete bool `json:"complete"`
+		Coverage []struct {
+			Type    string   `json:"type"`
+			Scope   string   `json:"scope"`
+			Status  string   `json:"status"`
+			Reasons []string `json:"reasons"`
+			Live    int      `json:"live"`
+		} `json:"coverage"`
 		Failed []struct {
 			Address  string `json:"address"`
 			Type     string `json:"type"`
@@ -99,6 +108,16 @@ func TestIntegrationScanCrash(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "crashed") {
 		t.Errorf("stderr:\n%s", stderr)
+	}
+	// Only the crashed zone is incomplete.
+	var cov []string
+	for _, c := range out.Summary.Coverage {
+		if c.Type == "fake_record" {
+			cov = append(cov, fmt.Sprintf("%s %s %v %d", c.Scope, c.Status, c.Reasons, c.Live))
+		}
+	}
+	if want := []string{"zone z1.name complete [] 2", "zone z2.name complete [] 1", "zone z3.name incomplete [crashed] 0", "zone z4.name complete [] 1"}; out.Summary.Complete || !slices.Equal(cov, want) {
+		t.Errorf("coverage %q, want %q", cov, want)
 	}
 	if code, _, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-strict"); code != exitError {
 		t.Errorf("-strict with a crashed zone: exit %d", code)

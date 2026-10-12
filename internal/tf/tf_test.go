@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/5xxeu/tforphans/internal/glob"
+	"github.com/5xxeu/tforphans/internal/proc"
 )
 
 const schemaJSON = `{"provider_schemas": {
@@ -546,6 +547,16 @@ func TestRemoveStale(t *testing.T) {
 	goneOverride := filepath.Join(dir, "zz_tforphans_99999999_override.tf")
 	os.WriteFile(gone, nil, 0o644)
 	os.WriteFile(goneOverride, nil, 0o644)
+	if proc.Alive(99999999) {
+		// The platform cannot tell a dead process: nothing is removed.
+		if err := RemoveStale(dir); err == nil {
+			t.Error("files of a process that may be running removed")
+		}
+		if _, err := os.Stat(gone); err != nil {
+			t.Error(err)
+		}
+		return
+	}
 	if err := RemoveStale(dir); err != nil {
 		t.Fatal(err)
 	}

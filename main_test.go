@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -158,5 +159,30 @@ func TestDedupeUnknownLocation(t *testing.T) {
 	got := dedupe([]model.Resource{a, b})
 	if len(got) != 2 || got[0].Attributes != nil {
 		t.Errorf("got %+v", got)
+	}
+}
+
+// A root that pins a provider -scan can list gets a hint, not a scan: the
+// scan would use credentials from the environment.
+func TestScanHints(t *testing.T) {
+	root := t.TempDir()
+	lock := `provider "registry.terraform.io/cloudflare/cloudflare" {
+  version = "5.0.0"
+  hashes  = ["h1:x"]
+}
+`
+	if err := os.WriteFile(filepath.Join(root, ".terraform.lock.hcl"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := &options{roots: []string{root}}
+	if h := scanHints(o, nil); len(h) != 1 || !strings.Contains(h[0], "-scan cloudflare") {
+		t.Errorf("hints %q", h)
+	}
+	o.scans = []string{"cloudflare"}
+	if h := scanHints(o, nil); len(h) != 0 {
+		t.Errorf("hints while scanning %q", h)
+	}
+	if p := runPlan(o, []string{"a", "b"}); !strings.Contains(p, "terraform query in "+root) || !strings.Contains(p, "2 more root modules") || !strings.Contains(p, "whole account") {
+		t.Errorf("plan %q", p)
 	}
 }

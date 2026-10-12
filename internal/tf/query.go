@@ -21,6 +21,9 @@ import (
 type Failure struct {
 	Address string `json:"address"`
 	Type    string `json:"type"`
+	// Scope is where the failure applies ("zone example.com"); empty when
+	// it concerns the type in every scope.
+	Scope string `json:"scope,omitempty"`
 	// Category groups failures by cause (see Classify); set by Classify.
 	Category string `json:"category,omitempty"`
 	Message  string `json:"message"`
