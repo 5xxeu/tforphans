@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -43,6 +45,25 @@ func TestJunosPlugin(t *testing.T) {
 	code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 examples/plugins/junos.py testdata/junos/missing.json", "-strict"}, &out, &errb)
 	if code != exitError || !bytes.Contains(errb.Bytes(), []byte("cannot read the configuration")) || !bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE")) {
 		t.Errorf("unreadable device: exit %d\n%s", code, errb.String())
+	}
+	// JSON that is not a configuration, or a configuration of a layout the
+	// plugin does not know, is an error line and nothing else: never an
+	// empty or partial device that looks checked.
+	for name, doc := range map[string]string{
+		"rpc-error": `{"rpc-error":{"error-message":"permission denied"}}`,
+		"layout":    `{"configuration":{"policy-options":{"prefix-list":[{"name":"p1"}]},"protocols":[{}]}}`,
+		"name":      `{"configuration":{"security":{"zones":{"security-zone":[{"name":{"x":1}}]}}}}`,
+	} {
+		f := filepath.Join(t.TempDir(), "conf.json")
+		if err := os.WriteFile(f, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+		errb.Reset()
+		code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 examples/plugins/junos.py '" + f + "'", "-strict"}, &out, &errb)
+		if code != exitError || !bytes.Contains(errb.Bytes(), []byte("junos: ")) || !bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE")) || bytes.Contains(out.Bytes(), []byte("p1")) {
+			t.Errorf("%s: exit %d\n%s\n%s", name, code, out.String(), errb.String())
+		}
 	}
 	var types []string
 	for k := range sum["by_type"].(map[string]any) {

@@ -43,8 +43,15 @@ SOURCE = "registry.terraform.io/jeremmfr/junos"
 DEFAULT_INSTANCE = "default"  # the provider's name for the main instance
 
 
+class Shape(Exception):
+    """The input is JSON but not a configuration as Junos prints it."""
+
+
+OUT = []  # printed only when the whole configuration was read
+
+
 def emit(rtype, identity, import_id, name):
-    print(json.dumps({
+    OUT.append(json.dumps({
         "type": rtype,
         "identity": identity,
         "display_name": name,
@@ -58,29 +65,41 @@ def fail(msg):
     print(json.dumps({"error": msg}))
 
 
+def section(node, key):
+    """node[key] as an object; absent is empty, any other type an error."""
+    v = node.get(key)
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise Shape(key)
+    return v
+
+
 def items(node, key):
     """Named list elements of node[key]; Junos JSON uses lists, but one
     element may come as an object."""
-    if not isinstance(node, dict):
-        return []
     v = node.get(key)
+    if v is None:
+        return []
     if isinstance(v, dict):
         v = [v]
-    if not isinstance(v, list):
-        return []
-    return [e for e in v if isinstance(e, dict) and "name" in e]
+    if not isinstance(v, list) or not all(isinstance(e, dict) and "name" in e for e in v):
+        raise Shape(key)
+    return v
 
 
 def name_of(e):
     n = e["name"]
     # Names may come as {"data": "..."} in some releases.
     if isinstance(n, dict):
-        n = n.get("data", "")
+        n = n.get("data")
+    if not isinstance(n, (str, int)) or str(n) == "":
+        raise Shape("name")
     return str(n)
 
 
 def bgp(protocols, instance):
-    for g in items((protocols or {}).get("bgp"), "group"):
+    for g in items(section(protocols, "bgp"), "group"):
         group = name_of(g)
         emit("junos_bgp_group", {"name": group, "routing_instance": instance},
              f"{group}_-_{instance}", f"{group} ({instance})")
@@ -91,7 +110,7 @@ def bgp(protocols, instance):
 
 
 def scan(conf):
-    for i in items(conf.get("interfaces"), "interface"):
+    for i in items(section(conf, "interfaces"), "interface"):
         ifname = name_of(i)
         own = [k for k in i if k not in ("name", "unit") and not k.startswith("@")]
         if own:
@@ -100,11 +119,11 @@ def scan(conf):
             unit = f"{ifname}.{name_of(u)}"
             emit("junos_interface_logical", {"name": unit}, unit, unit)
 
-    bgp(conf.get("protocols"), DEFAULT_INSTANCE)
-    for ri in items(conf.get("routing-instances"), "instance"):
-        bgp(ri.get("protocols"), name_of(ri))
+    bgp(section(conf, "protocols"), DEFAULT_INSTANCE)
+    for ri in items(section(conf, "routing-instances"), "instance"):
+        bgp(section(ri, "protocols"), name_of(ri))
 
-    po = conf.get("policy-options") or {}
+    po = section(conf, "policy-options")
     for p in items(po, "policy-statement"):
         n = name_of(p)
         emit("junos_policyoptions_policy_statement", {"name": n}, n, n)
@@ -112,11 +131,11 @@ def scan(conf):
         n = name_of(p)
         emit("junos_policyoptions_prefix_list", {"name": n}, n, n)
 
-    for z in items((conf.get("security") or {}).get("zones"), "security-zone"):
+    for z in items(section(section(conf, "security"), "zones"), "security-zone"):
         n = name_of(z)
         emit("junos_security_zone", {"name": n}, n, n)
 
-    apps = conf.get("applications") or {}
+    apps = section(conf, "applications")
     for a in items(apps, "application"):
         n = name_of(a)
         emit("junos_application", {"name": n}, n, n)
@@ -159,13 +178,21 @@ def main():
         else:
             fail(f"junos: cannot read the configuration: {type(e).__name__}: {e}")
         return 0
-    conf = data.get("configuration", data) if isinstance(data, dict) else None
+    # "show configuration | display json" always wraps the configuration;
+    # anything else (an rpc-error, another command) is not one.
+    conf = data.get("configuration") if isinstance(data, dict) else None
     if not isinstance(conf, dict):
-        fail("junos: no configuration object in the input")
+        fail("junos: no configuration object in the input (show configuration | display json)")
         return 0
-    scan(conf)
+    try:
+        scan(conf)
+    except Shape as e:
+        # Nothing is printed then: a part of the objects would look like all.
+        fail(f"junos: unexpected configuration layout at {e}")
+        return 0
+    for line in OUT:
+        print(line)
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
