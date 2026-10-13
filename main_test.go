@@ -414,3 +414,80 @@ func TestKeepAttrs(t *testing.T) {
 		t.Errorf("output attributes %v", r.Attributes)
 	}
 }
+
+func TestPresetHints(t *testing.T) {
+	var rs []model.Resource
+	for i := range presetHintMin {
+		rs = append(rs, model.Resource{Type: "proxmox_virtual_environment_vm", Identity: map[string]any{"vm_id": json.Number(fmt.Sprint(9000 + i))}, Attributes: map[string]any{"template": true}})
+	}
+	hints := presetHints(rs, nil)
+	if len(hints) != 1 || !strings.Contains(hints[0], "match -ignore-preset proxmox-templates") {
+		t.Errorf("hints %q", hints)
+	}
+	if hints := presetHints(rs, []string{"proxmox-templates"}); len(hints) != 0 {
+		t.Errorf("applied preset named: %q", hints)
+	}
+	if hints := presetHints(rs[1:], nil); len(hints) != 0 {
+		t.Errorf("below the threshold: %q", hints)
+	}
+}
+
+// TestDefaultPresets: the default presets exist and hide what they are
+// for; -no-default-presets leaves them out.
+func TestDefaultPresets(t *testing.T) {
+	for _, name := range report.DefaultPresets {
+		if _, err := report.Preset(name); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	aws, err := report.Preset("aws-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []model.Resource{
+		{Type: "aws_security_group", Identity: map[string]any{"id": "sg-1"}, Attributes: map[string]any{"name": "default"}},
+		{Type: "aws_default_security_group", Identity: map[string]any{"id": "sg-1"}},
+		{Type: "aws_kms_alias", Identity: map[string]any{"name": "alias/aws/ebs"}},
+	} {
+		if !aws.Match(r) {
+			t.Errorf("%s %v not hidden", r.Type, r.Identity)
+		}
+	}
+	for _, r := range []model.Resource{
+		{Type: "aws_security_group", Identity: map[string]any{"id": "sg-2"}, Attributes: map[string]any{"name": "web"}},
+		{Type: "aws_kms_alias", Identity: map[string]any{"name": "alias/app"}},
+	} {
+		if aws.Match(r) {
+			t.Errorf("%s %v hidden", r.Type, r.Identity)
+		}
+	}
+}
+
+// TestLoadIgnoreDefaults: the default presets apply unless
+// -no-default-presets, and a preset asked for applies either way.
+func TestLoadIgnoreDefaults(t *testing.T) {
+	t.Chdir(t.TempDir())
+	sg := model.Resource{Type: "aws_default_security_group", Identity: map[string]any{"id": "sg-1"}}
+	tmpl := model.Resource{Type: "proxmox_virtual_environment_vm", Identity: map[string]any{"vm_id": json.Number("9000")}, Attributes: map[string]any{"template": true}}
+	for _, c := range []struct {
+		args        []string
+		sg, tmplHid bool
+	}{
+		{nil, true, false},
+		{[]string{"-no-default-presets"}, false, false},
+		{[]string{"-no-default-presets", "-ignore-preset", "aws-system,proxmox-templates"}, true, true},
+		{[]string{"-ignore-preset", "proxmox-templates"}, true, true},
+	} {
+		o, err := parseFlags(append([]string{"-scan", "proxmox"}, c.args...), io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ig, err := loadIgnore(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ig.Match(sg) != c.sg || ig.Match(tmpl) != c.tmplHid {
+			t.Errorf("%v: default SG hidden %v, template hidden %v", c.args, ig.Match(sg), ig.Match(tmpl))
+		}
+	}
+}

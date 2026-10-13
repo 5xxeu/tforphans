@@ -221,7 +221,6 @@ state-roots:
   - teams/platform
 scan: [cloudflare]
 scan-scope: [state]
-ignore-preset: [cloudflare-system]
 exclude-types: [cloudflare_api_token, cloudflare_account_member]
 strict: true
 format: summary
@@ -464,7 +463,27 @@ aws_default_vpc
 google_compute_disk name=pvc-* project=data-prod
 ```
 
-`-ignore-preset gcp-system` adds built-in rules for objects that Google
+Built-in presets for objects the cloud creates on its own, known by marks a
+user cannot give their own objects, are applied by default:
+`aws-system`, `cloudflare-system` and `gcp-system`. What they hide counts as
+ignored, the `plan:` line says they are on, and `-no-default-presets` shows
+those objects again. Presets that go by names or flags anyone can set
+(`gcp-gke-names`, `proxmox-templates`) are applied only with
+`-ignore-preset NAME`; when one of them would hide 5 or more unmanaged
+objects, a note names it (counting only by the fields at hand: rules on
+attributes that were not fetched, such as firewall descriptions, are not
+tried for the note).
+
+`aws-system` hides the default security group of every VPC (AWS creates it,
+and `default` is a reserved group name; it is listed both as
+`aws_default_security_group` and as `aws_security_group`) and the aliases
+of AWS managed keys (`alias/aws/*`). The AWS provider's list resources
+already leave out default VPCs, subnets and network ACLs and service-linked
+roles. AWS managed KMS keys, main route tables and IAM Identity Center roles
+have no such mark and stay; see
+[the preset](internal/report/presets/aws-system.ignore).
+
+`gcp-system` hides objects that Google
 Cloud and GKE create on their own, by marks a user cannot give their own
 objects: GKE nodes and disks by their reserved `goog-` labels, default
 service accounts and App Engine buckets in Google's own domains. See
@@ -488,7 +507,7 @@ service), by exactly those names and descriptions: anyone who can create
 a firewall rule can hide it this way, so it is a separate, explicit choice.
 See [the preset](internal/report/presets/gcp-gke-names.ignore).
 
-`-ignore-preset cloudflare-system` is the same for `-scan cloudflare`; see
+`cloudflare-system` is the same for `-scan cloudflare`; see
 [Cloudflare](#cloudflare) for what it covers. `-ignore-preset
 proxmox-templates` hides Proxmox VM and container templates (by their
 `template` flag); use it where templates are built outside Terraform.
@@ -777,7 +796,7 @@ table), and `-format summary` counts them per zone.
 **Known noise.** Objects Cloudflare creates are left out by fields users
 cannot set (see above), and also the resource library catalog
 (`cloudflare_zero_trust_resource_library_application` with
-`application_source = "cloudflare"`). `-ignore-preset cloudflare-system`
+`application_source = "cloudflare"`). The default preset `cloudflare-system`
 also hides the URL normalization entrypoint ruleset (created by
 `cloudflare_url_normalization_settings`). Reported on purpose, ignore them
 yourself if you accept them: the default virtual network and the Gateway CA
@@ -943,9 +962,9 @@ line, never from a config file a merge request could change.
   generated blocks, the block's own `limit` for yours, 100 if unset) is
   reported as not fully listed, since there may be more; so is one of your
   blocks whose limit is an expression.
-- Some providers list objects they create implicitly (default VPCs, managed
-  roles, auto-created records). Put them in the ignore file, or use a
-  preset (`-ignore-preset gcp-system`).
+- Some providers list objects they create implicitly. The default presets
+  hide those with a reserved mark (see [Ignoring known resources](#ignoring-known-resources));
+  put the rest in the ignore file, or add an opt-in preset.
 - An API that is not enabled in a GCP project fails its queries ("API not
   enabled"). Such listings stay in `failed_queries` and are counted in
   `summary.api_not_enabled`, but they do not make coverage incomplete: a

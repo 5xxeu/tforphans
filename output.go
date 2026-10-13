@@ -42,6 +42,9 @@ func runPlan(o *options, stateDirs []string) string {
 	if n := len(o.plugins); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d plugins", n))
 	}
+	if !o.noDefaultPresets {
+		parts = append(parts, "default ignore presets (objects the cloud creates; -no-default-presets shows them)")
+	}
 	return strings.Join(parts, "; ")
 }
 
@@ -359,6 +362,39 @@ func ignoreHints(orphans []model.Resource) []string {
 		out = append(out, fmt.Sprintf("%d unmanaged %s in %s; if they are expected (created by the service, not by people), this line in the ignore file hides them, and any later ones there: %s %s", len(g.rs), what, g.scope, g.typ, cond))
 		if len(out) == 3 {
 			break
+		}
+	}
+	return out
+}
+
+// presetHintMin is how many unmanaged objects an opt-in preset has to
+// match for a note to name it.
+const presetHintMin = 5
+
+// presetHints names the opt-in presets (by names anyone could choose, so
+// not applied by default) that would hide some of the unmanaged objects:
+// a reader then learns that no ignore file of their own is needed. Only
+// the attributes at hand are looked at; fetching more for a hint (attr.
+// rules of a preset not applied) would slow every run, so the count is a
+// lower bound.
+func presetHints(orphans []model.Resource, applied []string) []string {
+	var out []string
+	for _, name := range report.Presets() {
+		if slices.Contains(report.DefaultPresets, name) || slices.Contains(applied, name) {
+			continue
+		}
+		pr, err := report.Preset(name)
+		if err != nil {
+			continue
+		}
+		n := 0
+		for _, r := range orphans {
+			if pr.Match(r) {
+				n++
+			}
+		}
+		if n >= presetHintMin {
+			out = append(out, fmt.Sprintf("at least %d unmanaged objects match -ignore-preset %s; it hides them by names or flags anyone can set, so it is not applied unless asked for (see the README)", n, name))
 		}
 	}
 	return out

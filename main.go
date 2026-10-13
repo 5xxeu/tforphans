@@ -140,11 +140,13 @@ type options struct {
 	// impliedNoQuery: no root given and none in the current directory, so
 	// only -scan and -plugin run.
 	impliedNoQuery bool
-	strictAPI      bool
-	strictIgnore   glob.List // -strict-ignore
-	terragrunt     bool
-	tgUnits        listFlag // -terragrunt-unit
-	configFile     string   // flags read from this file
+	// noDefaultPresets: report.DefaultPresets are not applied.
+	noDefaultPresets bool
+	strictAPI        bool
+	strictIgnore     glob.List // -strict-ignore
+	terragrunt       bool
+	tgUnits          listFlag // -terragrunt-unit
+	configFile       string   // flags read from this file
 }
 
 // version is set by release builds; go install builds take the module
@@ -212,7 +214,8 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
 	}
 	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...] lines (default "+defaultIgnoreFile+" if present)")
-	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable")
+	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
+	fs.BoolVar(&o.noDefaultPresets, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
 	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
@@ -405,21 +408,36 @@ type exitCode int
 
 func (c exitCode) Error() string { return fmt.Sprintf("exit %d", int(c)) }
 
-func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
+// loadIgnore reads the ignore file and adds the presets asked for and,
+// unless -no-default-presets, the default ones.
+func loadIgnore(o *options) (*report.Ignore, error) {
 	ignorePath, optional := o.ignorePath, false
 	if ignorePath == "" {
 		ignorePath, optional = defaultIgnoreFile, true
 	}
 	ignore, err := report.LoadIgnore(ignorePath, optional)
 	if err != nil {
-		return fmt.Errorf("ignore file: %w", err)
+		return nil, fmt.Errorf("ignore file: %w", err)
 	}
-	for _, p := range o.presets {
+	names := slices.Clone(o.presets)
+	if !o.noDefaultPresets {
+		names = append(names, report.DefaultPresets...)
+	}
+	slices.Sort(names)
+	for _, p := range slices.Compact(names) {
 		pr, err := report.Preset(p)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		ignore.Merge(pr)
+	}
+	return ignore, nil
+}
+
+func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
+	ignore, err := loadIgnore(o)
+	if err != nil {
+		return err
 	}
 	o.ignore = ignore
 
@@ -627,6 +645,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.ByScope = byScope
 	}
 	sortResources(orphans)
+	sum.Notes = append(sum.Notes, presetHints(orphans, o.presets)...)
 	sum.Notes = append(sum.Notes, ignoreHints(orphans)...)
 	slices.SortStableFunc(uncertain, func(a, b report.Uncertain) int { return compareResources(a.Resource, b.Resource) })
 	sum.Live, sum.Orphans = len(live), len(orphans)

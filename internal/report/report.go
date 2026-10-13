@@ -105,6 +105,11 @@ func Presets() []string {
 	return out
 }
 
+// DefaultPresets are applied unless -no-default-presets: they hide only
+// objects known by marks a user cannot give their own (reserved names,
+// labels and domains), or whose hiding does no harm.
+var DefaultPresets = []string{"aws-system", "cloudflare-system", "gcp-system"}
+
 // Preset returns a built-in ignore preset by name.
 func Preset(name string) (*Ignore, error) {
 	data, err := presets.ReadFile("presets/" + name + ".ignore")
