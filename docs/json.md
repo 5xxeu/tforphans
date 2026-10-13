@@ -33,6 +33,9 @@ source), `identity` or the legacy `id`, `confidence` (`confirmed` or
 use `partial_identity`, `no_identity`, `same_lineage_diverged`, or
 `lineage_unknown`.
 
+If any instance marks the legacy ID sensitive, `id` is `"(sensitive)"` and
+`id_sensitive` is `true`.
+
 An owner has `address`, `lineage` and `serial` (omitted when unknown), and
 `sources`, the sorted list of equivalent state reads. Sources name a root
 and workspace as in text output, a redacted `-state` argument, or `-` for

@@ -46,8 +46,19 @@ func (ix *Index) AddSnapshots(snapshots []Snapshot) {
 		key := canonical([]any{s.Lineage, serial, fmt.Sprintf("%x", sha256.Sum256([]byte(canonical(rows))))})
 		if i, ok := ix.snapshotKeys[key]; ok {
 			ix.snapshots[i].Sources = sortedSources(append(ix.snapshots[i].Sources, s.Sources...))
+			sensitive := map[string]bool{}
+			for _, in := range s.Instances {
+				if in.IDSensitive {
+					sensitive[canonical([]string{in.Type, in.Address})] = true
+				}
+			}
+			for j := range ix.snapshots[i].Instances {
+				in := &ix.snapshots[i].Instances[j]
+				in.IDSensitive = in.IDSensitive || sensitive[canonical([]string{in.Type, in.Address})]
+			}
 			continue
 		}
+		s.Instances = slices.Clone(s.Instances)
 		s.Sources = sortedSources(slices.Clone(s.Sources))
 		ix.snapshotKeys[key] = len(ix.snapshots)
 		ix.snapshots = append(ix.snapshots, s)
@@ -73,6 +84,9 @@ func canonical(v any) string {
 
 func objectKey(in Instance) (string, string) {
 	if len(in.Identity) > 0 {
+		if !fullIdentity(in.Identity) {
+			return "identity", canonical([]any{in.Identity, in.Attributes["id"]})
+		}
 		return "identity", canonical(in.Identity)
 	}
 	return "id", canonical(in.Attributes["id"])
@@ -99,13 +113,14 @@ type Owner struct {
 
 // Duplicate describes one object with multiple state owners or addresses.
 type Duplicate struct {
-	Type       string         `json:"type"`
-	Provider   string         `json:"provider"`
-	Identity   map[string]any `json:"identity,omitempty"`
-	ID         any            `json:"id,omitempty"`
-	Confidence string         `json:"confidence"`
-	Reason     string         `json:"reason,omitempty"`
-	Owners     []Owner        `json:"owners"`
+	Type        string         `json:"type"`
+	Provider    string         `json:"provider"`
+	Identity    map[string]any `json:"identity,omitempty"`
+	ID          any            `json:"id,omitempty"`
+	IDSensitive bool           `json:"id_sensitive,omitempty"`
+	Confidence  string         `json:"confidence"`
+	Reason      string         `json:"reason,omitempty"`
+	Owners      []Owner        `json:"owners"`
 }
 
 type objectOwner struct {
@@ -129,6 +144,18 @@ func identityValues(id map[string]any) map[string]string {
 		}
 	}
 	return values
+}
+
+func fullIdentity(id map[string]any) bool {
+	if len(id) == 0 {
+		return false
+	}
+	for _, value := range id {
+		if !knownValue(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func knownValue(v any) bool {
@@ -236,8 +263,14 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 				continue
 			}
 			key := canonical([]string{in.Type, providerFamily(in.Provider), kind, value})
+			if len(in.Identity) > 0 && !fullIdentity(in.Identity) && !knownValue(in.Attributes["id"]) {
+				key = canonical([]any{key, si, in.Address})
+				value = canonical([]any{value, si, in.Address})
+			}
 			addressKey := canonical([]string{key, in.Address})
 			if seen[addressKey] {
+				i := byObject[key]
+				objects[i].instance.IDSensitive = objects[i].instance.IDSensitive || in.IDSensitive
 				continue
 			}
 			seen[addressKey] = true
@@ -251,6 +284,7 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 				objects = append(objects, stateObject{instance: in, known: known, full: len(in.Identity) > 0 && len(known) == len(in.Identity)})
 			}
 			objects[i].owners = append(objects[i].owners, objectOwner{si, in.Address})
+			objects[i].instance.IDSensitive = objects[i].instance.IDSensitive || in.IDSensitive
 		}
 	}
 	// An unknown provider can join an exact object when only one known
@@ -266,6 +300,7 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 			}
 		}
 		if unknown >= 0 && families == 1 {
+			objects[known].instance.IDSensitive = objects[known].instance.IDSensitive || objects[unknown].instance.IDSensitive
 			seen := map[objectOwner]bool{}
 			for _, o := range objects[known].owners {
 				seen[o] = true
@@ -318,7 +353,7 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 			g.values[key] = append(g.values[key], i)
 		}
 	}
-	results := duplicateResults{ix: ix, ownership: map[string]*Duplicate{}, inState: map[string]*Duplicate{}, ownerSets: map[*Duplicate]map[objectOwner]bool{}}
+	var matches [][2]int
 	partialCandidates := map[int]int{}
 	uniqueCandidate := func(i int) int {
 		if j, ok := partialCandidates[i]; ok {
@@ -332,7 +367,7 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 	for i, o := range objects {
 		if len(o.owners) > 1 {
 			if _, reason := objectEquality(o, o); reason != "partial_identity" || uniqueCandidate(i) != -2 {
-				results.add(o, o)
+				matches = append(matches, [2]int{i, i})
 			}
 		}
 		candidates := map[int]bool{}
@@ -375,10 +410,62 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 			}
 		}
 		for j := range candidates {
-			results.add(o, objects[j])
+			if ok, _ := objectEquality(o, objects[j]); ok {
+				matches = append(matches, [2]int{i, j})
+			}
 		}
 	}
+	// Resolve compatible objects before recording any reason groups. A partial
+	// object's self-match and its fuller match must share one report key.
+	parents := make([]int, len(objects))
+	for i := range parents {
+		parents[i] = i
+	}
+	find := func(i int) int {
+		for parents[i] != i {
+			parents[i] = parents[parents[i]]
+			i = parents[i]
+		}
+		return i
+	}
+	for _, pair := range matches {
+		if _, reason := objectEquality(objects[pair[0]], objects[pair[1]]); reason != "partial_identity" {
+			continue
+		}
+		a, b := find(pair[0]), find(pair[1])
+		if preferObject(objects[b], objects[a]) {
+			a, b = b, a
+		}
+		parents[b] = a
+	}
+	for i, o := range objects {
+		if o.instance.IDSensitive {
+			objects[find(i)].instance.IDSensitive = true
+		}
+	}
+	results := duplicateResults{ix: ix, ownership: map[string]*Duplicate{}, inState: map[string]*Duplicate{}, ownerSets: map[*Duplicate]map[objectOwner]bool{}}
+	for _, pair := range matches {
+		a, b := objects[find(pair[0])], objects[find(pair[1])]
+		if preferObject(b, a) {
+			a, b = b, a
+		}
+		in := a.instance
+		in.IDSensitive = in.IDSensitive || b.instance.IDSensitive
+		results.add(objects[pair[0]], objects[pair[1]], in)
+	}
 	return sortedDuplicates(results.ownership), sortedDuplicates(results.inState)
+}
+
+func preferObject(a, b stateObject) bool {
+	if c := identityCompleteness(a, b); c != 0 {
+		return c > 0
+	}
+	if (a.instance.Provider == "") != (b.instance.Provider == "") {
+		return a.instance.Provider != ""
+	}
+	aKind, aValue := objectKey(a.instance)
+	bKind, bValue := objectKey(b.instance)
+	return canonical([]string{aKind, aValue}) < canonical([]string{bKind, bValue})
 }
 
 func objectEquality(a, b stateObject) (bool, string) {
@@ -414,23 +501,13 @@ type duplicateResults struct {
 	ownerSets map[*Duplicate]map[objectOwner]bool
 }
 
-func (r *duplicateResults) add(a, b stateObject) {
+func (r *duplicateResults) add(a, b stateObject, in Instance) {
 	ok, reason := objectEquality(a, b)
 	if !ok {
 		return
 	}
-	// Choose the more complete identity for display and grouping.
-	aKind, aValue := objectKey(a.instance)
-	bKind, bValue := objectKey(b.instance)
-	if len(b.known) > len(a.known) || len(b.known) == len(a.known) &&
-		(b.full && !a.full || b.full == a.full && canonical([]string{bKind, bValue}) < canonical([]string{aKind, aValue})) {
-		a, b = b, a
-	}
-	if a.instance.Provider == "" {
-		a.instance.Provider = b.instance.Provider
-	}
-	kind, value := objectKey(a.instance)
-	object := canonical([]string{a.instance.Type, providerFamily(a.instance.Provider), kind, value})
+	kind, value := objectKey(in)
+	object := canonical([]string{in.Type, providerFamily(in.Provider), kind, value})
 	aStates, aLineages := groupOwners(a.owners, r.ix.snapshots)
 	bStates, bLineages := groupOwners(b.owners, r.ix.snapshots)
 	if reason == "" || reason == "no_identity" {
@@ -438,7 +515,7 @@ func (r *duplicateResults) add(a, b stateObject) {
 			if others := bStates[si]; len(others) > 0 {
 				all := append(slices.Clone(owners), others...)
 				if distinctAddresses(all) > 1 {
-					r.record(r.inState, canonical([]any{object, si, reason}), a.instance, reason, all...)
+					r.record(r.inState, canonical([]any{object, si, reason}), in, reason, all...)
 				}
 			}
 		}
@@ -449,7 +526,7 @@ func (r *duplicateResults) add(a, b stateObject) {
 		}
 		all := append(slices.Clone(owners), bLineages[lineage]...)
 		if distinctStates(all) > 1 {
-			r.record(r.ownership, canonical([]string{object, "same_lineage_diverged", lineage}), a.instance, "same_lineage_diverged", all...)
+			r.record(r.ownership, canonical([]string{object, "same_lineage_diverged", lineage}), in, "same_lineage_diverged", all...)
 		}
 	}
 	for _, sides := range [][2][]objectOwner{{aLineages[""], b.owners}, {bLineages[""], a.owners}} {
@@ -458,7 +535,7 @@ func (r *duplicateResults) add(a, b stateObject) {
 		}
 		all := append(slices.Clone(sides[0]), sides[1]...)
 		if distinctStates(all) > 1 {
-			r.record(r.ownership, canonical([]string{object, "lineage_unknown"}), a.instance, "lineage_unknown", all...)
+			r.record(r.ownership, canonical([]string{object, "lineage_unknown"}), in, "lineage_unknown", all...)
 		}
 	}
 	for _, sides := range [][2]map[string][]objectOwner{{aLineages, bLineages}, {bLineages, aLineages}} {
@@ -468,7 +545,7 @@ func (r *duplicateResults) add(a, b stateObject) {
 		}
 		for lineage, owners := range sides[0] {
 			if lineage != "" && (known > 1 || known == 1 && len(sides[1][lineage]) == 0) {
-				r.record(r.ownership, canonical([]string{object, reason}), a.instance, reason, owners...)
+				r.record(r.ownership, canonical([]string{object, reason}), in, reason, owners...)
 			}
 		}
 	}
@@ -514,6 +591,9 @@ func (r *duplicateResults) record(dst map[string]*Duplicate, key string, in Inst
 		dst[key] = d
 		r.ownerSets[d] = map[objectOwner]bool{}
 	}
+	if len(d.Identity) == 0 && in.IDSensitive {
+		d.IDSensitive = true
+	}
 	for _, o := range owners {
 		s := r.ix.snapshots[o.state]
 		owner := Owner{Address: o.address, Lineage: s.Lineage, Serial: s.Serial, Sources: s.Sources}
@@ -531,6 +611,9 @@ func sortedDuplicates(entries map[string]*Duplicate) []Duplicate {
 	}
 	rows := make([]row, 0, len(entries))
 	for _, d := range entries {
+		if d.IDSensitive {
+			d.ID = "(sensitive)"
+		}
 		slices.SortFunc(d.Owners, compareOwners)
 		rows = append(rows, row{canonical(d), *d})
 	}

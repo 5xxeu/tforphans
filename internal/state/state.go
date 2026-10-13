@@ -4,6 +4,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,9 +27,10 @@ type Instance struct {
 	Address string
 	// Provider is the provider address the instance belongs to, "" when
 	// state does not tell (legacy provider.aws references).
-	Provider   string
-	Identity   map[string]any
-	Attributes map[string]any
+	Provider    string
+	Identity    map[string]any
+	Attributes  map[string]any
+	IDSensitive bool
 }
 
 type rawState struct {
@@ -42,9 +44,10 @@ type rawState struct {
 		Name      string `json:"name"`
 		Provider  string `json:"provider"`
 		Instances []struct {
-			IndexKey   any            `json:"index_key"`
-			Identity   map[string]any `json:"identity"`
-			Attributes map[string]any `json:"attributes"`
+			IndexKey            any            `json:"index_key"`
+			Identity            map[string]any `json:"identity"`
+			Attributes          map[string]any `json:"attributes"`
+			SensitiveAttributes any            `json:"sensitive_attributes"`
 		} `json:"instances"`
 	} `json:"resources"`
 }
@@ -87,10 +90,69 @@ func ParseSnapshot(data []byte, source string) (Snapshot, error) {
 			default:
 				a += fmt.Sprintf("[%v]", k)
 			}
-			out = append(out, Instance{Type: r.Type, Address: a, Provider: providerAddress(r.Provider), Identity: in.Identity, Attributes: in.Attributes})
+			out = append(out, Instance{Type: r.Type, Address: a, Provider: providerAddress(r.Provider), Identity: in.Identity, Attributes: in.Attributes, IDSensitive: sensitiveID(in.SensitiveAttributes)})
 		}
 	}
 	return Snapshot{Lineage: st.Lineage, Serial: st.Serial, Instances: out, Sources: []string{source}}, nil
+}
+
+// sensitiveID accepts attribute paths and cty get_attr/index paths. Unknown
+// path encodings must not allow a potentially sensitive ID into reports.
+func sensitiveID(value any) bool {
+	if value == nil {
+		return false
+	}
+	paths, ok := value.([]any)
+	if !ok {
+		return true
+	}
+	for _, value := range paths {
+		path, ok := value.([]any)
+		if !ok || len(path) == 0 {
+			return true
+		}
+		attribute := ""
+		for i, value := range path {
+			switch step := value.(type) {
+			case string:
+				if i == 0 {
+					attribute = step
+				}
+			case map[string]any:
+				switch step["type"] {
+				case "get_attr":
+					name, ok := step["value"].(string)
+					if !ok || name == "" {
+						return true
+					}
+					if i == 0 {
+						attribute = name
+					}
+				case "index":
+					if i == 0 {
+						return true
+					}
+					switch step["value"].(type) {
+					case string, json.Number:
+					default:
+						return true
+					}
+				default:
+					return true
+				}
+			case json.Number:
+				if i == 0 {
+					return true
+				}
+			default:
+				return true
+			}
+		}
+		if attribute == "" || attribute == "id" {
+			return true
+		}
+	}
+	return false
 }
 
 // providerAddress extracts the provider address from a state reference
@@ -281,7 +343,8 @@ func ParseShow(data []byte) ([]Instance, error) {
 	walk = func(m showModule) {
 		for _, r := range m.Resources {
 			if r.Mode == "managed" {
-				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values})
+				sensitive, _ := r.SensitiveValues["id"].(bool)
+				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values, IDSensitive: sensitive})
 			}
 		}
 		for _, c := range m.ChildModules {
@@ -294,12 +357,13 @@ func ParseShow(data []byte) ([]Instance, error) {
 
 type showModule struct {
 	Resources []struct {
-		Address      string         `json:"address"`
-		Mode         string         `json:"mode"`
-		Type         string         `json:"type"`
-		ProviderName string         `json:"provider_name"`
-		Values       map[string]any `json:"values"`
-		Identity     map[string]any `json:"identity"`
+		Address         string         `json:"address"`
+		Mode            string         `json:"mode"`
+		Type            string         `json:"type"`
+		ProviderName    string         `json:"provider_name"`
+		Values          map[string]any `json:"values"`
+		Identity        map[string]any `json:"identity"`
+		SensitiveValues map[string]any `json:"sensitive_values"`
 	} `json:"resources"`
 	ChildModules []showModule `json:"child_modules"`
 }
