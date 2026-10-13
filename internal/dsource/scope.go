@@ -129,6 +129,7 @@ func failureScopes(failed []tf.Failure, all []block, names map[string]map[string
 			continue
 		}
 		if id, err := strconv.Unquote(strings.TrimSuffix(key, "]")); err == nil {
+			id = b.scopeID(id)
 			f.Scope = scopeLabel(b.scope, id, names[b.parent][id])
 		}
 	}

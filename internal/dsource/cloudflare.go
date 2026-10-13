@@ -37,6 +37,14 @@ var Cloudflare = Adapter{
 		"cloudflare_zero_trust_device_custom_profile":    {"cloudflare_device_settings_policy"},
 	},
 	Keep: cloudflareKeep,
+	// The provider cannot list a zone whose records have data of
+	// different shapes (data.flags is a number for CAA and a string for
+	// NAPTR: cloudflare/terraform-provider-cloudflare#5581); such a zone is
+	// read again one record type at a time.
+	Split: map[string]Split{"cloudflare_dns_records": {Attr: "type", Values: []string{
+		"A", "AAAA", "CAA", "CERT", "CNAME", "DNSKEY", "DS", "HTTPS", "LOC", "MX", "NAPTR",
+		"NS", "OPENPGPKEY", "PTR", "SMIMEA", "SRV", "SSHFP", "SVCB", "TLSA", "TXT", "URI",
+	}}},
 	// Data sources taking both account_id and zone_id usually serve one of
 	// them; the other fails in the provider before any request.
 	NotApplicable: func(message string) bool {

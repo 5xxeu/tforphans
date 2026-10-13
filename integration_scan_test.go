@@ -124,6 +124,75 @@ func TestIntegrationScanCrash(t *testing.T) {
 	}
 }
 
+// TestIntegrationScanSplit crashes the provider on one zone's records unless
+// they are read one type at a time (Cloudflare's mixed record data shapes):
+// the zone is read again per type, and only a type that still crashes is
+// a gap.
+func TestIntegrationScanSplit(t *testing.T) {
+	root := scanSetup(t)
+	t.Chdir(root)
+	split := fakeAdapter
+	split.Split = map[string]dsource.Split{"fake_records": {Attr: "type"}}
+	sources["fake"] = split
+	dir := filepath.Join(os.Getenv("FAKE_DIR"), "record", "z3")
+	write(t, filepath.Join(dir, "r6"), "CAA")
+	write(t, filepath.Join(dir, "r7"), "NAPTR")
+	t.Setenv("FAKE_MIXED", "z3")
+
+	all := []string{"z1", "z1/r1", "z1/r2", "z2", "z2/r3", "z3", "z3/r4", "z3/r6", "z3/r7", "z4", "z4/r5"}
+	code, out, stderr := scanJSON(t)
+	if got := importIDs(out); code != exitOrphans || !slices.Equal(got, all) || len(out.Summary.Failed) != 0 || !out.Summary.Complete {
+		t.Errorf("exit %d, orphans %v, want %v, failed %+v\n%s", code, got, all, out.Summary.Failed, stderr)
+	}
+	// The only zone read.
+	code, out, stderr = scanJSON(t, "-scan-scope", "zone_id=z3")
+	if got := importIDs(out); code != exitOrphans || !slices.Equal(got, []string{"z3", "z3/r4", "z3/r6", "z3/r7"}) || len(out.Summary.Failed) != 0 || !out.Summary.Complete {
+		t.Errorf("one zone: exit %d, orphans %v, failed %+v\n%s", code, got, out.Summary.Failed, stderr)
+	}
+
+	// A type that crashes on its own is the only gap.
+	t.Setenv("FAKE_PANIC", "record:z3:NAPTR")
+	code, out, stderr = scanJSON(t)
+	want := slices.DeleteFunc(slices.Clone(all), func(s string) bool { return s == "z3/r7" })
+	if got := importIDs(out); code != exitOrphans || !slices.Equal(got, want) {
+		t.Errorf("exit %d, orphans %v, want %v\n%s", code, got, want, stderr)
+	}
+	if f := out.Summary.Failed; len(f) != 1 || f[0].Address != `data.fake_records.by_zone_id_by_type["z3/NAPTR"]` || f[0].Category != "crashed" || !strings.HasPrefix(f[0].Message, "type NAPTR: crashed") {
+		t.Errorf("failed %+v", f)
+	}
+	recordCoverage := func(out scanOutput) []string {
+		var cov []string
+		for _, c := range out.Summary.Coverage {
+			if c.Type == "fake_record" {
+				cov = append(cov, fmt.Sprintf("%s %s %d", c.Scope, c.Status, c.Live))
+			}
+		}
+		return cov
+	}
+	if cov, want := recordCoverage(out), []string{"zone z1.name complete 2", "zone z2.name complete 1", "zone z3.name incomplete 2", "zone z4.name complete 1"}; out.Summary.Complete || !slices.Equal(cov, want) {
+		t.Errorf("coverage %q, want %q", cov, want)
+	}
+
+	// Every type of the zone crashing costs that zone only.
+	t.Setenv("FAKE_PANIC", "record:z3")
+	code, out, stderr = scanJSON(t)
+	want = slices.DeleteFunc(slices.Clone(all), func(s string) bool { return strings.HasPrefix(s, "z3/") })
+	if got := importIDs(out); code != exitOrphans || !slices.Equal(got, want) {
+		t.Errorf("all types: exit %d, orphans %v, want %v\n%s", code, got, want, stderr)
+	}
+	var addrs []string
+	for _, f := range out.Summary.Failed {
+		addrs = append(addrs, f.Address)
+	}
+	slices.Sort(addrs)
+	if wantA := []string{`data.fake_records.by_zone_id_by_type["z3/A"]`, `data.fake_records.by_zone_id_by_type["z3/CAA"]`, `data.fake_records.by_zone_id_by_type["z3/NAPTR"]`}; !slices.Equal(addrs, wantA) {
+		t.Errorf("all types: failed %q, want %q", addrs, wantA)
+	}
+	if cov, want := recordCoverage(out), []string{"zone z1.name complete 2", "zone z2.name complete 1", "zone z3.name incomplete 0", "zone z4.name complete 1"}; out.Summary.Complete || !slices.Equal(cov, want) {
+		t.Errorf("all types: coverage %q, want %q", cov, want)
+	}
+}
+
 // TestIntegrationScanScope limits the scan to some zones, by ID or name,
 // or to the zones of the states read.
 func TestIntegrationScanScope(t *testing.T) {

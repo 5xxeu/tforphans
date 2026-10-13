@@ -218,7 +218,11 @@ func (t *thing) List(ctx context.Context, req list.ListRequest, stream *list.Lis
 // plural implements the data sources fake_zones (a file per zone in
 // $FAKE_DIR/zone) and fake_records (files in $FAKE_DIR/record/<zone_id>),
 // shaped like cloudflare 5.x: result[] of objects with an id.
-// FAKE_PANIC=record:<zone> crashes the provider reading that zone's records.
+// FAKE_PANIC=record:<zone> crashes the provider reading that zone's records,
+// record:<zone>:<type> only when reading that type. A record's type is the
+// content of its file ("A" when empty). FAKE_MIXED=<zone> crashes reading
+// that zone's records unless a type is given, like Cloudflare's
+// "inconsistent list element types".
 type plural struct{ kind string }
 
 var itemType = map[string]attr.Type{"id": types.StringType, "name": types.StringType}
@@ -236,18 +240,23 @@ func (p *plural) Schema(_ context.Context, _ datasource.SchemaRequest, resp *dat
 	}
 	if p.kind == "record" {
 		attrs["zone_id"] = dsschema.StringAttribute{Optional: true}
+		attrs["type"] = dsschema.StringAttribute{Optional: true, Description: "Record type.\nAvailable values: \"A\", \"CAA\", \"NAPTR\"."}
 	}
 	resp.Schema = dsschema.Schema{Attributes: attrs}
 }
 
 func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	dir := filepath.Join(os.Getenv("FAKE_DIR"), p.kind)
-	var zone types.String
+	var zone, typ types.String
 	if p.kind == "record" {
 		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("zone_id"), &zone)...)
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("type"), &typ)...)
 		dir = filepath.Join(dir, zone.ValueString())
-		if os.Getenv("FAKE_PANIC") == "record:"+zone.ValueString() {
+		if v := os.Getenv("FAKE_PANIC"); v == "record:"+zone.ValueString() || v == "record:"+zone.ValueString()+":"+typ.ValueString() {
 			panic("fake provider crash")
+		}
+		if os.Getenv("FAKE_MIXED") == zone.ValueString() && typ.IsNull() {
+			panic("inconsistent list element types")
 		}
 	}
 	// FAKE_FAIL=<kind>:<message> makes reading that data source fail.
@@ -258,6 +267,16 @@ func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *dat
 	entries, _ := os.ReadDir(dir)
 	var items []attr.Value
 	for _, e := range entries {
+		if p.kind == "record" && !typ.IsNull() {
+			b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+			t := strings.TrimSpace(string(b))
+			if t == "" {
+				t = "A"
+			}
+			if t != typ.ValueString() {
+				continue
+			}
+		}
 		items = append(items, types.ObjectValueMust(itemType, map[string]attr.Value{
 			"id": types.StringValue(e.Name()), "name": types.StringValue(e.Name() + ".name"),
 		}))
@@ -266,5 +285,6 @@ func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *dat
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("result"), list)...)
 	if p.kind == "record" {
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("zone_id"), zone)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("type"), typ)...)
 	}
 }

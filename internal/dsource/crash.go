@@ -185,13 +185,38 @@ func isolateInstances(b block, parents []block, why string, probe prober) (*bloc
 	if err != nil {
 		return nil, nil, err
 	}
-	keys = slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(b.exclude, k) })
+	if b.split != nil {
+		var pairs []string
+		for _, k := range keys {
+			for _, v := range b.split.values {
+				if p := k + "/" + v; len(b.pairs) == 0 || slices.Contains(b.pairs, p) {
+					pairs = append(pairs, p)
+				}
+			}
+		}
+		keys = pairs
+	}
+	keys = slices.DeleteFunc(keys, func(k string) bool {
+		return slices.Contains(b.exclude, k) || slices.Contains(b.exclude, b.scopeID(k))
+	})
+	if b.split != nil && len(keys) > 0 {
+		// A split block reads only some zones: its failure is theirs, pair
+		// by pair, not the whole data source's.
+		whole = nil
+		for _, k := range keys {
+			whole = append(whole, failure{block: b.addr(), address: fmt.Sprintf("%s[%q]", b.addr(), k), message: why})
+		}
+	}
 	if len(keys) < 2 {
 		return nil, whole, nil
 	}
 	only := func(ks []string) block {
 		c := b
-		c.only = ks
+		if b.split != nil {
+			c.pairs = ks
+		} else {
+			c.only = ks
+		}
 		return c
 	}
 	bad, err := bisect(keys, func(ks []string) (bool, error) {
