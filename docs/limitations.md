@@ -33,8 +33,9 @@
   hashicorp/github/integrations/github). Unknown providers cannot distinguish
   provider families.
 - Equivalent snapshots merge only when lineage, serial and normalized managed
-  content match; unknown lineage snapshots merge only with other unknown
-  lineage snapshots with identical content. Formatting, unrelated attributes
+  content match; snapshots without a lineage (`-refresh`) merge only when the
+  same source was read again, since copied roots with separate states can
+  hold identical content. Formatting, unrelated attributes
   and metadata do not affect equivalence. Changed addresses do affect it.
   Copies with the same lineage but diverged serial or content are possible
   duplicates (`same_lineage_diverged`), not confirmed independent ownership.

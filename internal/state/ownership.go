@@ -44,6 +44,12 @@ func (ix *Index) AddSnapshots(snapshots []Snapshot) {
 			serial = fmt.Sprint(*s.Serial)
 		}
 		key := canonical([]any{s.Lineage, serial, fmt.Sprintf("%x", sha256.Sum256([]byte(canonical(rows))))})
+		if s.Lineage == "" {
+			// Without a lineage, equal content proves nothing: copied roots
+			// with separate states look the same. Only a repeated read of
+			// the same source merges.
+			key = canonical([]any{key, sortedSources(slices.Clone(s.Sources))})
+		}
 		if i, ok := ix.snapshotKeys[key]; ok {
 			ix.snapshots[i].Sources = sortedSources(append(ix.snapshots[i].Sources, s.Sources...))
 			// Equivalent identities can still carry different legacy IDs.

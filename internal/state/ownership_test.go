@@ -117,21 +117,34 @@ func TestUnknownSnapshotsAndSerials(t *testing.T) {
 	in := ownershipInstance("google_compute_disk.a", map[string]any{"id": "disk"})
 	ix := NewIndex()
 	a := ownershipSnapshot("", "a", 1, in)
-	b := ownershipSnapshot("", "b", 2, in)
-	ix.AddSnapshots([]Snapshot{a, b})
+	ix.AddSnapshots([]Snapshot{a, a})
 	if len(ix.snapshots) != 1 {
-		t.Fatal("unknown lineage equivalent content was not merged")
+		t.Fatal("a repeated read of one source was not merged")
 	}
+	own, _ := ix.Duplicates()
+	if len(own) != 0 {
+		t.Fatalf("one source read twice: %+v", own)
+	}
+	// Copied roots with separate states: same address and content, no lineage.
+	ix.AddSnapshots([]Snapshot{ownershipSnapshot("", "b", 2, in)})
+	if len(ix.snapshots) != 2 {
+		t.Fatal("unknown lineage snapshots of different sources were merged")
+	}
+	own, _ = ix.Duplicates()
+	if len(own) != 1 || own[0].Reason != "lineage_unknown" || len(own[0].Owners) != 2 {
+		t.Fatalf("separate unknown lineage states: %+v", own)
+	}
+	ix = NewIndex()
 	c := ownershipSnapshot("known", "known", 0, in)
 	d := c
 	d.Serial, d.Sources = nil, []string{"unknown-serial"}
 	ix.AddSnapshots([]Snapshot{c, d})
-	if len(ix.snapshots) != 3 {
+	if len(ix.snapshots) != 2 {
 		t.Fatal("serial zero and unknown were merged")
 	}
-	own, _ := ix.Duplicates()
-	if len(own) != 2 {
-		t.Fatalf("unknown and diverged: %+v", own)
+	own, _ = ix.Duplicates()
+	if len(own) != 1 || own[0].Reason != "same_lineage_diverged" {
+		t.Fatalf("diverged: %+v", own)
 	}
 }
 

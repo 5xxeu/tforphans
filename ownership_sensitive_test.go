@@ -55,6 +55,10 @@ func TestSensitiveOwnershipOutputs(t *testing.T) {
 						copy.Instances = slices.Clone(sensitive.Instances)
 						copy.Instances[0].IDSensitive = false
 						copy.Sources = []string{"equivalent"}
+						if c.show {
+							// Without a lineage only a repeated read of one source merges.
+							copy.Sources = sensitive.Sources
+						}
 						snapshots = append([]state.Snapshot{copy}, snapshots...)
 					}
 					if reverse {
