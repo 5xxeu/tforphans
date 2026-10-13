@@ -4,6 +4,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,13 +27,16 @@ type Instance struct {
 	Address string
 	// Provider is the provider address the instance belongs to, "" when
 	// state does not tell (legacy provider.aws references).
-	Provider   string
-	Identity   map[string]any
-	Attributes map[string]any
+	Provider    string
+	Identity    map[string]any
+	Attributes  map[string]any
+	IDSensitive bool
 }
 
 type rawState struct {
-	Version   int `json:"version"`
+	Version   int    `json:"version"`
+	Lineage   string `json:"lineage"`
+	Serial    *int64 `json:"serial"`
 	Resources []struct {
 		Module    string `json:"module"`
 		Mode      string `json:"mode"`
@@ -40,9 +44,10 @@ type rawState struct {
 		Name      string `json:"name"`
 		Provider  string `json:"provider"`
 		Instances []struct {
-			IndexKey   any            `json:"index_key"`
-			Identity   map[string]any `json:"identity"`
-			Attributes map[string]any `json:"attributes"`
+			IndexKey            any            `json:"index_key"`
+			Identity            map[string]any `json:"identity"`
+			Attributes          map[string]any `json:"attributes"`
+			SensitiveAttributes any            `json:"sensitive_attributes"`
 		} `json:"instances"`
 	} `json:"resources"`
 }
@@ -51,15 +56,21 @@ type rawState struct {
 // and returned by `terraform state pull`). Data sources are skipped. Empty
 // input is an empty state.
 func Parse(data []byte) ([]Instance, error) {
+	s, err := ParseSnapshot(data, "")
+	return s.Instances, err
+}
+
+// ParseSnapshot reads a raw state and retains its provenance.
+func ParseSnapshot(data []byte, source string) (Snapshot, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil, nil
+		return Snapshot{Sources: []string{source}}, nil
 	}
 	var st rawState
 	if err := model.DecodeJSON(data, &st); err != nil {
-		return nil, fmt.Errorf("decode state: %w", err)
+		return Snapshot{}, fmt.Errorf("decode state: %w", err)
 	}
 	if st.Version != 4 {
-		return nil, fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)
+		return Snapshot{}, fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)
 	}
 	var out []Instance
 	for _, r := range st.Resources {
@@ -79,10 +90,91 @@ func Parse(data []byte) ([]Instance, error) {
 			default:
 				a += fmt.Sprintf("[%v]", k)
 			}
-			out = append(out, Instance{Type: r.Type, Address: a, Provider: providerAddress(r.Provider), Identity: in.Identity, Attributes: in.Attributes})
+			out = append(out, Instance{Type: r.Type, Address: a, Provider: providerAddress(r.Provider), Identity: in.Identity, Attributes: in.Attributes, IDSensitive: sensitiveID(in.SensitiveAttributes)})
 		}
 	}
-	return out, nil
+	return Snapshot{Lineage: st.Lineage, Serial: st.Serial, Instances: out, Sources: []string{source}}, nil
+}
+
+// sensitiveID accepts attribute paths and cty get_attr/index paths. Unknown
+// path encodings must not allow a potentially sensitive ID into reports.
+func sensitiveID(value any) bool {
+	if value == nil {
+		return false
+	}
+	paths, ok := value.([]any)
+	if !ok {
+		return true
+	}
+	for _, value := range paths {
+		path, ok := value.([]any)
+		if !ok || len(path) == 0 {
+			return true
+		}
+		attribute := ""
+		for i, value := range path {
+			switch step := value.(type) {
+			case string:
+				if i == 0 {
+					attribute = step
+				}
+			case map[string]any:
+				switch step["type"] {
+				case "get_attr":
+					name, ok := step["value"].(string)
+					if !ok || name == "" {
+						return true
+					}
+					if i == 0 {
+						attribute = name
+					}
+				case "index":
+					if i == 0 {
+						return true
+					}
+					switch step["value"].(type) {
+					case string, json.Number:
+					default:
+						return true
+					}
+				default:
+					return true
+				}
+			case json.Number:
+				if i == 0 {
+					return true
+				}
+			default:
+				return true
+			}
+		}
+		if attribute == "" || attribute == "id" {
+			return true
+		}
+	}
+	return false
+}
+
+// sensitiveValue reports whether a sensitive_values entry marks any part of
+// the value. Unknown encodings count as sensitive.
+func sensitiveValue(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case []any:
+		return slices.ContainsFunc(v, sensitiveValue)
+	case map[string]any:
+		for _, x := range v {
+			if sensitiveValue(x) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 // providerAddress extracts the provider address from a state reference
@@ -273,7 +365,7 @@ func ParseShow(data []byte) ([]Instance, error) {
 	walk = func(m showModule) {
 		for _, r := range m.Resources {
 			if r.Mode == "managed" {
-				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values})
+				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values, IDSensitive: sensitiveValue(r.SensitiveValues["id"])})
 			}
 		}
 		for _, c := range m.ChildModules {
@@ -286,23 +378,26 @@ func ParseShow(data []byte) ([]Instance, error) {
 
 type showModule struct {
 	Resources []struct {
-		Address      string         `json:"address"`
-		Mode         string         `json:"mode"`
-		Type         string         `json:"type"`
-		ProviderName string         `json:"provider_name"`
-		Values       map[string]any `json:"values"`
-		Identity     map[string]any `json:"identity"`
+		Address         string         `json:"address"`
+		Mode            string         `json:"mode"`
+		Type            string         `json:"type"`
+		ProviderName    string         `json:"provider_name"`
+		Values          map[string]any `json:"values"`
+		Identity        map[string]any `json:"identity"`
+		SensitiveValues map[string]any `json:"sensitive_values"`
 	} `json:"resources"`
 	ChildModules []showModule `json:"child_modules"`
 }
 
 // Index looks up state instances by type and attribute values.
 type Index struct {
-	byValue    map[string][]*Instance // type \x00 key \x00 value
-	count      int
-	noIdentity int
-	owned      map[string][]ownedBy // type \x00 owned-object key
-	root       map[string]bool      // resource addresses in root modules
+	byValue      map[string][]*Instance // type \x00 key \x00 value
+	count        int
+	noIdentity   int
+	owned        map[string][]ownedBy // type \x00 owned-object key
+	snapshots    []Snapshot
+	snapshotKeys map[string]int
+	root         map[string]bool // resource addresses in root modules
 }
 
 func NewIndex() *Index {

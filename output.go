@@ -11,6 +11,7 @@ import (
 	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
 
@@ -160,6 +161,7 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		}
 	}
 	printFailed(w, o, s.Failed)
+	printOwnership(w, s.Ownership, s.InState)
 	for _, msg := range s.Warnings {
 		fmt.Fprintln(w, "warning:", report.Clean(msg))
 	}
@@ -398,4 +400,41 @@ func presetHints(orphans []model.Resource, applied []string) []string {
 		}
 	}
 	return out
+}
+
+// printOwnership limits the warning to eight objects; JSON keeps every owner.
+func printOwnership(w io.Writer, ownership, inState []state.Duplicate) {
+	if len(ownership)+len(inState) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "warning: duplicate state ownership:")
+	entries := slices.Concat(ownership, inState)
+	for i, d := range entries {
+		if i == 8 {
+			fmt.Fprintf(w, "  and %d more\n", len(entries)-i)
+			break
+		}
+		what := "duplicate ownership"
+		if i >= len(ownership) {
+			what = "duplicate in state"
+		}
+		identity := model.Resource{Identity: d.Identity}.IdentityString()
+		if len(d.Identity) == 0 {
+			identity = fmt.Sprintf("id=%v", d.ID)
+		}
+		why := ""
+		if d.Reason != "" {
+			why = " (" + strings.ReplaceAll(d.Reason, "_", " ") + ")"
+		}
+		var owners []string
+		for _, owner := range d.Owners {
+			where := strings.Join(owner.Sources, ", ")
+			if owner.Serial != nil {
+				where += fmt.Sprintf("; serial %d", *owner.Serial)
+			}
+			owners = append(owners, owner.Address+" in "+where)
+		}
+		fmt.Fprintf(w, "  %s %s%s: %s %s: %s\n", d.Confidence, what, why, report.Clean(d.Type), report.Clean(identity), report.Clean(strings.Join(owners, "; ")))
+	}
+	fmt.Fprintln(w, "  use -format json for all objects and their state sources")
 }

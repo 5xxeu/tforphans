@@ -43,14 +43,14 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	if o.noQuery {
 		// Only the state is needed: no provider schemas or query files.
-		insts, n, err := pullRoot(ctx, o, root)
+		snapshots, n, err := pullRoot(ctx, o, root)
 		if err != nil {
 			if uninitialized(err) {
 				return nil, nil
 			}
 			return nil, err
 		}
-		idx.Add(insts)
+		idx.AddSnapshots(snapshots)
 		sum.States += n
 		return nil, nil
 	}
@@ -88,14 +88,14 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		return nil, nil
 	}
 
-	insts, n, err := pullRoot(ctx, o, root)
+	snapshots, n, err := pullRoot(ctx, o, root)
 	if err != nil {
 		if uninitialized(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	idx.Add(insts)
+	idx.AddSnapshots(snapshots)
 	sum.States += n
 
 	// The user's own list blocks run too, even when nothing is generated.

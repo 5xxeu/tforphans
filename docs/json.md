@@ -12,7 +12,8 @@ format it does not know; new fields do not change it.
   `state_address`, the state instance it matched.
 - `summary`: counters (`live`, `managed`, `managed_by_identity`,
   `uncertain`, `ignored`, `orphans`, `states`, `queried_types`,
-  `api_not_enabled`, `strict_ignored`), `complete`, `unread_states`
+  `api_not_enabled`, `strict_ignored`, `duplicate_ownership`,
+  `possible_duplicate_ownership`, `duplicate_in_state`), `complete`, `unread_states`
   (`[{root, error}]`), `failed_queries` (`address`, `type`, `scope`,
   `root`, `category`, `message`), `skipped_types` (`type`, `reason`,
   `root`, `excluded`: left out on purpose or without any listing),
@@ -21,6 +22,32 @@ format it does not know; new fields do not change it.
   `status` complete/incomplete/skipped, `reasons`, `live`).
 
 Empty lists and zero counters marked above as optional may be left out.
+
+## Duplicate state ownership
+
+The optional top-level arrays `duplicate_ownership` and `duplicate_in_state`
+contain one entry per object and confidence/reason group (within one state
+for `duplicate_in_state`). Each entry has `type`, `provider` (normalized provider
+source), `identity` or the legacy `id`, `confidence` (`confirmed` or
+`possible`), and `owners`. Confirmed entries omit `reason`; possible ones
+use `partial_identity`, `no_identity`, `same_lineage_diverged`, or
+`lineage_unknown`.
+
+If any instance marks the legacy ID sensitive, `id` is `"(sensitive)"` and
+`id_sensitive` is `true`.
+
+An owner has `address`, `lineage` and `serial` (omitted when unknown), and
+`sources`, the sorted list of equivalent state reads. Sources name a root
+and workspace as in text output, a redacted `-state` argument, or `-` for
+stdin. A serial of zero is known and is included. Several addresses within
+one state can appear in a single ownership entry without multiplying the
+object count. Legacy ID matches within one state have confidence `possible`
+and reason `no_identity`, but still count as `duplicate_in_state`.
+
+The summary adds `duplicate_ownership` (confirmed objects),
+`possible_duplicate_ownership`, and `duplicate_in_state` counters, including
+zeros. Ownership warnings do not change `summary.complete`, which describes
+listing coverage. The schema stays at version `1`.
 
 ## Coverage rows and orphan fields
 

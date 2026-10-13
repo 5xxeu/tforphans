@@ -16,6 +16,13 @@ For every root module directory:
    some backends (S3) write an empty state. `-current-workspace` skips the
    list and reads only the selected workspace.
 
+States retain their lineage, serial and source as snapshots. Equivalent
+snapshots merge their source lists before analysis. Indexed identities then
+find objects owned by several logical states and duplicate addresses within
+one state; incomplete identity or lineage makes ownership possible rather
+than confirmed. These are warnings, separate from live resource matching;
+`-strict-ownership` can fail confirmed ownership and duplicates within a state.
+
 Every listed resource is then compared by
 [resource identity](https://developer.hashicorp.com/terraform/plugin/framework/resources/identity)
 with all states that were read: the roots' own states plus any `-state`.
