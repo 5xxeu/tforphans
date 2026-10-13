@@ -620,17 +620,18 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			sum.APIOff++
 		}
 	}
+	// A skip that -strict-ignore lets pass says so in skipped_types too.
+	for i, sk := range sum.Skipped {
+		if !sk.Excluded && o.strictIgnore.Match(sk.Type) {
+			sum.Skipped[i].Excluded = true
+			sum.Skipped[i].Reason = report.StrictIgnored + sk.Reason
+			sum.StrictIgnored++
+		}
+	}
 	if !o.strictAPI || len(o.strictIgnore) > 0 {
 		counting = nil
 		skipped = slices.Clone(sum.Skipped)
 		checks = slices.Clone(sum.Checks)
-		for i, sk := range skipped {
-			if !sk.Excluded && o.strictIgnore.Match(sk.Type) {
-				skipped[i].Excluded = true
-				skipped[i].Reason = report.StrictIgnored + sk.Reason
-				sum.StrictIgnored++
-			}
-		}
 		for _, f := range sum.Failed {
 			switch {
 			case f.Category == tf.FailAPIOff && !o.strictAPI:

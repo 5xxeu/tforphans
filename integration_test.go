@@ -817,10 +817,19 @@ func TestIntegrationStrictIgnore(t *testing.T) {
 	if code != exitOK || !strings.Contains(stderr, "2 failed listings or skipped types of -strict-ignore") || !strings.Contains(stderr, "permission denied") {
 		t.Errorf("-strict-ignore: exit %d\n%s", code, stderr)
 	}
-	for _, want := range []string{`"strict_ignored": 2`, `"-strict-ignore: permission denied"`, `"-strict-ignore: list config requires zone"`, `"failed_queries"`} {
+	for _, want := range []string{`"strict_ignored": 2`, `"-strict-ignore: permission denied"`, `"failed_queries"`} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("json lacks %s:\n%s", want, stdout)
 		}
+	}
+	var out struct {
+		Summary report.Summary `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatal(err)
+	}
+	if sk := out.Summary.Skipped; len(sk) != 1 || sk[0].Type != "fake_zoned" || !sk[0].Excluded || sk[0].Reason != "-strict-ignore: list config requires zone" {
+		t.Errorf("skipped_types %+v", sk)
 	}
 	// Only the types named.
 	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict", "-strict-ignore", "fake_thing"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that need an argument") {
@@ -869,7 +878,16 @@ func TestIntegrationAutoZones(t *testing.T) {
 	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "coverage: complete") {
 		t.Errorf("zones with the API off: exit %d\n%s\n%s", code, stdout, stderr)
 	}
+	// A data source of the user's whose label looks like ours is not ours:
+	// its error stays fatal.
+	write(t, "mine.tf", "data \"fake_zones\" \"tfo_auto_custom\" {}\n")
+	write(t, "mine.tfquery.hcl", "list \"fake_zoned\" \"mine\" {\n  provider = fake\n  for_each = toset(data.fake_zones.tfo_auto_custom.result[*].id)\n  config {\n    zone = each.key\n  }\n}\n")
 	t.Setenv("FAKE_FAIL", "zone:Error 403: permission denied")
+	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitError || !strings.Contains(stderr, "data.fake_zones.tfo_auto_custom") {
+		t.Errorf("user's data source: exit %d\n%s", code, stderr)
+	}
+	os.Remove("mine.tf")
+	os.Remove("mine.tfquery.hcl")
 	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict"); code != exitError || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "1 failed or truncated listings") {
 		t.Errorf("regions not readable: exit %d\n%s\n%s", code, stdout, stderr)
 	}

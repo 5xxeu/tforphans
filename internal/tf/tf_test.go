@@ -664,11 +664,27 @@ func TestAutoArg(t *testing.T) {
 			t.Errorf("auto HCL lacks %q:\n%s", want, data)
 		}
 	}
-	if local, ok := AutoDataAddress(`data.google_compute_zones.tfo_auto_google-beta["europe-west1"]`); !ok || local != "google-beta" {
-		t.Errorf("AutoDataAddress = %q, %v", local, ok)
+	if deps, ok := p.AutoDependents(`data.google_compute_zones.tfo_auto_google-beta["europe-west1"]`); !ok || len(deps) != 1 {
+		t.Errorf("zones dependents = %v, %v", deps, ok)
 	}
-	if _, ok := AutoDataAddress("data.google_compute_zones.mine"); ok {
-		t.Error("the user's data source taken for ours")
+	for _, addr := range []string{"data.google_compute_zones.mine", "data.google_compute_zones.tfo_auto_custom", "data.google_compute_regions.tfo_auto_google"} {
+		if _, ok := p.AutoDependents(addr); ok {
+			t.Errorf("%s taken for a data source of the plan", addr)
+		}
+	}
+	// region=auto alone needs no zones; a zones error concerns only the
+	// queries with zone=auto.
+	regional := Query{Type: "google_compute_subnetwork", Provider: "google", Source: "registry.terraform.io/hashicorp/google", Args: []Arg{{Name: "region", Values: []string{Auto}}}}
+	zonal := Query{Type: "google_compute_instance", Provider: "google", Source: "registry.terraform.io/hashicorp/google", Args: []Arg{{Name: "zone", Values: []string{Auto}}}}
+	if got := string((Plan{Queries: []Query{regional}}).AutoHCL()); strings.Contains(got, "google_compute_zones") || !strings.Contains(got, "google_compute_regions") {
+		t.Errorf("region=auto alone:\n%s", got)
+	}
+	both := Plan{Queries: []Query{regional, zonal}}
+	if deps, _ := both.AutoDependents(`data.google_compute_zones.tfo_auto_google["r"]`); len(deps) != 1 || deps[0].Type != "google_compute_instance" {
+		t.Errorf("zones dependents %v", deps)
+	}
+	if deps, _ := both.AutoDependents("data.google_compute_regions.tfo_auto_google"); len(deps) != 2 {
+		t.Errorf("regions dependents %v", deps)
 	}
 	if got := (Plan{}).AutoHCL(); got != nil {
 		t.Errorf("no auto arguments: %q", got)

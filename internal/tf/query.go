@@ -216,13 +216,13 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	// queries fail (a disabled Compute API is classified as such).
 	failedAuto := map[string]bool{}
 	for _, e := range res.DataErrors {
-		local, ok := AutoDataAddress(e.Address)
+		deps, ok := p.AutoDependents(e.Address)
 		if !ok {
 			fatal = append(fatal, e.Address+": "+e.Message)
 			continue
 		}
-		for _, q := range p.Queries {
-			if q.Provider == local && q.auto() && !failedAuto[q.Address()] {
+		for _, q := range deps {
+			if !failedAuto[q.Address()] {
 				failedAuto[q.Address()] = true
 				res.Failed = append(res.Failed, Failure{Address: q.Address(), Type: q.Type, Message: "reading the values of -arg ...=auto: " + e.Message})
 				res.errors++
