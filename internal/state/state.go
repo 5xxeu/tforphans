@@ -155,6 +155,28 @@ func sensitiveID(value any) bool {
 	return false
 }
 
+// sensitiveValue reports whether a sensitive_values entry marks any part of
+// the value. Unknown encodings count as sensitive.
+func sensitiveValue(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case []any:
+		return slices.ContainsFunc(v, sensitiveValue)
+	case map[string]any:
+		for _, x := range v {
+			if sensitiveValue(x) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
 // providerAddress extracts the provider address from a state reference
 // such as module.app.provider["registry.terraform.io/hashicorp/aws"].west.
 // Legacy references (provider.aws) and the legacy "-" namespace do not name
@@ -343,8 +365,7 @@ func ParseShow(data []byte) ([]Instance, error) {
 	walk = func(m showModule) {
 		for _, r := range m.Resources {
 			if r.Mode == "managed" {
-				sensitive, _ := r.SensitiveValues["id"].(bool)
-				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values, IDSensitive: sensitive})
+				out = append(out, Instance{Type: r.Type, Address: r.Address, Provider: r.ProviderName, Identity: r.Identity, Attributes: r.Values, IDSensitive: sensitiveValue(r.SensitiveValues["id"])})
 			}
 		}
 		for _, c := range m.ChildModules {

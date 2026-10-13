@@ -161,9 +161,7 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		}
 	}
 	printFailed(w, o, s.Failed)
-	if !o.adopt || o.strictOwnership && (s.DuplicateOwnership > 0 || s.DuplicateInState > 0) {
-		printOwnership(w, s.Ownership, s.InState)
-	}
+	printOwnership(w, s.Ownership, s.InState)
 	for _, msg := range s.Warnings {
 		fmt.Fprintln(w, "warning:", report.Clean(msg))
 	}

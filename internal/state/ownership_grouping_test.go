@@ -264,3 +264,31 @@ func TestOwnershipLegacyUnknownProviderKeepsFamiliesSeparate(t *testing.T) {
 		previous = canonical(own)
 	}
 }
+
+func TestParseShowSensitiveLegacyID(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		values    string
+		sensitive bool
+	}{
+		{"absent", `{}`, false},
+		{"false", `{"id":false}`, false},
+		{"true", `{"id":true}`, true},
+		{"nested map", `{"id":{"token":true}}`, true},
+		{"nested false", `{"id":{"token":false}}`, false},
+		{"nested list", `{"id":[false,true]}`, true},
+		{"unknown encoding", `{"id":"yes"}`, true},
+		{"other attribute", `{"password":true}`, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := fmt.Sprintf(`{"prior_state":{"values":{"root_module":{"resources":[{"address":"x.a","mode":"managed","type":"x","provider_name":"registry.terraform.io/hashicorp/x","values":{"id":{"token":"secret"}},"sensitive_values":%s}]}}}}`, c.values)
+			instances, err := ParseShow([]byte(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(instances) != 1 || instances[0].IDSensitive != c.sensitive {
+				t.Fatalf("got %+v", instances)
+			}
+		})
+	}
+}

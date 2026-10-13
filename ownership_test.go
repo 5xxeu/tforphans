@@ -135,8 +135,9 @@ func TestAdoptStrictOwnershipDiagnostics(t *testing.T) {
 		{"confirmed", []string{a, b}, true, exitError, "confirmed duplicate ownership"},
 		{"within", []string{within}, true, exitError, "confirmed duplicate in state"},
 		{"within legacy", []string{legacy}, true, exitError, "possible duplicate in state (no identity)"},
-		{"possible", []string{a, partial}, true, exitOK, ""},
-		{"without strict", []string{a, b}, false, exitOK, ""},
+		{"possible", []string{a, partial}, true, exitOK, "possible duplicate ownership (partial identity)"},
+		{"without strict", []string{a, b}, false, exitOK, "confirmed duplicate ownership"},
+		{"none", []string{a}, true, exitOK, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			args := []string{"adopt", "-no-config", "-no-query", "-plugin", "true"}
@@ -271,8 +272,8 @@ func TestOwnershipPreservesFindingsAndAdopt(t *testing.T) {
 			} else if findings != baseline {
 				t.Fatalf("findings changed: %s versus %s", baseline, findings)
 			}
-			if adopt && strings.Contains(stderr.String(), "duplicate state ownership") {
-				t.Fatalf("adopt diagnostics changed: %s", &stderr)
+			if warned := strings.Contains(stderr.String(), "duplicate state ownership"); warned != (i > 1) {
+				t.Fatalf("ownership warning with %d states: %s", i, &stderr)
 			}
 		}
 	}
