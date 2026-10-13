@@ -60,6 +60,9 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 		}
 		return err
 	}
+	// The group is only signalled before Wait returns: once the command is
+	// reaped, its ID may be reused, so a descendant still holding stdout
+	// is no longer killed but stops being read, as os/exec does.
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	read := make(chan error, 1)
@@ -78,20 +81,27 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 		select {
 		case waitErr = <-wait:
 			wait = nil
-			if waitErr == exec.ErrWaitDelay {
-				// WaitDelay already expired on stderr.
-				_ = cmd.Cancel()
-			}
 			if read != nil && cmd.WaitDelay > 0 {
-				timer = time.NewTimer(cmd.WaitDelay)
-				deadline = timer.C
+				// Bound blocked reads from now on; no signal now that the
+				// command is reaped (its group ID may belong to someone else).
+				reader.draining.Store(true)
+				limit := time.Now().Add(cmd.WaitDelay)
+				if errors.Is(waitErr, exec.ErrWaitDelay) {
+					// Wait already spent WaitDelay on stderr.
+					limit = time.Now()
+				}
+				if err := pr.SetReadDeadline(limit); err != nil {
+					// Pipes without deadlines are closed after WaitDelay.
+					timer = time.NewTimer(cmd.WaitDelay)
+					deadline = timer.C
+				}
 			}
 		case readErr = <-read:
 			read = nil
 			if reader.expired.Load() && waitErr == nil {
 				waitErr = exec.ErrWaitDelay
 			}
-			if readErr != nil {
+			if readErr != nil && wait != nil {
 				_ = cmd.Cancel()
 			}
 			pr.Close()
@@ -100,20 +110,14 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 				deadline = nil
 			}
 		case <-ctxDone:
-			_ = cmd.Cancel()
+			if wait != nil {
+				_ = cmd.Cancel()
+			}
 			pr.Close()
 			ctxDone = nil
 		case <-deadline:
-			// Kill descendants and bound blocked reads while draining.
-			if err := cmd.Cancel(); err == nil && waitErr == nil {
-				waitErr = exec.ErrWaitDelay
-			}
-			reader.draining.Store(true)
-			if err := pr.SetReadDeadline(time.Now().Add(cmd.WaitDelay)); err != nil {
-				// Pipes without deadlines must be closed.
-				reader.expired.Store(true)
-				pr.Close()
-			}
+			reader.expired.Store(true)
+			pr.Close()
 			deadline = nil
 		}
 	}

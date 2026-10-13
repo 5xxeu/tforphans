@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -30,22 +29,10 @@ func TestStreamSlowConsumer(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' '"+strings.Join(lines, "' '")+"'")
 	Group(cmd)
 	cmd.WaitDelay = 20 * time.Millisecond
-	expired := make(chan struct{})
-	var once sync.Once
-	kill := cmd.Cancel
-	cmd.Cancel = func() error {
-		err := kill()
-		once.Do(func() { close(expired) })
-		return err
-	}
 	var got []string
 	err := Stream(ctx, cmd, func(r io.Reader) error {
-		// Leave stdout buffered until the parent exited and the timer fired.
-		select {
-		case <-expired:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		// Leave stdout buffered well past the parent's exit and WaitDelay.
+		time.Sleep(10 * cmd.WaitDelay)
 		sc := bufio.NewScanner(r)
 		for sc.Scan() {
 			time.Sleep(2 * cmd.WaitDelay)
@@ -165,11 +152,5 @@ func TestStreamCancelAfterParentExit(t *testing.T) {
 	}
 	if pid == 0 || cmd.ProcessState == nil || !cmd.ProcessState.Success() {
 		t.Fatalf("parent did not exit before cancellation: %d, %v", pid, cmd.ProcessState)
-	}
-	for deadline := time.Now().Add(time.Second); Alive(pid) && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if Alive(pid) {
-		t.Errorf("child %d still running", pid)
 	}
 }

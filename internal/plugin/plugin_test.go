@@ -246,27 +246,30 @@ func TestRunStopsEndlessOutput(t *testing.T) {
 	}
 }
 
-func TestRunKillsGroupAfterParentExit(t *testing.T) {
+func TestRunReturnsAfterParentExit(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	// The shell exits first; its child prints invalid output later.
+	// The shell exits first; its child prints invalid output later and
+	// keeps stdout open. The child is not signalled once the shell is
+	// reaped (its group ID could be reused), but the error comes back.
 	command := fmt.Sprintf("(sleep 1; printf 'invalid\\n'; exec sleep 30) & echo $! > '%s'; exit 0", pidFile)
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		var pid int
+		if err == nil {
+			if _, err := fmt.Sscan(string(data), &pid); err == nil && pid > 0 {
+				if child, err := os.FindProcess(pid); err == nil {
+					child.Kill()
+				}
+			}
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	start := time.Now()
 	if _, _, err := Run(ctx, command, "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1 line 1") {
 		t.Fatalf("err = %v", err)
 	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var pid int
-	if _, err := fmt.Sscan(string(data), &pid); err != nil {
-		t.Fatal(err)
-	}
-	for deadline := time.Now().Add(2 * time.Second); proc.Alive(pid) && time.Now().Before(deadline); {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if proc.Alive(pid) {
-		t.Errorf("child %d still running", pid)
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("returned after %v", time.Since(start))
 	}
 }
