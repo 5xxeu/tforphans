@@ -55,46 +55,24 @@ var (
 // errors use name (plugin1, plugin2, ...), never the command line: it may
 // carry tokens, and shell quoting makes it impossible to cut out safely.
 func Run(ctx context.Context, command, name string) ([]model.Resource, []error, error) {
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	proc.Group(cmd)
 	cmd.Stderr = os.Stderr
-	out, stdout := io.Pipe()
-	defer out.Close()
-	defer stdout.Close()
-	// Let exec copy stdout so WaitDelay bounds inherited open pipes.
-	cmd.Stdout = stdout
-	if err := cmd.Start(); err != nil {
-		if ctx.Err() != nil {
-			return nil, nil, ctx.Err()
-		}
-		return nil, nil, fmt.Errorf("%s: %w", name, err)
-	}
-	wait := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		// Parsing must see EOF even when the command failed.
-		stdout.Close()
-		wait <- err
-	}()
-	res, warns, err := parseReader(out, name)
-	if err != nil {
-		cancel()
-		// Wait stops watching the context once the command exits, and a
-		// child may still be writing: kill the group directly.
-		_ = cmd.Cancel()
-		out.CloseWithError(err)
-	}
-	runErr := <-wait
+	var res []model.Resource
+	var warns []error
+	var parseErr error
+	err := proc.Stream(ctx, cmd, func(out io.Reader) error {
+		res, warns, parseErr = parseReader(out, name)
+		return parseErr
+	})
 	if ctx.Err() != nil {
 		return nil, nil, ctx.Err()
 	}
-	if err != nil {
-		return nil, nil, err
+	if parseErr != nil {
+		return nil, nil, parseErr
 	}
-	if runErr != nil {
-		return nil, nil, fmt.Errorf("%s: %w", name, runErr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return res, warns, nil
 }
@@ -146,6 +124,9 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, error
 		if err := model.DecodeJSON(b, &l); err != nil {
 			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, err)
 		}
+		if len(res)+len(warns) >= maxResources {
+			return nil, nil, fmt.Errorf("%s: output exceeds %d resource limit", source, maxResources)
+		}
 		if l.Error != "" {
 			warns = append(warns, fmt.Errorf("%s: %s", source, l.Error))
 			continue
@@ -155,9 +136,6 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, error
 		}
 		if !typeName.MatchString(l.Type) || l.Provider != "" && !providerRef.MatchString(l.Provider) {
 			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"type" or "provider" is not a valid name`))
-		}
-		if len(res) >= maxResources {
-			return nil, nil, fmt.Errorf("%s: output exceeds %d resource limit", source, maxResources)
 		}
 		l.Resource.Source = source
 		if l.Unverified {

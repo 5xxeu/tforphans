@@ -98,34 +98,16 @@ func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) (
 		err := cmd.Run()
 		return stdout.Bytes(), stderr.Bytes(), err
 	}
-	pipe, output := io.Pipe()
-	defer pipe.Close()
-	defer output.Close()
-	// Let exec copy stdout so WaitDelay bounds inherited open pipes.
-	cmd.Stdout = output
-	if err := cmd.Start(); err != nil {
-		return nil, stderr.Bytes(), err
-	}
-	wait := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		output.Close()
-		wait <- err
-	}()
-	out, readErr := state.ReadLimited(pipe, maxSize)
-	if readErr != nil {
-		cancel()
-		// Wait stops watching the context once the command exits, and a
-		// child may still be writing: kill the group directly.
-		_ = cmd.Cancel()
-		pipe.CloseWithError(readErr)
-	}
-	err := <-wait
+	var out []byte
+	err := proc.Stream(ctx, cmd, func(pipe io.Reader) error {
+		data, readErr := state.ReadLimited(pipe, maxSize)
+		if readErr == nil {
+			out = data
+		}
+		return readErr
+	})
 	if ctx.Err() != nil {
 		return nil, stderr.Bytes(), ctx.Err()
-	}
-	if readErr != nil {
-		return nil, stderr.Bytes(), readErr
 	}
 	return out, stderr.Bytes(), err
 }

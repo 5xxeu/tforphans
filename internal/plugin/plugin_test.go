@@ -107,11 +107,13 @@ func TestParseLimits(t *testing.T) {
 	resource := `{"type":"t","identity":{"id":"x"}}` + "\n"
 	warning := `{"error":"permission denied"}` + "\n"
 	maxResources = 2
-	if res, warns, err := Parse([]byte(resource+warning+"\n"+resource), "plugin1"); err != nil || len(res) != 2 || len(warns) != 1 {
+	if res, warns, err := Parse([]byte(resource+warning+"\n"), "plugin1"); err != nil || len(res) != 1 || len(warns) != 1 {
 		t.Fatalf("resource boundary: %d resources, %d warnings, %v", len(res), len(warns), err)
 	}
-	if res, warns, err := Parse([]byte(strings.Repeat(resource, 3)), "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1: output exceeds 2 resource limit") || res != nil || warns != nil {
-		t.Errorf("resource limit: %v, %v, %v", res, warns, err)
+	for _, out := range []string{strings.Repeat(resource, 3), resource + warning + resource, warning + resource + warning} {
+		if res, warns, err := Parse([]byte(out), "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1: output exceeds 2 resource limit") || res != nil || warns != nil {
+			t.Errorf("resource limit: %v, %v, %v", res, warns, err)
+		}
 	}
 	maxOutputBytes = int64(len(resource))
 	if res, _, err := Parse([]byte(resource), "plugin2"); err != nil || len(res) != 1 {
@@ -230,6 +232,7 @@ func TestRunStopsEndlessOutput(t *testing.T) {
 	}{
 		{"blank lines", "yes ''", "output exceeds 65536 byte limit", 1 << 16, oldResources},
 		{"resources", `yes '{"type":"t","identity":{"id":"x"}}'`, "output exceeds 1000 resource limit", oldOutput, 1000},
+		{"warnings", `yes '{"error":"x"}'`, "output exceeds 1000 resource limit", oldOutput, 1000},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			maxOutputBytes, maxResources = c.outputLimit, c.resourceLimit
@@ -246,7 +249,7 @@ func TestRunStopsEndlessOutput(t *testing.T) {
 func TestRunKillsGroupAfterParentExit(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	// The shell exits first; its child prints invalid output later.
-	command := fmt.Sprintf("(sleep 1; printf 'invalid\\n'; sleep 30) & echo $! > '%s'; exit 0", pidFile)
+	command := fmt.Sprintf("(sleep 1; printf 'invalid\\n'; exec sleep 30) & echo $! > '%s'; exit 0", pidFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if _, _, err := Run(ctx, command, "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1 line 1") {
