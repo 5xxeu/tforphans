@@ -407,3 +407,59 @@ provider "registry.terraform.io/cloudflare/cloudflare" {
 		t.Error("a comment counted as a pin")
 	}
 }
+
+func TestProxmoxHooks(t *testing.T) {
+	for _, m := range []string{"failed to authenticate: received an HTTP 401 response - Reason: authentication failure", "received an HTTP 401 response - Reason: invalid token value!", "status code: 401"} {
+		if !Proxmox.AuthFailed(m) {
+			t.Errorf("AuthFailed(%q) false", m)
+		}
+	}
+	for _, m := range []string{"received an HTTP 403 response - Reason: Permission check failed (request 401abc)", "https://pve:401/api2/json", "vm 401 not found"} {
+		if Proxmox.AuthFailed(m) {
+			t.Errorf("AuthFailed(%q) true", m)
+		}
+	}
+	msg := "received an HTTP 500 response - Reason: ha groups have been migrated to rules"
+	if Proxmox.Unsupported("proxmox_hagroups", msg) == "" || Proxmox.Unsupported("proxmox_hagroups", "HTTP 500") != "" || Proxmox.Unsupported("proxmox_virtual_environment_users", msg) != "" {
+		t.Error("Unsupported")
+	}
+	if got := Proxmox.DisplayName("proxmox_virtual_environment_vm", map[string]any{"node_name": "pve2"}, "tmpl-debian"); got != "tmpl-debian (pve2)" {
+		t.Errorf("display name %q", got)
+	}
+}
+
+func TestUnsupported(t *testing.T) {
+	a := Adapter{Unsupported: func(_, m string) string {
+		if strings.Contains(m, "migrated") {
+			return "gone"
+		}
+		return ""
+	}}
+	all := []block{{dsType: "x_groups", label: "all", listings: []listing{{resourceType: "x_group"}}}, {dsType: "x_users", label: "all", listings: []listing{{resourceType: "x_user"}}}}
+	res := &Result{}
+	rest := unsupported([]failure{
+		{block: "data.x_groups.all", address: "data.x_groups.all", message: "500: migrated to rules"},
+		{block: "data.x_users.all", address: "data.x_users.all", message: "500: other"},
+	}, all, a, res)
+	if len(rest) != 1 || rest[0].block != "data.x_users.all" {
+		t.Errorf("rest %+v", rest)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Type != "x_group" || !res.Skipped[0].Excluded || res.Skipped[0].Reason != "gone" {
+		t.Errorf("skipped %+v", res.Skipped)
+	}
+}
+
+func TestErrorMessages(t *testing.T) {
+	long := strings.Repeat("x", 300) + " 401"
+	out := []byte(`{"diagnostic":{"severity":"error","summary":"Error configuring provider","detail":"` + long + `"}}
+{"diagnostic":{"severity":"error","summary":"E","detail":"short","address":"data.x.probe"}}
+{"diagnostic":{"severity":"warning","summary":"W"}}
+`)
+	msgs := errorMessages(out)
+	if len(msgs) != 2 || !strings.HasSuffix(msgs[0], " 401") || msgs[1] != "E: short" {
+		t.Errorf("messages %q", msgs)
+	}
+	if _, fatal := applyErrors(out); len(fatal) != 1 || strings.HasSuffix(fatal[0], " 401") {
+		t.Errorf("applyErrors still cuts messages: %q", fatal)
+	}
+}

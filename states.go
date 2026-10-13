@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -162,6 +164,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
+	done := 0
 	for _, d := range dirs {
 		sem <- struct{}{}
 		wg.Add(1)
@@ -177,6 +180,8 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 			if err != nil {
 				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(d, err))
 			}
+			done++
+			o.stepf("read state of %s (%d/%d roots)", d, done, len(dirs))
 		}()
 	}
 	wg.Wait()
@@ -243,6 +248,26 @@ func inWorkspaceName(dir, ws string) string {
 		return dir
 	}
 	return dir + " (workspace " + ws + ")"
+}
+
+// stepf prints a progress line when steps are shown (see options.steps).
+func (o *options) stepf(format string, args ...any) {
+	if o.steps == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintln(o.steps, report.Clean(fmt.Sprintf(format, args...)))
+}
+
+// isTerminal reports whether w is a terminal.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 // progressf prints a progress line on stderr for long steps.

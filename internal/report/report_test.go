@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -259,6 +260,18 @@ func TestPresets(t *testing.T) {
 	if cf.Match(sanitize) {
 		t.Error("custom firewall ruleset ignored")
 	}
+	tmpl, err := Preset("proxmox-templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := model.Resource{Type: "proxmox_virtual_environment_vm", Identity: map[string]any{"vm_id": json.Number("9000")}, Attributes: map[string]any{"template": true}}
+	if !tmpl.Match(vm) {
+		t.Error("template not ignored")
+	}
+	vm.Attributes["template"] = false
+	if tmpl.Match(vm) {
+		t.Error("VM ignored as a template")
+	}
 	if _, err := Preset("../report"); err == nil {
 		t.Error("path accepted as a preset")
 	}
@@ -394,5 +407,35 @@ func TestNewUnreadState(t *testing.T) {
 		errors.New("workspace c: read: permission denied\nmore"))
 	if got := NewUnreadState("r", err).Error; got != "workspace a: Error: Backend initialization required; workspace b: decode state: unexpected end of JSON input; workspace c: read: permission denied" {
 		t.Errorf("%q", got)
+	}
+}
+
+// TestIgnoreBaseName: a name rule matches the object's own name when the
+// display name adds to it ("web (pve1)").
+func TestIgnoreBaseName(t *testing.T) {
+	ig, err := ParseIgnore(strings.NewReader("proxmox_virtual_environment_vm:web\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := model.Resource{Type: "proxmox_virtual_environment_vm", DisplayName: "web (pve1)", BaseName: "web", Identity: map[string]any{"vm_id": json.Number("100")}}
+	if !ig.Match(r) {
+		t.Error("name rule does not match the base name")
+	}
+	r.BaseName = "web2"
+	if ig.Match(r) {
+		t.Error("name rule matches another name")
+	}
+}
+
+func TestJSONSchemaVersion(t *testing.T) {
+	var b strings.Builder
+	if err := JSON(&b, nil, nil, Summary{}); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal([]byte(b.String()), &out); err != nil || out.SchemaVersion != SchemaVersion || SchemaVersion < 1 {
+		t.Errorf("schema_version %d, %v", out.SchemaVersion, err)
 	}
 }

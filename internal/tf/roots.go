@@ -216,6 +216,21 @@ var (
 	}}
 )
 
+// HasConfig reports whether dir holds terraform configuration files.
+func HasConfig(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if !e.IsDir() && !IgnoredFile(n) && (strings.HasSuffix(n, ".tf") || strings.HasSuffix(n, ".tf.json")) {
+			return true
+		}
+	}
+	return false
+}
+
 func isRoot(dir string) (bool, error) {
 	for _, local := range []string{"terraform.tfstate", "terraform.tfstate.d"} {
 		if _, err := os.Stat(filepath.Join(dir, local)); err == nil {

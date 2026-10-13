@@ -133,11 +133,18 @@ type options struct {
 	terraformBin    string
 	maxRoots        int
 	progress        io.Writer // progress lines of long steps (stderr)
-	strictAPI       bool
-	strictIgnore    glob.List // -strict-ignore
-	terragrunt      bool
-	tgUnits         listFlag // -terragrunt-unit
-	configFile      string   // flags read from this file
+	// steps, when set, gets a line per root and data source scan, so that
+	// a long run does not look hung (stderr on a terminal, without -quiet).
+	steps io.Writer
+	quiet bool
+	// impliedNoQuery: no root given and none in the current directory, so
+	// only -scan and -plugin run.
+	impliedNoQuery bool
+	strictAPI      bool
+	strictIgnore   glob.List // -strict-ignore
+	terragrunt     bool
+	tgUnits        listFlag // -terragrunt-unit
+	configFile     string   // flags read from this file
 }
 
 // version is set by release builds; go install builds take the module
@@ -209,6 +216,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
 	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
+	fs.BoolVar(&o.quiet, "quiet", false, "print no progress lines (by default printed on a terminal: roots read, roots queried, data source scans, -refresh)")
 	fs.BoolVar(&o.printQuery, "print-query", false, "print the generated .tfquery.hcl for each root and exit")
 	fs.BoolVar(&o.noQuery, "no-query", false, "do not run terraform query: read the roots' states and run plugins only")
 	fs.StringVar(&o.terraformBin, "terraform", "terraform", "terraform binary")
@@ -343,7 +351,12 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	o.exclude = glob.CompileList(exclude.csv())
 	o.strictIgnore = glob.CompileList(strictIgnore.csv())
 	if len(o.roots) == 0 && !o.noQuery {
-		o.roots = []string{"."}
+		if (len(o.scans) > 0 || len(o.plugins) > 0) && !tf.HasConfig(".") {
+			// Nothing to query here: -scan and -plugin need no root.
+			o.noQuery, o.impliedNoQuery = true, true
+		} else {
+			o.roots = []string{"."}
+		}
 	}
 	if n := len(slices.DeleteFunc(slices.Clone(o.states), func(s string) bool { return s != "-" })); n > 1 {
 		return nil, errors.New("-state - (stdin) can be given only once")
@@ -363,7 +376,12 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return exitError
 	}
-	o.progress = stderr
+	if !o.quiet {
+		o.progress = stderr
+		if isTerminal(stderr) {
+			o.steps = stderr
+		}
+	}
 	if err := execute(ctx, o, stdout, stderr); err != nil {
 		var code exitCode
 		if errors.As(err, &code) {
@@ -428,13 +446,19 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "plan:", report.Clean(runPlan(o, stateDirs)))
 	}
 	sum.Notes = append(sum.Notes, scanHints(o, stateDirs)...)
+	if o.impliedNoQuery {
+		sum.Notes = append(sum.Notes, "no ROOT_DIR given and no Terraform configuration in the current directory: terraform query was not run, only -scan and -plugin (as with -no-query)")
+	}
 	if !o.noQuery && len(o.roots) > 0 {
 		if err := (tf.Runner{Bin: o.terraformBin, Dir: o.roots[0]}).QueryVersion(ctx); err != nil {
 			return err
 		}
 	}
 	var live []model.Resource
-	for _, root := range o.roots {
+	for i, root := range o.roots {
+		if !o.noQuery && !o.printQuery {
+			o.stepf("querying %s (%d/%d)", root, i+1, len(o.roots))
+		}
 		found, err := scanRoot(ctx, o, root, idx, &sum, stdout)
 		if err != nil {
 			return fmt.Errorf("%s: %w", root, err)
@@ -450,6 +474,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	if o.scopeState && sum.States == 0 {
 		return errors.New("-scan-scope state: no state was read (-state, -state-roots or root modules)")
+	}
+	// Crash recovery says it takes extra runs; -quiet drops that too.
+	var progress func(string)
+	if !o.quiet {
+		progress = func(msg string) { fmt.Fprintln(stderr, "note:", msg) }
 	}
 	for _, name := range o.scans {
 		a := sources[name]
@@ -473,13 +502,14 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 				}
 			}
 		}
+		o.stepf("-scan %s: reading its data sources", name)
 		res, err := dsource.Run(ctx, a, dsource.Options{
 			TerraformBin:  o.terraformBin,
 			VersionRoot:   versionRoot,
 			Include:       o.include,
 			Exclude:       o.exclude,
 			AllowUnpinned: o.allowUnpinned,
-			Progress:      func(msg string) { fmt.Fprintln(stderr, "note:", msg) },
+			Progress:      progress,
 			Scope:         scope,
 		})
 		if err != nil {
@@ -597,6 +627,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.ByScope = byScope
 	}
 	sortResources(orphans)
+	sum.Notes = append(sum.Notes, ignoreHints(orphans)...)
 	slices.SortStableFunc(uncertain, func(a, b report.Uncertain) int { return compareResources(a.Resource, b.Resource) })
 	sum.Live, sum.Orphans = len(live), len(orphans)
 	// Attributes fetched for ignore rules are not printed: an ignore file
@@ -718,6 +749,19 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	if nothingChecked(o, sum) {
 		msg := "no resource types were queried, so nothing could be found"
+		if n := len(sum.Failed); n > 0 {
+			// Every listing failed: the cause is in them, usually the
+			// credentials, not the provider.
+			byCat := map[string]int{}
+			for _, f := range sum.Failed {
+				byCat[f.Category]++
+			}
+			var cats []string
+			for _, c := range slices.Sorted(maps.Keys(byCat)) {
+				cats = append(cats, fmt.Sprintf("%s %d", c, byCat[c]))
+			}
+			msg = fmt.Sprintf("every listing failed (%d: %s), so nothing could be found; check the credentials and the warnings above", n, strings.Join(cats, ", "))
+		}
 		if len(sum.NoList) > 0 {
 			slices.Sort(sum.NoList)
 			msg += fmt.Sprintf(". These providers have no list resources in the installed version: %s. List resources need Terraform 1.14 and a provider release that adds them (see its changelog); upgrade the provider, or use -scan or -plugin", strings.Join(slices.Compact(sum.NoList), ", "))

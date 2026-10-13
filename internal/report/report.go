@@ -147,7 +147,7 @@ func (rule ignoreRule) matchName(r model.Resource) bool {
 	if !rule.hasName {
 		return true
 	}
-	cands := []string{r.DisplayName, r.ImportID}
+	cands := []string{r.DisplayName, r.BaseName, r.ImportID}
 	for _, v := range r.Identity {
 		if s, ok := model.Scalar(v); ok {
 			cands = append(cands, s)
@@ -598,11 +598,16 @@ func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summar
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(struct {
-		Orphans   []model.Resource `json:"orphans"`
-		Uncertain []Uncertain      `json:"uncertain"`
-		Summary   Summary          `json:"summary"`
-	}{orphans, uncertain, s})
+		SchemaVersion int              `json:"schema_version"`
+		Orphans       []model.Resource `json:"orphans"`
+		Uncertain     []Uncertain      `json:"uncertain"`
+		Summary       Summary          `json:"summary"`
+	}{SchemaVersion, orphans, uncertain, s})
 }
+
+// SchemaVersion of the JSON output. It goes up when a field is removed or
+// changes its meaning or type; new fields do not change it.
+const SchemaVersion = 1
 
 // Import writes Terraform import blocks for the orphans. Feed them to
 // `terraform plan -generate-config-out=generated.tf` to get resource blocks.
@@ -688,7 +693,11 @@ var (
 )
 
 func resourceName(r model.Resource) string {
-	n := identName(r.DisplayName)
+	base := r.DisplayName
+	if r.BaseName != "" {
+		base = r.BaseName
+	}
+	n := identName(base)
 	if n == "" {
 		// A name in another script (Cyrillic VM names) leaves nothing.
 		n = identName(r.IdentityString())

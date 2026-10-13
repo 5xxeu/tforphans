@@ -74,7 +74,17 @@ func compareResources(a, b model.Resource) int {
 	if c := strings.Compare(a.Type, b.Type); c != 0 {
 		return c
 	}
-	return strings.Compare(a.DisplayName, b.DisplayName)
+	// The bare name, so that objects named alike keep their listed order
+	// whatever the display name adds (the node of a guest): import
+	// addresses get their _2, _3 suffixes in this order.
+	return strings.Compare(baseName(a), baseName(b))
+}
+
+func baseName(r model.Resource) string {
+	if r.BaseName != "" {
+		return r.BaseName
+	}
+	return r.DisplayName
 }
 
 func scopeName(identity map[string]any) string {
@@ -267,9 +277,69 @@ func printFailed(w io.Writer, o *options, failed []tf.Failure) {
 			continue
 		}
 		slices.Sort(types)
-		fmt.Fprintf(w, "  %s (%d): %s\n", cat, len(types), report.Clean(strings.Join(types, ", ")))
+		shown := types
+		if !o.verbose {
+			// A long list (a token without most permissions) buries the
+			// few causes that need a look.
+			shown = firstN(types, 8)
+		}
+		fmt.Fprintf(w, "  %s (%d): %s\n", cat, len(types), report.Clean(strings.Join(shown, ", ")))
+		if cat == tf.FailDenied && len(types) > 8 {
+			fmt.Fprintln(w, "    the credentials lack permission for these: grant it, or leave out products you do not use with -exclude-types (or let them pass -strict with -strict-ignore)")
+		}
 		if cat == tf.FailMissingArg {
 			fmt.Fprintln(w, "    pass the argument with -arg, for one set of types if needed: -arg 'google_compute_*:zone=europe-west1-b,europe-west1-c' (google: zone=auto reads every zone)")
 		}
 	}
+}
+
+// hintMin is how many unmanaged objects of one type in one scope make an
+// ignore hint worth printing.
+const hintMin = 20
+
+// ignoreHints suggests ignore lines for many unmanaged objects of one type
+// in one scope (certificate packs a zone got automatically): the line
+// hides every object of the type there, now and later, so it is only a
+// suggestion for objects that are expected.
+func ignoreHints(orphans []model.Resource) []string {
+	type group struct {
+		typ, scope string
+		rs         []model.Resource
+	}
+	var groups []*group
+	byKey := map[string]*group{}
+	for _, r := range orphans {
+		k := r.Type + "\x00" + r.ScopeName
+		if byKey[k] == nil {
+			byKey[k] = &group{typ: r.Type, scope: r.ScopeName}
+			groups = append(groups, byKey[k])
+		}
+		byKey[k].rs = append(byKey[k].rs, r)
+	}
+	var out []string
+	for _, g := range groups {
+		if len(g.rs) < hintMin || g.scope == "" {
+			continue
+		}
+		// The identity key all of them share with one value (zone_id).
+		cond := ""
+		for _, k := range slices.Sorted(maps.Keys(g.rs[0].Identity)) {
+			v, ok := model.Scalar(g.rs[0].Identity[k])
+			if !ok || v == "" || slices.Contains(g.rs[0].RequiredKeys, k) || strings.ContainsAny(v, " \t*?[]\\{},") {
+				continue
+			}
+			if !slices.ContainsFunc(g.rs, func(r model.Resource) bool { s, _ := model.Scalar(r.Identity[k]); return s != v }) {
+				cond = k + "=" + v
+				break
+			}
+		}
+		if cond == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%d unmanaged %s in %s; if they are expected (created by the service, not by people), this line in the ignore file hides them, and any later ones there: %s %s", len(g.rs), g.typ, g.scope, g.typ, cond))
+		if len(out) == 3 {
+			break
+		}
+	}
+	return out
 }
