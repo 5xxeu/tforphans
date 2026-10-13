@@ -207,8 +207,8 @@ resource "fake_thing" "x" {
 	if !strings.Contains(override, "required_providers") {
 		t.Fatalf("no provider declaration in -print-query:\n%s", printed)
 	}
-	write(t, "zz_tforphans_99999999_override.tf", override)
-	write(t, "zz_tforphans_99999999.tfquery.hcl", "")
+	write(t, "zz_tforphans_99999999_override.tf", "# tforphans temporary file, run 99999999-test\n"+override)
+	write(t, "zz_tforphans_99999999.tfquery.hcl", "# tforphans temporary file, run 99999999-test\n")
 	if code, _, stderr := runTool("adopt", "-types", "fake_thing"); code != exitOK || !strings.Contains(stderr, "5 live, 4 managed") {
 		t.Errorf("after a killed run: exit %d\n%s", code, stderr)
 	}

@@ -21,7 +21,7 @@ import (
 // the instances and the number of states read. A workspace that fails does
 // not stop the others: the instances read so far come back with the error.
 func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
-	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
+	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion, MaxStateSize: o.maxStateSize}
 	// "" is the selected workspace (no TF_WORKSPACE).
 	workspaces := []string{""}
 	if !o.currentWS {
@@ -204,7 +204,7 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 		unit = kind != tf.TerragruntNone
 	}
 	if unit {
-		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir)
+		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir, o.maxStateSize)
 		if err != nil {
 			return nil, 0, err
 		}

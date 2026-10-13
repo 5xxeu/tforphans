@@ -7,6 +7,14 @@ A plugin is any command that prints one JSON object per line:
 {"error": "sys/auth: permission denied"}
 ```
 
+Output is parsed while the command runs. Each run may return at most
+1,000,000 resources and 1 GiB of stdout, with a 64 MiB limit per line.
+Warnings and blank lines count toward the byte limit. Exceeding a limit
+fails the plugin and kills its process group while the command is still
+running. After the command exits, tforphans stops reading its output;
+descendants that outlived it may keep running. Errors name the plugin by
+position (`plugin1`, `plugin2`), never its command line.
+
 - `type`: Terraform resource type.
 - `identity`: attributes to match. Against state without resource identity
   they are compared with the instance's attributes, so `{"id": ...}` with the

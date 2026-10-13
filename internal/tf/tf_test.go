@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/proc"
+	"github.com/5xxeu/tforphans/internal/state"
+	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
 const schemaJSON = `{"provider_schemas": {
@@ -563,8 +566,8 @@ func TestRemoveStale(t *testing.T) {
 	// A process that cannot exist (beyond any pid_max) left files.
 	gone := filepath.Join(dir, "zz_tforphans_99999999.tfquery.hcl")
 	goneOverride := filepath.Join(dir, "zz_tforphans_99999999_override.tf")
-	os.WriteFile(gone, nil, 0o644)
-	os.WriteFile(goneOverride, nil, 0o644)
+	os.WriteFile(gone, []byte(tempMarker), 0o644)
+	os.WriteFile(goneOverride, []byte(tempMarker), 0o644)
 	if proc.Alive(99999999) {
 		// The platform cannot tell a dead process: nothing is removed.
 		if err := RemoveStale(dir); err == nil {
@@ -586,13 +589,237 @@ func TestRemoveStale(t *testing.T) {
 	}
 	// The parent process (the test runner) is alive: its files stay.
 	busy := filepath.Join(dir, fmt.Sprintf("zz_tforphans_%d.tfquery.hcl", os.Getppid()))
-	os.WriteFile(busy, nil, 0o644)
+	os.WriteFile(busy, []byte(tempMarker), 0o644)
 	if err := RemoveStale(dir); err == nil {
 		t.Error("files of a running process removed")
 	}
 	if _, err := os.Stat(busy); err != nil {
 		t.Error(err)
 	}
+}
+
+func TestRemoveStaleOnlyMarkedRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"zz_tforphans_99999999_notes.tf", "zz_tforphans_99999999.tf.json", "zz_tforphans_99999999_override.tf.bak",
+		"zz_tforphans_99999999_extra_auto.tf", "zz_tforphans_x.tfquery.hcl", "zz_tforphans_-1.tfquery.hcl",
+		"zz_tforphans_+1.tfquery.hcl", "zz_tforphans_0.tfquery.hcl", "zz_tforphans_99999999999999999999999.tfquery.hcl",
+		fmt.Sprintf("zz_tforphans_%d_notes.tf", os.Getppid()),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(tempMarker), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Neither live nor dead names belong to us without the first-line marker.
+	for i, content := range []string{"", "# user configuration\n", "\n" + tempMarker, "# tforphans temporary file"} {
+		name := fmt.Sprintf("zz_tforphans_%d%s", os.Getppid(), tempSuffixes[i])
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zz_tforphans_99999999_override.tf"), []byte("# user configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "zz_tforphans_99999999_auto.tf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "user.tf")
+	if err := os.WriteFile(target, []byte(tempMarker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, pid := range []int{99999999, os.Getppid()} {
+		link := filepath.Join(dir, fmt.Sprintf("zz_tforphans_%d.tfquery.hcl", pid))
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveStale(dir); err != nil {
+		t.Fatalf("user files reported as busy: %v", err)
+	}
+	after, err := os.ReadDir(dir)
+	if err != nil || len(before) != len(after) {
+		t.Fatalf("user files removed: %d before, %d after, %v", len(before), len(after), err)
+	}
+	for _, e := range before {
+		if _, err := os.Lstat(filepath.Join(dir, e.Name())); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func TestTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, suffix := range tempSuffixes {
+		path := filepath.Join(dir, tempName(suffix))
+		if err := writeTemp(path, []byte(versionOverride)); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != tempMarker+versionOverride || !strings.HasPrefix(string(data), tempMarkerPrefix) {
+			t.Fatalf("marker in %s: %q, %v", suffix, data, err)
+		}
+		if _, diags := hclparse.NewParser().ParseHCL(data, path); diags.HasErrors() {
+			t.Errorf("marker is invalid HCL: %v", diags)
+		}
+		if pid, ok := tempPID(filepath.Base(path)); !ok || pid != os.Getpid() {
+			t.Errorf("writer name rejected: %s", path)
+		}
+		if err := writeTemp(path, []byte("replacement")); err == nil {
+			t.Error("existing file overwritten")
+		}
+		if got, err := os.ReadFile(path); err != nil || string(got) != string(data) {
+			t.Errorf("existing file changed: %q, %v", got, err)
+		}
+	}
+	if err := RemoveStale(dir); err == nil {
+		t.Error("own marked files not reported as busy")
+	}
+	for _, suffix := range tempSuffixes {
+		if _, err := os.Stat(filepath.Join(dir, tempName(suffix))); err != nil {
+			t.Error(err)
+		}
+	}
+	if proc.Alive(99999999) {
+		t.Skip("platform cannot identify dead processes")
+	}
+	dir = t.TempDir()
+	for _, suffix := range tempSuffixes {
+		if err := writeTemp(filepath.Join(dir, "zz_tforphans_99999999"+suffix), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveStale(dir); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Errorf("known stale suffixes left: %v, %v", entries, err)
+	}
+}
+
+func TestStateOutputLimits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "terraform")
+	data := `{"version":4}`
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s' '"+data+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"pull", "refresh", "terragrunt"} {
+		t.Run(operation, func(t *testing.T) {
+			for _, limit := range []int64{1, int64(len(data)), int64(len(data)) + 1, 0} {
+				r := Runner{Bin: bin, Dir: dir, MaxStateSize: limit}
+				var out []byte
+				var err error
+				switch operation {
+				case "pull":
+					out, err = r.StatePull(context.Background())
+				case "refresh":
+					out, err = r.RefreshedState(context.Background())
+				case "terragrunt":
+					out, err = TerragruntStatePull(context.Background(), bin, bin, dir, limit)
+				}
+				if limit == 1 {
+					if out != nil || err == nil || !strings.Contains(err.Error(), "state is larger than 1 bytes; raise -max-state-size") {
+						t.Errorf("oversized output: %q, %v", out, err)
+					}
+				} else if err != nil || string(out) != data {
+					t.Errorf("limit %d: %q, %v", limit, out, err)
+				}
+			}
+		})
+	}
+	if got := (Runner{}).stateSize(); got != state.DefaultMaxSize {
+		t.Errorf("default size: %d", got)
+	}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 30 & child=$!; printf 'oversized'; wait $child\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := (Runner{Bin: bin, Dir: dir, MaxStateSize: 1}).StatePull(ctx); err == nil || !strings.Contains(err.Error(), "raise -max-state-size") {
+		t.Errorf("limit should stop wrapper: %v", err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("wrapper did not stop promptly: %v", time.Since(start))
+	}
+}
+
+func TestStateOutputWaitDelay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "terraform")
+	pidFile := filepath.Join(dir, "pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var pid int
+		if _, err := fmt.Sscan(string(data), &pid); err != nil {
+			t.Error(err)
+			return
+		}
+		if child, err := os.FindProcess(pid); err == nil {
+			child.Kill()
+		}
+	})
+	data := `{"version":4}`
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' '%s'\nsleep 30 & echo $! > '%s'; exit 0\n", data, pidFile)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	start := time.Now()
+	out, stderr, err := (Runner{Bin: bin, Dir: dir}).runLimited(ctx, int64(len(data)), "state", "pull")
+	if !errors.Is(err, exec.ErrWaitDelay) || string(out) != data || len(stderr) != 0 {
+		t.Errorf("inherited stdout: %q, %q, %v", out, stderr, err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("returned after %v", d)
+	}
+}
+
+func TestRunLimitedStderrTail(t *testing.T) {
+	for _, limit := range []int64{0, 16} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		r := Runner{Bin: os.Args[0], Env: []string{"TFORPHANS_TF_STDERR_HELPER=1", "GORACE=" + os.Getenv("GORACE") + " atexit_sleep_ms=0"}}
+		_, stderr, err := r.runLimited(ctx, limit, "-test.run=^TestStderrTailHelperProcess$")
+		cancel()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Errorf("limit %d: %v", limit, err)
+		}
+		if len(stderr) != 1<<20 || !strings.HasSuffix(string(stderr), "last diagnostic\n") || strings.Contains(string(stderr), "discarded diagnostic") {
+			t.Errorf("limit %d: stderr tail has %d bytes", limit, len(stderr))
+		}
+		if err != nil && !strings.Contains(cmdError([]string{"state", "pull"}, stderr, err).Error(), "last diagnostic") {
+			t.Errorf("limit %d: error lost stderr tail", limit)
+		}
+	}
+}
+
+func TestStderrTailHelperProcess(t *testing.T) {
+	if os.Getenv("TFORPHANS_TF_STDERR_HELPER") != "1" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "discarded diagnostic")
+	fmt.Fprint(os.Stderr, strings.Repeat("x", 2<<20))
+	fmt.Fprintln(os.Stderr, "last diagnostic")
+	os.Exit(1)
 }
 
 func TestMajorMinor(t *testing.T) {

@@ -101,15 +101,29 @@ func providerAddress(ref string) string {
 	return addr
 }
 
+const DefaultMaxSize int64 = 1 << 30
+
+// ReadLimited reads at most maxSize+1 bytes, rejecting oversized state.
+func ReadLimited(r io.Reader, maxSize int64) ([]byte, error) {
+	if maxSize <= 0 || maxSize == 1<<63-1 {
+		return nil, errors.New("invalid -max-state-size: want a positive size below 9223372036854775807 bytes")
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxSize+1))
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("state is larger than %d bytes; raise -max-state-size", maxSize)
+	}
+	return data, err
+}
+
 // Fetch reads a state source: "-" for stdin, an https URL (for example a
 // GitLab Terraform state address) or a local file. HTTP requests use
 // TF_HTTP_USERNAME and TF_HTTP_PASSWORD like Terraform's http backend, and
 // only over https. Plain http needs allowHTTP and never carries credentials.
-func Fetch(ctx context.Context, src string, allowHTTP bool) ([]byte, error) {
+func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]byte, error) {
 	scheme := strings.ToLower(urlScheme(src))
 	switch {
 	case src == "-":
-		return io.ReadAll(os.Stdin)
+		return ReadLimited(os.Stdin, maxSize)
 	case scheme == "https", scheme == "http":
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 		if err != nil {
@@ -147,13 +161,22 @@ func Fetch(ctx context.Context, src string, allowHTTP bool) ([]byte, error) {
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("GET %s: %s", Redact(src), resp.Status)
 		}
-		return io.ReadAll(resp.Body)
+		data, err := ReadLimited(resp.Body, maxSize)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: %w", Redact(src), err)
+		}
+		return data, nil
 	case scheme != "":
 		// Any other scheme://: reading it as a file would quote the
 		// whole string, credentials included, in the error.
 		return nil, fmt.Errorf("unsupported state URL %s: use https, a file or -", Redact(src))
 	default:
-		return os.ReadFile(src)
+		f, err := os.Open(src)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return ReadLimited(f, maxSize)
 	}
 }
 

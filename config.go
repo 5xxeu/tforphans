@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/5xxeu/tforphans/internal/state"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -108,7 +109,19 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			return fmt.Errorf("%s: unknown key %q (keys are flag names without the dash, and roots)", path, key)
 		case !explicit && slices.Contains(configOnlyExplicit, key):
 			return fmt.Errorf("%s: %s is accepted only from a file given with -config, since this file is read on its own and could come with someone else's repository", path, key)
-		case set[key]:
+		}
+		if !explicit && key == "max-state-size" {
+			for _, v := range vals {
+				var size sizeFlag
+				if err := size.Set(v); err != nil {
+					return fmt.Errorf("%s: %s: %w", path, key, err)
+				}
+				if int64(size) > state.DefaultMaxSize {
+					return fmt.Errorf("%s: %s above %d bytes is accepted only on the command line or via -config, since this file is read on its own and could come with someone else's repository", path, key, state.DefaultMaxSize)
+				}
+			}
+		}
+		if set[key] {
 			continue
 		}
 		if _, isBool := f.Value.(interface{ IsBoolFlag() bool }); isBool && len(vals) != 1 {

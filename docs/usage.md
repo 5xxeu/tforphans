@@ -17,6 +17,17 @@ coverage: complete
 
 (Illustrative output.)
 
+`-max-state-size` limits each state read to 1 GiB by default, including
+`-state` files, stdin and HTTP responses, Terraform and Terragrunt state
+pulls, and JSON output from `-refresh`. Oversized input is rejected with an
+error that names the limit and suggests raising it. Give a positive byte
+count or an integer with a `K`, `M` or `G` suffix (powers of 1024,
+case-insensitive), for example `-max-state-size 512M` or
+`-max-state-size 2G`. Zero and negative sizes are invalid. Automatic
+`.tforphans.yaml` files may set `max-state-size` only up to the 1 GiB default;
+a larger value is an error even when overridden on the command line. To
+raise the limit, pass it on the command line or via `-config FILE`.
+
 Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
 Without `-strict` the status speaks of findings only: a run with incomplete
 coverage and nothing found exits `0`, so check `coverage:` (or

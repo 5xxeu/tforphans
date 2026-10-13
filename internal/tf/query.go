@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -137,10 +139,48 @@ type QueryResult struct {
 	errors     int // error diagnostics tied to a list block
 }
 
-// writeTemp creates path, refusing to overwrite an existing file.
+const (
+	tempMarkerPrefix   = "# tforphans temporary file, run "
+	tempQuerySuffix    = ".tfquery.hcl"
+	tempProviderSuffix = "_override.tf"
+	tempAutoSuffix     = "_auto.tf"
+	tempVersionSuffix  = "_version_override.tf"
+)
+
+var (
+	tempSuffixes = []string{tempQuerySuffix, tempProviderSuffix, tempAutoSuffix, tempVersionSuffix}
+	tempMarker   = fmt.Sprintf("%s%d-%s\n", tempMarkerPrefix, os.Getpid(), rand.Text())
+)
+
+func tempName(suffix string) string {
+	return fmt.Sprintf("zz_tforphans_%d%s", os.Getpid(), suffix)
+}
+
+func tempPID(name string) (int, bool) {
+	rest, ok := strings.CutPrefix(name, "zz_tforphans_")
+	if !ok {
+		return 0, false
+	}
+	for _, suffix := range tempSuffixes {
+		digits, ok := strings.CutSuffix(rest, suffix)
+		if !ok || digits == "" || strings.ContainsFunc(digits, func(r rune) bool { return r < '0' || r > '9' }) {
+			continue
+		}
+		pid, err := strconv.Atoi(digits)
+		return pid, err == nil && pid > 0
+	}
+	return 0, false
+}
+
+// writeTemp creates a marked file, refusing to overwrite an existing file.
 func writeTemp(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(f, tempMarker); err != nil {
+		f.Close()
+		os.Remove(path)
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
@@ -158,10 +198,25 @@ func RemoveStale(dir string) error {
 	stale, _ := filepath.Glob(filepath.Join(dir, "zz_tforphans_*"))
 	var busy []string
 	for _, path := range stale {
-		digits, _, _ := strings.Cut(strings.TrimPrefix(filepath.Base(path), "zz_tforphans_"), "_")
-		digits, _, _ = strings.Cut(digits, ".")
-		pid, err := strconv.Atoi(digits)
-		if err != nil || pid == os.Getpid() || proc.Alive(pid) {
+		pid, ok := tempPID(filepath.Base(path))
+		if !ok {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		prefix := make([]byte, len(tempMarkerPrefix))
+		_, err = io.ReadFull(f, prefix)
+		f.Close()
+		if err != nil || string(prefix) != tempMarkerPrefix {
+			continue
+		}
+		if pid == os.Getpid() || proc.Alive(pid) {
 			busy = append(busy, path)
 			continue
 		}
@@ -191,23 +246,25 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	if err := RemoveStale(r.Dir); err != nil {
 		return nil, err
 	}
-	base := filepath.Join(r.Dir, fmt.Sprintf("zz_tforphans_%d", os.Getpid()))
 	if providers := p.ProvidersHCL(); providers != nil {
-		if err := writeTemp(base+"_override.tf", providers); err != nil {
+		path := filepath.Join(r.Dir, tempName(tempProviderSuffix))
+		if err := writeTemp(path, providers); err != nil {
 			return nil, err
 		}
-		defer os.Remove(base + "_override.tf")
+		defer os.Remove(path)
 	}
 	if auto := p.AutoHCL(); auto != nil {
-		if err := writeTemp(base+"_auto.tf", auto); err != nil {
+		path := filepath.Join(r.Dir, tempName(tempAutoSuffix))
+		if err := writeTemp(path, auto); err != nil {
 			return nil, err
 		}
-		defer os.Remove(base + "_auto.tf")
+		defer os.Remove(path)
 	}
-	if err := writeTemp(base+".tfquery.hcl", p.HCL(limitFor(""))); err != nil {
+	path := filepath.Join(r.Dir, tempName(tempQuerySuffix))
+	if err := writeTemp(path, p.HCL(limitFor(""))); err != nil {
 		return nil, err
 	}
-	defer os.Remove(base + ".tfquery.hcl")
+	defer os.Remove(path)
 
 	args := []string{"query", "-json", "-no-color"}
 	out, stderr, runErr := r.run(ctx, args...)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/proc"
+	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/hashicorp/terraform-config-inspect/tfconfig"
 )
 
@@ -36,6 +38,8 @@ type Runner struct {
 	// command with a temporary override file: a root pinned to an older
 	// Terraform would refuse terraform query.
 	AnyVersion bool
+	// MaxStateSize bounds state pull and refresh output; zero uses the default.
+	MaxStateSize int64
 }
 
 // versionOverride relaxes required_version; override files replace the
@@ -52,8 +56,19 @@ func (r Runner) Exec(ctx context.Context, args ...string) ([]byte, []byte, error
 }
 
 func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error) {
+	return r.runLimited(ctx, 0, args...)
+}
+
+func (r Runner) stateSize() int64 {
+	if r.MaxStateSize == 0 {
+		return state.DefaultMaxSize
+	}
+	return r.MaxStateSize
+}
+
+func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) ([]byte, []byte, error) {
 	if r.AnyVersion {
-		name := fmt.Sprintf("zz_tforphans_%d_version_override.tf", os.Getpid())
+		name := tempName(tempVersionSuffix)
 		// Override files apply in name order; one after ours could set
 		// required_version again.
 		if later := laterOverrides(r.Dir, name); len(later) > 0 {
@@ -65,7 +80,9 @@ func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error)
 		}
 		defer os.Remove(path)
 	}
-	cmd := exec.CommandContext(ctx, r.Bin, args...)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, r.Bin, args...)
 	// A wrapper given with -terraform may run terraform as its child.
 	proc.Group(cmd)
 	cmd.Dir = r.Dir
@@ -74,10 +91,26 @@ func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error)
 		cmd.Env = append(cmd.Env, "TF_WORKSPACE="+r.Workspace)
 	}
 	cmd.Env = append(cmd.Env, r.Env...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	var stdout bytes.Buffer
+	var stderr proc.StderrBuffer
+	cmd.Stderr = &stderr
+	if maxSize == 0 {
+		cmd.Stdout = &stdout
+		err := cmd.Run()
+		return stdout.Bytes(), stderr.Bytes(), err
+	}
+	var out []byte
+	err := proc.Stream(ctx, cmd, func(pipe io.Reader) error {
+		data, readErr := state.ReadLimited(pipe, maxSize)
+		if readErr == nil {
+			out = data
+		}
+		return readErr
+	})
+	if ctx.Err() != nil {
+		return nil, stderr.Bytes(), ctx.Err()
+	}
+	return out, stderr.Bytes(), err
 }
 
 // laterOverrides returns the override files of dir whose names sort after
@@ -116,7 +149,7 @@ func cmdError(args []string, stderr []byte, err error) error {
 // StatePull returns the raw state of r.Workspace.
 func (r Runner) StatePull(ctx context.Context) ([]byte, error) {
 	args := []string{"state", "pull", "-no-color"}
-	out, stderr, err := r.run(ctx, args...)
+	out, stderr, err := r.runLimited(ctx, r.stateSize(), args...)
 	if err != nil {
 		return nil, cmdError(args, stderr, err)
 	}
@@ -140,7 +173,7 @@ func (r Runner) RefreshedState(ctx context.Context) ([]byte, error) {
 		return nil, cmdError(args, stderr, err)
 	}
 	args = []string{"show", "-json", "-no-color", planFile}
-	out, stderr, err := r.run(ctx, args...)
+	out, stderr, err := r.runLimited(ctx, r.stateSize(), args...)
 	if err != nil {
 		return nil, cmdError(args, stderr, err)
 	}

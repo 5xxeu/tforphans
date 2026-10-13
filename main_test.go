@@ -15,6 +15,7 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
 
@@ -40,6 +41,55 @@ func TestParseFlags(t *testing.T) {
 		if _, err := parseFlags(argv, io.Discard); err == nil {
 			t.Errorf("%v: no error", argv)
 		}
+	}
+}
+
+func TestMaxStateSizeFlag(t *testing.T) {
+	for value, want := range map[string]int64{
+		"1": 1, "1024": 1024, "1K": 1 << 10, "512M": 512 << 20, "2G": 2 << 30,
+		"1k": 1 << 10, "1m": 1 << 20, "1g": 1 << 30, "9223372036854775806": 1<<63 - 2,
+	} {
+		o, err := parseFlags([]string{"-no-config", "-max-state-size", value}, io.Discard)
+		if err != nil || o.maxStateSize != want {
+			t.Errorf("%s: %+v, %v", value, o, err)
+		}
+	}
+	for _, value := range []string{"0", "-1", "0G", "-2M", "", "1.5G", "2GB", "1T", "bytes", "9223372036854775807", "9223372036854775808", "8589934592G"} {
+		if _, err := parseFlags([]string{"-no-config", "-max-state-size", value}, io.Discard); err == nil || !strings.Contains(err.Error(), "max-state-size") {
+			t.Errorf("%q: %v", value, err)
+		}
+	}
+	if o, err := parseFlags([]string{"-no-config"}, io.Discard); err != nil || o.maxStateSize != state.DefaultMaxSize {
+		t.Errorf("default: %+v, %v", o, err)
+	}
+}
+
+func TestMaxStateSizeCallSites(t *testing.T) {
+	dir := t.TempDir()
+	data := `{"version":4}`
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-config", "-max-state-size", "1", "-state", path, "-no-query", "-plugin", "true"}, &stdout, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "state is larger than 1 bytes; raise -max-state-size") {
+		t.Errorf("extra state: exit %d, %s", code, &stderr)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper")
+	}
+	bin := filepath.Join(dir, "terraform")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s' '"+data+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o := &options{terraformBin: bin, currentWS: true, maxStateSize: 1}
+	if _, n, err := pullRoot(context.Background(), o, dir); err == nil || n != 0 || !strings.Contains(err.Error(), "raise -max-state-size") {
+		t.Errorf("root state: %d, %v", n, err)
+	}
+	o.maxStateSize = int64(len(data))
+	if _, n, err := pullRoot(context.Background(), o, dir); err != nil || n != 1 {
+		t.Errorf("root state at boundary: %d, %v", n, err)
 	}
 }
 

@@ -4,8 +4,7 @@ package proc
 
 import "os/exec"
 
-// ownGroup is a no-op where process groups are not available; WaitDelay
-// still keeps a cancelled run from waiting for leftover children.
+// ownGroup keeps direct-child cancellation where groups are unavailable.
 func ownGroup(*exec.Cmd) {}
 
 // Alive cannot tell here and assumes the process exists.

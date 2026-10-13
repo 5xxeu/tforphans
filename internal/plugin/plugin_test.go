@@ -2,10 +2,18 @@ package plugin
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
+
+	"github.com/5xxeu/tforphans/internal/proc"
 )
 
 func TestRun(t *testing.T) {
@@ -55,11 +63,143 @@ func TestRunCancelPipeline(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, _, err := Run(ctx, "sleep 30 | cat", "plugin1")
-	if err == nil {
-		t.Error("no error after cancellation")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("cancellation error: %v", err)
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("returned after %v", d)
+	}
+}
+
+func TestRunWaitDelay(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var pid int
+		if _, err := fmt.Sscan(string(data), &pid); err != nil {
+			t.Error(err)
+			return
+		}
+		if child, err := os.FindProcess(pid); err == nil {
+			child.Kill()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	start := time.Now()
+	command := fmt.Sprintf(`printf '%%s\n' '{"type":"t","identity":{"id":"x"}}'; sleep 30 & echo $! > '%s'; exit 0`, pidFile)
+	res, warns, err := Run(ctx, command, "plugin1")
+	if !errors.Is(err, exec.ErrWaitDelay) || !strings.HasPrefix(err.Error(), "plugin1:") || res != nil || warns != nil {
+		t.Errorf("inherited stdout: %v, %v, %v", res, warns, err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("returned after %v", d)
+	}
+}
+
+func TestParseLimits(t *testing.T) {
+	oldLine, oldOutput, oldResources := maxLineBytes, maxOutputBytes, maxResources
+	t.Cleanup(func() { maxLineBytes, maxOutputBytes, maxResources = oldLine, oldOutput, oldResources })
+	resource := `{"type":"t","identity":{"id":"x"}}` + "\n"
+	warning := `{"error":"permission denied"}` + "\n"
+	maxResources = 2
+	if res, warns, err := Parse([]byte(resource+warning+"\n"), "plugin1"); err != nil || len(res) != 1 || len(warns) != 1 {
+		t.Fatalf("resource boundary: %d resources, %d warnings, %v", len(res), len(warns), err)
+	}
+	for _, out := range []string{strings.Repeat(resource, 3), resource + warning + resource, warning + resource + warning} {
+		if res, warns, err := Parse([]byte(out), "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1: output exceeds 2 resource limit") || res != nil || warns != nil {
+			t.Errorf("resource limit: %v, %v, %v", res, warns, err)
+		}
+	}
+	maxOutputBytes = int64(len(resource))
+	if res, _, err := Parse([]byte(resource), "plugin2"); err != nil || len(res) != 1 {
+		t.Errorf("byte boundary: %v, %v", res, err)
+	}
+	for _, out := range []string{resource + "\n", resource + warning, strings.Repeat(" ", len(resource)+1)} {
+		if res, warns, err := Parse([]byte(out), "plugin2"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("plugin2: output exceeds %d byte limit", maxOutputBytes)) || res != nil || warns != nil {
+			t.Errorf("byte limit: %v, %v, %v", res, warns, err)
+		}
+	}
+	if res, _, err := parseReader(iotest.OneByteReader(strings.NewReader(resource)), "plugin2"); err != nil || len(res) != 1 {
+		t.Errorf("streamed byte boundary: %v, %v", res, err)
+	}
+	maxOutputBytes = int64(len(resource) + 5)
+	r := strings.NewReader(resource + warning)
+	if _, _, err := parseReader(iotest.OneByteReader(r), "plugin2"); err == nil || !strings.Contains(err.Error(), "byte limit") || r.Len() != len(warning)-6 {
+		t.Errorf("stream read beyond limit+1 or reported truncated JSON: %d bytes left, %v", r.Len(), err)
+	}
+	maxOutputBytes = oldOutput
+	maxLineBytes = 128
+	if _, _, err := Parse([]byte(resource), "plugin3"); err != nil {
+		t.Error(err)
+	}
+	if _, _, err := Parse([]byte(strings.Repeat(" ", maxLineBytes)), "plugin3"); err == nil || !strings.Contains(err.Error(), "plugin3: output line exceeds 128 byte limit") {
+		t.Errorf("line limit: %v", err)
+	}
+}
+
+func TestRunStopsOnInvalidOutputAndLimits(t *testing.T) {
+	oldLine, oldOutput, oldResources := maxLineBytes, maxOutputBytes, maxResources
+	t.Cleanup(func() { maxLineBytes, maxOutputBytes, maxResources = oldLine, oldOutput, oldResources })
+	for _, c := range []struct {
+		name, output, want string
+		lineLimit          int
+		outputLimit        int64
+		resourceLimit      int
+	}{
+		{"invalid", "not json", "plugin1 line 1", oldLine, oldOutput, oldResources},
+		{"line", strings.Repeat("x", 128), "line exceeds 128 byte limit", 128, oldOutput, oldResources},
+		{"bytes", strings.Repeat(" ", 129), "output exceeds 128 byte limit", oldLine, 128, oldResources},
+		{"resources", "{\"type\":\"t\",\"identity\":{\"id\":\"x\"}}\n{\"type\":\"t\",\"identity\":{\"id\":\"y\"}}", "output exceeds 1 resource limit", oldLine, oldOutput, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			maxLineBytes, maxOutputBytes, maxResources = c.lineLimit, c.outputLimit, c.resourceLimit
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			// The child holds stdout open, so the parser must cancel the group.
+			command := fmt.Sprintf("sleep 30 & child=$!; echo $child > '%s'; printf '%%s\\n' '%s'; wait", pidFile, c.output)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			start := time.Now()
+			res, warns, err := Run(ctx, command, "plugin1")
+			if err == nil || !strings.Contains(err.Error(), c.want) || res != nil || warns != nil {
+				t.Fatalf("result: %v, %v, %v", res, warns, err)
+			}
+			if time.Since(start) > 3*time.Second {
+				t.Errorf("plugin did not stop promptly: %v", time.Since(start))
+			}
+			data, err := os.ReadFile(pidFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pid int
+			if _, err := fmt.Sscan(string(data), &pid); err != nil {
+				t.Fatal(err)
+			}
+			// Reaping a killed grandchild can lag behind the shell's exit.
+			for deadline := time.Now().Add(time.Second); proc.Alive(pid) && time.Now().Before(deadline); {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if proc.Alive(pid) {
+				t.Errorf("plugin child %d still alive", pid)
+			}
+		})
+	}
+}
+
+func TestRunExitAfterParse(t *testing.T) {
+	for _, out := range []string{`{"type":"t","identity":{"id":"x"}}`, `{"error":"permission denied"}`} {
+		res, warns, err := Run(context.Background(), fmt.Sprintf("printf '%%s' '%s'; exit 7", out), "plugin1")
+		if err == nil || !strings.Contains(err.Error(), "plugin1: exit status 7") || res != nil || warns != nil {
+			t.Errorf("exit after parse: %v, %v, %v", res, warns, err)
+		}
+	}
+	_, _, err := Run(context.Background(), "printf '%s' 'not json'; exit 7", "plugin1")
+	if err == nil || !strings.HasPrefix(err.Error(), "plugin1 line 1") {
+		t.Errorf("invalid output should precede exit error: %v", err)
 	}
 }
 
@@ -79,5 +219,57 @@ func TestParseUnverified(t *testing.T) {
 func TestParseTwoObjectsOnALine(t *testing.T) {
 	if _, _, err := Parse([]byte(`{"type":"t","identity":{"id":"x"}}{"error":"permission denied"}`), "plugin1"); err == nil {
 		t.Error("no error")
+	}
+}
+
+func TestRunStopsEndlessOutput(t *testing.T) {
+	oldOutput, oldResources := maxOutputBytes, maxResources
+	t.Cleanup(func() { maxOutputBytes, maxResources = oldOutput, oldResources })
+	for _, c := range []struct {
+		name, command, want string
+		outputLimit         int64
+		resourceLimit       int
+	}{
+		{"blank lines", "yes ''", "output exceeds 65536 byte limit", 1 << 16, oldResources},
+		{"resources", `yes '{"type":"t","identity":{"id":"x"}}'`, "output exceeds 1000 resource limit", oldOutput, 1000},
+		{"warnings", `yes '{"error":"x"}'`, "output exceeds 1000 resource limit", oldOutput, 1000},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			maxOutputBytes, maxResources = c.outputLimit, c.resourceLimit
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _, err := Run(ctx, c.command, "plugin1")
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestRunReturnsAfterParentExit(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	// The shell exits first; its child prints invalid output later and
+	// keeps stdout open. The child is not signalled once the shell is
+	// reaped (its group ID could be reused), but the error comes back.
+	command := fmt.Sprintf("(sleep 1; printf 'invalid\\n'; exec sleep 30) & echo $! > '%s'; exit 0", pidFile)
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		var pid int
+		if err == nil {
+			if _, err := fmt.Sscan(string(data), &pid); err == nil && pid > 0 {
+				if child, err := os.FindProcess(pid); err == nil {
+					child.Kill()
+				}
+			}
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, _, err := Run(ctx, command, "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1 line 1") {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("returned after %v", time.Since(start))
 	}
 }
