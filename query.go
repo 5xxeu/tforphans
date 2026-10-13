@@ -146,16 +146,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			}
 			continue
 		}
-		keep := map[string]any{}
-		for _, a := range o.wantedAttrs(f.Type) {
-			if v, ok := f.Attributes[a]; ok {
-				keep[a] = v
-			}
-		}
-		f.Attributes = nil
-		if len(keep) > 0 {
-			f.Attributes = keep
-		}
+		f.Attributes = keepAttrs(f.Attributes, o.wantedAttrs(f.Type))
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
 	// providerOf is the local provider name a list block instance used.
@@ -233,6 +224,28 @@ func (o *options) wantedAttrs(typ string) []string {
 }
 
 // trimAttrs keeps the attributes asked for with -include-attrs.
+// keepAttrs keeps of a listed object's attributes those wanted (for
+// -include-attrs and attr. ignore rules) and its kind, the type attribute,
+// which names it in ignore hints; trimAttrs drops that from the output
+// unless asked for.
+func keepAttrs(attrs map[string]any, wanted []string) map[string]any {
+	keep := map[string]any{}
+	for _, a := range wanted {
+		if v, ok := attrs[a]; ok {
+			keep[a] = v
+		}
+	}
+	if v, ok := attrs["type"]; ok {
+		if _, scalar := model.Scalar(v); scalar {
+			keep["type"] = v
+		}
+	}
+	if len(keep) == 0 {
+		return nil
+	}
+	return keep
+}
+
 func (o *options) trimAttrs(r *model.Resource) {
 	if r.Attributes == nil {
 		return

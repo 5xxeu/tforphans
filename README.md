@@ -494,10 +494,16 @@ proxmox-templates` hides Proxmox VM and container templates (by their
 `template` flag); use it where templates are built outside Terraform.
 
 When 20 or more unmanaged objects share a type and a scope (certificate
-packs a zone got automatically), a note prints the ignore line that would
-hide them, such as `cloudflare_certificate_pack zone_id=<id>`. It hides
-every object of that type there, later ones too, so add it only when they
-are expected.
+packs ordered outside Terraform), a note prints the ignore line that would
+hide them. Objects with a `type` attribute of their own (advanced or
+uploaded certificate packs, DNS record types) are counted per kind, and the
+line names it, such as `cloudflare_certificate_pack zone_id=<id>
+attr.type=advanced`, so that it does not hide a later object of another
+kind there. It does hide later objects of that kind, so add it only when
+they are expected. Only `universal` certificate packs are dropped on their
+own: for advanced packs, neither the type nor the certificate authority nor
+the validation method tells one a tool ordered from one a Terraform root
+should manage.
 
 ### Bringing orphans under Terraform: `tforphans adopt`
 
