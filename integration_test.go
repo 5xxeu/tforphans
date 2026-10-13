@@ -460,7 +460,7 @@ func TestIntegrationProxmox(t *testing.T) {
 	mu.Lock()
 	fail["/api2/json/cluster/ha/groups/"] = "500 ha groups have been migrated to rules"
 	mu.Unlock()
-	code, stdout, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict", "-v")
+	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict", "-v")
 	if code != exitOrphans || !strings.Contains(stderr, "coverage: complete") || !strings.Contains(stderr, "HA rules instead of HA groups") {
 		t.Errorf("PVE 9 HA groups: exit %d\n%s", code, stderr)
 	}
