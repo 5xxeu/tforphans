@@ -91,7 +91,8 @@ func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) (
 		cmd.Env = append(cmd.Env, "TF_WORKSPACE="+r.Workspace)
 	}
 	cmd.Env = append(cmd.Env, r.Env...)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	var stderr proc.StderrBuffer
 	cmd.Stderr = &stderr
 	if maxSize == 0 {
 		cmd.Stdout = &stdout

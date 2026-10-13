@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/5xxeu/tforphans/internal/state"
 )
 
 func TestStreamSlowConsumer(t *testing.T) {
@@ -117,6 +119,110 @@ func TestStreamHelperProcess(t *testing.T) {
 	case "child":
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
+	case "stderr-parent":
+		os.Stderr.Write(bytes.Repeat([]byte("x"), 2*maxStderrSize))
+		fmt.Fprintln(os.Stderr, "first\nsecond")
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStreamHelperProcess$")
+		cmd.Env = append(os.Environ(), "TFORPHANS_PROC_HELPER=stderr-child")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.Stderr = os.Stderr
+		ready, err := cmd.StdoutPipe()
+		if err != nil {
+			os.Exit(1)
+		}
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if !bufio.NewScanner(ready).Scan() {
+			os.Exit(1)
+		}
+		ready.Close()
+		fmt.Fprintln(os.Stdout, cmd.Process.Pid)
+		fmt.Fprint(os.Stdout, "oversized")
+		cmd.Process.Release()
+		os.Exit(0)
+	case "stderr-child":
+		chunk := bytes.Repeat([]byte("s"), 1024)
+		os.Stderr.Write(chunk)
+		fmt.Fprintln(os.Stdout, "ready")
+		os.Stdout.Close()
+		for {
+			if _, err := os.Stderr.Write(chunk); err != nil {
+				os.Exit(0)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func TestStreamContinuousStderr(t *testing.T) {
+	for _, limit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("limit=%v", limit), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStreamHelperProcess$")
+			cmd.Env = append(os.Environ(), "TFORPHANS_PROC_HELPER=stderr-parent", "GORACE="+os.Getenv("GORACE")+" atexit_sleep_ms=0")
+			Group(cmd)
+			cmd.WaitDelay = 200 * time.Millisecond
+			if limit {
+				cmd.WaitDelay = 2 * time.Second
+			}
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			var pid int
+			t.Cleanup(func() {
+				if pid != 0 {
+					if child, err := os.FindProcess(pid); err == nil {
+						child.Kill()
+					}
+				}
+			})
+			var exited time.Time
+			err := Stream(ctx, cmd, func(r io.Reader) error {
+				br := bufio.NewReader(r)
+				line, err := br.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				if _, err := fmt.Sscan(line, &pid); err != nil {
+					return err
+				}
+				for !r.(*drainReader).draining.Load() {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					time.Sleep(time.Millisecond)
+				}
+				exited = time.Now()
+				if limit {
+					_, err := state.ReadLimited(br, 1)
+					return err
+				}
+				_, err = io.Copy(io.Discard, br)
+				return err
+			})
+			if limit {
+				if err == nil || !strings.Contains(err.Error(), "state is larger than 1 bytes") {
+					t.Errorf("limit error: %v", err)
+				}
+			} else if !errors.Is(err, exec.ErrWaitDelay) {
+				t.Errorf("continuous stderr: %v", err)
+			}
+			elapsed := time.Since(exited)
+			if elapsed > 500*time.Millisecond || (!limit && elapsed < cmd.WaitDelay/2) {
+				t.Errorf("returned after %v", elapsed)
+			}
+			if stderr.Len() != maxStderrSize {
+				t.Errorf("retained stderr: %d bytes", stderr.Len())
+			}
+			if !bytes.Contains(stderr.Bytes(), []byte("first\nsecond\n")) || !bytes.Contains(stderr.Bytes(), []byte("ssss")) {
+				t.Error("stderr tail lost parent or child output")
+			}
+			if pid == 0 || cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+				t.Fatalf("parent did not exit successfully: %d, %v", pid, cmd.ProcessState)
+			}
+		})
 	}
 }
 

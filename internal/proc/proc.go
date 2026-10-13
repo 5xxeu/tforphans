@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -21,16 +22,45 @@ func Group(cmd *exec.Cmd) {
 	cmd.WaitDelay = 5 * time.Second
 }
 
+const maxStderrSize = 1 << 20
+
+// StderrBuffer retains the last 1 MiB, discarding earlier output.
+type StderrBuffer struct {
+	data []byte
+}
+
+func (b *StderrBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if n == 0 {
+		return 0, nil
+	}
+	if b.data == nil {
+		b.data = make([]byte, 0, maxStderrSize)
+	}
+	if n >= maxStderrSize {
+		b.data = append(b.data[:0], p[n-maxStderrSize:]...)
+	} else {
+		if excess := len(b.data) + n - maxStderrSize; excess > 0 {
+			b.data = b.data[:copy(b.data, b.data[excess:])]
+		}
+		b.data = append(b.data, p...)
+	}
+	return n, nil
+}
+
+func (b *StderrBuffer) Bytes() []byte { return b.data }
+
 type drainReader struct {
 	pipe     *os.File
 	delay    time.Duration
+	fixed    bool
 	draining atomic.Bool
 	expired  atomic.Bool
 	timer    *time.Timer
 }
 
 func (r *drainReader) Read(p []byte) (int, error) {
-	if r.draining.Load() {
+	if !r.fixed && r.draining.Load() {
 		// Bound blocked reads, not time spent consuming output.
 		limit := time.Now()
 		if !r.expired.Load() {
@@ -48,15 +78,18 @@ func (r *drainReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *drainReader) drain() <-chan time.Time {
+func (r *drainReader) drain(exited time.Time) <-chan time.Time {
 	r.draining.Store(true)
-	delay := r.delay
-	if r.expired.Load() {
-		delay = 0
+	limit := time.Now().Add(r.delay)
+	if r.fixed {
+		limit = exited.Add(r.delay)
 	}
-	if err := r.pipe.SetReadDeadline(time.Now().Add(delay)); err != nil {
-		// Pipes without deadlines are closed after WaitDelay.
-		r.timer = time.NewTimer(delay)
+	if r.expired.Load() {
+		limit = time.Now()
+	}
+	if err := r.pipe.SetReadDeadline(limit); err != nil || r.fixed {
+		// Close fixed drains and pipes without deadline support.
+		r.timer = time.NewTimer(time.Until(limit))
 		return r.timer.C
 	}
 	return nil
@@ -70,6 +103,7 @@ func (r *drainReader) close() {
 }
 
 // Stream runs cmd and consumes stdout without bounding the reading time.
+// Stderr writers other than *os.File receive only the last 1 MiB.
 // Group must be called before Stream. Stdin must be nil or an *os.File.
 func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) error {
 	pr, pw, err := os.Pipe()
@@ -88,7 +122,7 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 		if err != nil {
 			return err
 		}
-		stderrReader = &drainReader{pipe: pr, delay: cmd.WaitDelay}
+		stderrReader = &drainReader{pipe: pr, delay: cmd.WaitDelay, fixed: true}
 		defer stderrReader.close()
 		stderrWrite = pw
 		defer pw.Close()
@@ -107,15 +141,26 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 	}
 	// No os/exec copy goroutines delay Wait after reaping. The only signal
 	// race is between reap inside Wait and our receive, as in os/exec itself.
-	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
+	type result struct {
+		err    error
+		exited time.Time
+	}
+	wait := make(chan result, 1)
+	go func() {
+		err := cmd.Wait()
+		wait <- result{err: err, exited: time.Now()}
+	}()
 	read := make(chan error, 1)
 	go func() { read <- consume(reader) }()
 	var stderrRead chan error
 	if stderrReader != nil {
 		stderrRead = make(chan error, 1)
 		go func() {
-			_, err := io.Copy(stderr, stderrReader)
+			var tail StderrBuffer
+			_, err := io.Copy(&tail, stderrReader)
+			if _, writeErr := io.Copy(stderr, bytes.NewReader(tail.Bytes())); err == nil {
+				err = writeErr
+			}
 			stderrRead <- err
 		}()
 	}
@@ -124,24 +169,31 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 	ctxDone := ctx.Done()
 	for wait != nil || read != nil || stderrRead != nil {
 		select {
-		case waitErr = <-wait:
+		case result := <-wait:
+			waitErr = result.err
 			wait = nil
 			if cmd.WaitDelay > 0 {
 				// After reap, bound reads without signalling a reused group ID.
 				if read != nil {
-					deadline = reader.drain()
+					deadline = reader.drain(result.exited)
 				}
 				if stderrRead != nil {
-					stderrDeadline = stderrReader.drain()
+					stderrDeadline = stderrReader.drain(result.exited)
 				}
 			}
 		case readErr = <-read:
 			read = nil
-			if readErr != nil && wait != nil {
-				_ = cmd.Cancel()
-			}
 			reader.close()
 			deadline = nil
+			if readErr != nil {
+				if stderrReader != nil {
+					stderrReader.close()
+					stderrDeadline = nil
+				}
+				if wait != nil {
+					_ = cmd.Cancel()
+				}
+			}
 		case stderrErr = <-stderrRead:
 			stderrRead = nil
 			if stderrErr != nil && wait != nil {

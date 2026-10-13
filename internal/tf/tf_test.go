@@ -793,6 +793,35 @@ func TestStateOutputWaitDelay(t *testing.T) {
 	}
 }
 
+func TestRunLimitedStderrTail(t *testing.T) {
+	for _, limit := range []int64{0, 16} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		r := Runner{Bin: os.Args[0], Env: []string{"TFORPHANS_TF_STDERR_HELPER=1", "GORACE=" + os.Getenv("GORACE") + " atexit_sleep_ms=0"}}
+		_, stderr, err := r.runLimited(ctx, limit, "-test.run=^TestStderrTailHelperProcess$")
+		cancel()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Errorf("limit %d: %v", limit, err)
+		}
+		if len(stderr) != 1<<20 || !strings.HasSuffix(string(stderr), "last diagnostic\n") || strings.Contains(string(stderr), "discarded diagnostic") {
+			t.Errorf("limit %d: stderr tail has %d bytes", limit, len(stderr))
+		}
+		if err != nil && !strings.Contains(cmdError([]string{"state", "pull"}, stderr, err).Error(), "last diagnostic") {
+			t.Errorf("limit %d: error lost stderr tail", limit)
+		}
+	}
+}
+
+func TestStderrTailHelperProcess(t *testing.T) {
+	if os.Getenv("TFORPHANS_TF_STDERR_HELPER") != "1" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "discarded diagnostic")
+	fmt.Fprint(os.Stderr, strings.Repeat("x", 2<<20))
+	fmt.Fprintln(os.Stderr, "last diagnostic")
+	os.Exit(1)
+}
+
 func TestMajorMinor(t *testing.T) {
 	for v, want := range map[string][2]int{"1.13.5": {1, 13}, "1.14.0-beta1": {1, 14}, "1.16": {1, 16}, "2.0.0": {2, 0}} {
 		if ma, mi, ok := majorMinor(v); !ok || ma != want[0] || mi != want[1] {
