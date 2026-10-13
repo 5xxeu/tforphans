@@ -4,6 +4,7 @@ package proc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -118,12 +120,74 @@ func TestStreamHelperProcess(t *testing.T) {
 	}
 }
 
+func TestStreamStderrDescendant(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30 >/dev/null & echo $!; printf 'first\\nsecond\\n' >&2; exit 0")
+	Group(cmd)
+	cmd.WaitDelay = time.Second
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	var pid int
+	t.Cleanup(func() {
+		if pid != 0 {
+			if child, err := os.FindProcess(pid); err == nil {
+				child.Kill()
+			}
+		}
+	})
+	var waited time.Duration
+	start := time.Now()
+	err := Stream(ctx, cmd, func(r io.Reader) error {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Sscan(string(data), &pid); err != nil {
+			return err
+		}
+		// Draining starts only after Stream receives the Wait result.
+		reader := r.(*drainReader)
+		for !reader.draining.Load() {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			time.Sleep(time.Millisecond)
+		}
+		waited = time.Since(start)
+		return nil
+	})
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Errorf("inherited stderr: %v", err)
+	}
+	if waited > cmd.WaitDelay/2 {
+		t.Errorf("Wait returned after %v", waited)
+	}
+	if elapsed := time.Since(start); elapsed < cmd.WaitDelay || elapsed > 2*cmd.WaitDelay {
+		t.Errorf("Stream returned after %v", elapsed)
+	}
+	if got := stderr.String(); got != "first\nsecond\n" {
+		t.Errorf("stderr: %q", got)
+	}
+	if pid == 0 || cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Fatalf("parent did not exit successfully: %d, %v", pid, cmd.ProcessState)
+	}
+}
+
 func TestStreamCancelAfterParentExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30 & echo $!; exit 0")
 	Group(cmd)
 	cmd.WaitDelay = time.Second
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	var signals atomic.Int32
+	kill := cmd.Cancel
+	cmd.Cancel = func() error {
+		signals.Add(1)
+		return kill()
+	}
 	var pid int
 	t.Cleanup(func() {
 		if pid != 0 {
@@ -152,5 +216,8 @@ func TestStreamCancelAfterParentExit(t *testing.T) {
 	}
 	if pid == 0 || cmd.ProcessState == nil || !cmd.ProcessState.Success() {
 		t.Fatalf("parent did not exit before cancellation: %d, %v", pid, cmd.ProcessState)
+	}
+	if got := signals.Load(); got != 0 {
+		t.Errorf("signalled after parent exit: %d", got)
 	}
 }
