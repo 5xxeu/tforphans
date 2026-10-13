@@ -50,4 +50,13 @@ jobs:
         with:
           terraform_version: ${{ matrix.terraform }}
           terraform_wrapper: false
+      - name: Install terragrunt
+        env:
+          TG_VERSION: v1.1.6
+          TG_SHA256: d75a80bb264758ba00dabcb17f4b507fcdab4ca90d9e41f96750df036bf69b04
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/terragrunt" "https://github.com/gruntwork-io/terragrunt/releases/download/$TG_VERSION/terragrunt_linux_amd64"
+          echo "$TG_SHA256  $RUNNER_TEMP/terragrunt" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/terragrunt"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - run: go test -tags integration -count=1 .

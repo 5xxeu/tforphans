@@ -86,6 +86,7 @@ func TestConfigRejected(t *testing.T) {
 		"terraform: ./evil\n":                   "only on the command line",
 		"o: ~/.profile.d/x\n":                   "only on the command line",
 		"allow-http: true\n":                    "only on the command line",
+		"terragrunt: true\n":                    "only on the command line",
 		"init: true\n":                          "only from a file given with -config",
 		"state: [https://evil.example/state]\n": "only from a file given with -config",
 		"state: [fake.tfstate]\n":               "only from a file given with -config",
@@ -123,7 +124,7 @@ func TestConfigRejected(t *testing.T) {
 	if o, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil || !o.init || len(o.states) != 1 {
 		t.Errorf("-config with trust keys: %+v, %v", o, err)
 	}
-	for _, conf := range []string{"plugin: [./list.sh]\n", "state: [https://gitlab.example/state]\n", "terraform: ./tf\n", "o: x.tf\n"} {
+	for _, conf := range []string{"plugin: [./list.sh]\n", "state: [https://gitlab.example/state]\n", "terraform: ./tf\n", "terragrunt: true\n", "o: x.tf\n"} {
 		os.WriteFile("audit.yaml", []byte(conf), 0o644)
 		if _, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err == nil || !strings.Contains(err.Error(), "only on the command line") {
 			t.Errorf("-config %q: %v", conf, err)
@@ -201,5 +202,23 @@ func TestConfigInside(t *testing.T) {
 	want, _ := filepath.EvalSymlinks(filepath.Join(outside, "target"))
 	if o.roots[0] != want {
 		t.Errorf("-config root %s, want %s", o.roots[0], want)
+	}
+}
+
+// terragrunt-unit only classifies directories: a file read on its own may
+// set it (inside the current directory, like roots); terragrunt itself
+// still needs -terragrunt on the command line.
+func TestConfigTerragruntUnit(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	os.MkdirAll("live/app", 0o755)
+	os.WriteFile(defaultConfigFile, []byte("terragrunt-unit: [live/app]\n"), 0o644)
+	o, err := parseFlags([]string{"-terragrunt"}, io.Discard)
+	if err != nil || len(o.tgUnits) != 1 || !strings.HasSuffix(o.tgUnits[0], filepath.Join("live", "app")) {
+		t.Errorf("%+v %v", o, err)
+	}
+	os.WriteFile(defaultConfigFile, []byte("terragrunt-unit: [../x]\n"), 0o644)
+	if _, err := parseFlags([]string{"-terragrunt"}, io.Discard); err == nil {
+		t.Error("a path outside the current directory was accepted")
 	}
 }

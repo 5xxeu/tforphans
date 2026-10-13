@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,7 @@ func TestFindRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, _, err := FindRoots(dir)
+	got, _, _, err := FindRoots(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +228,93 @@ func TestFindRootsUnreadable(t *testing.T) {
 	if _, err := os.ReadDir(filepath.Join(dir, "locked")); err == nil {
 		t.Skip("permissions are not enforced here (root)")
 	}
-	roots, unread, err := FindRoots(dir)
-	if err != nil || len(roots) != 1 || len(unread) != 1 || !strings.HasSuffix(unread[0], "locked") {
+	roots, unread, _, err := FindRoots(dir, false)
+	if err != nil || len(roots) != 1 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "locked") {
 		t.Errorf("roots %v, unread %v, err %v", roots, unread, err)
+	}
+}
+
+// Parents are the terragrunt.hcl files units include; any other one is a
+// unit, even with units below it or with all its configuration generated.
+func TestTerragruntParents(t *testing.T) {
+	dir := t.TempDir()
+	gen := "remote_state {\n  backend = \"s3\"\n}\ngenerate \"main\" {\n  path = \"main.tf\"\n  contents = \"\"\n}\n"
+	files := map[string]string{
+		"terragrunt.hcl":             gen, // legacy parent of svc
+		"svc/terragrunt.hcl":         "include \"root\" {\n  path = find_in_parent_folders()\n}\n",
+		"live/app/terragrunt.hcl":    gen, // a unit with a unit below that includes root.hcl
+		"live/app/db/terragrunt.hcl": "include \"root\" {\n  path = find_in_parent_folders(\"root.hcl\")\n}\n",
+		"lit/terragrunt.hcl":         gen, // parent by a literal path
+		"lit/u/terragrunt.hcl":       "include \"root\" {\n  path = \"../terragrunt.hcl\"\n}\n",
+		"x/terragrunt.hcl":           gen, // a terraform root below does not make a parent
+		"x/tools/main.tf":            "terraform {\n  backend \"s3\" {}\n}\n",
+	}
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+	}
+	t.Chdir(dir)
+	got, unread, parents, err := FindRoots(".", true)
+	if want := []Parent{{".", "svc"}, {"lit", filepath.Join("lit", "u")}}; !reflect.DeepEqual(parents, want) {
+		t.Errorf("parents %v", parents)
+	}
+	want := []string{filepath.Join("lit", "u"), filepath.Join("live", "app"), filepath.Join("live", "app", "db"), "svc", "x", filepath.Join("x", "tools")}
+	if err != nil || len(unread) != 0 || !reflect.DeepEqual(got, want) {
+		t.Errorf("%v %v %v", got, unread, err)
+	}
+}
+
+func TestTerragruntUnits(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"terragrunt.hcl":                       "remote_state {\n  backend = \"s3\"\n}\n", // legacy parent: no unit
+		"root.hcl":                             "remote_state {\n  backend = \"s3\"\n}\n",
+		"app/terragrunt.hcl":                   "include \"root\" {\n  path = find_in_parent_folders()\n}\n", // makes the top one a parent
+		"db/terragrunt.hcl":                    "terraform {\n  source = \"../modules/db\"\n}\n",
+		"modules/db/main.tf":                   "resource \"terraform_data\" \"x\" {}\n",
+		"local/terragrunt.hcl":                 "remote_state {\n  backend = \"s3\"\n}\n", // fresh checkout: no backend.tf yet
+		"local/main.tf":                        "resource \"terraform_data\" \"x\" {}\n",
+		"app/.terragrunt-cache/x/y/backend.tf": "terraform {\n  backend \"s3\" {}\n}\n",
+	}
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+	}
+	got, _, _, err := FindRoots(dir, true)
+	want := []string{filepath.Join(dir, "app"), filepath.Join(dir, "db"), filepath.Join(dir, "local")}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("units: %v, %v", got, err)
+	}
+	if got, _, _, _ := FindRoots(dir, false); len(got) != 0 {
+		t.Errorf("without -terragrunt: %v", got)
+	}
+	// A unit whose terragrunt.hcl is broken is unread, not skipped.
+	os.MkdirAll(filepath.Join(dir, "broken"), 0o755)
+	os.WriteFile(filepath.Join(dir, "broken", "terragrunt.hcl"), []byte("include \"root\" {\n"), 0o644)
+	got, unread, _, err := FindRoots(dir, true)
+	if err != nil || len(got) != 3 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") || !strings.Contains(unread[0].Reason, "could not be parsed") {
+		t.Errorf("broken unit: %v %v %v", got, unread, err)
+	}
+	// Also in a directory that is a terraform root as well (left over from
+	// before the move to Terragrunt).
+	os.WriteFile(filepath.Join(dir, "broken", "terraform.tfstate"), []byte("{}"), 0o644)
+	got, unread, _, err = FindRoots(dir, true)
+	if err != nil || len(got) != 3 || len(unread) != 1 || !strings.HasSuffix(unread[0].Path, "broken") {
+		t.Errorf("broken unit in a terraform root: %v %v %v", got, unread, err)
+	}
+	if got, unread, _, _ := FindRoots(dir, false); len(got) != 1 || len(unread) != 0 {
+		t.Errorf("without -terragrunt it is a terraform root: %v %v", got, unread)
+	}
+	// A unit whose configuration is all generated (fresh checkout) is a
+	// unit: no units lie below it. A link to a missing file is unread.
+	os.MkdirAll(filepath.Join(dir, "gen"), 0o755)
+	os.WriteFile(filepath.Join(dir, "gen", "terragrunt.hcl"), []byte("remote_state {\n  backend = \"s3\"\n}\ngenerate \"main\" {\n  path = \"main.tf\"\n  contents = \"\"\n}\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "link"), 0o755)
+	if err := os.Symlink(filepath.Join(dir, "missing.hcl"), filepath.Join(dir, "link", "terragrunt.hcl")); err != nil {
+		t.Skip(err)
+	}
+	got, unread, _, err = FindRoots(dir, true)
+	if err != nil || !slices.Contains(got, filepath.Join(dir, "gen")) || slices.Contains(got, dir) || len(unread) != 2 || !strings.HasSuffix(unread[1].Path, "link") {
+		t.Errorf("generated unit, dangling link: %v %v %v", got, unread, err)
 	}
 }

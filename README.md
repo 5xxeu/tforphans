@@ -200,7 +200,7 @@ job may then run, so what a file may set depends on what it could do:
 
 | Keys | `.tforphans.yaml` | `-config FILE` |
 |---|---|---|
-| `plugin`, `terraform`, `allow-http`, `o`, `state` URLs | no | no |
+| `plugin`, `terraform`, `terragrunt`, `allow-http`, `o`, `state` URLs | no | no |
 | `init`, `refresh`, `allow-unpinned`, `include-attrs`, `state` files, `proxmox-cluster-states`, `plugin-cluster-states`, `allow-incomplete` | no | yes |
 | everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, ...) | yes | yes |
 
@@ -285,6 +285,41 @@ Terraform's http backend (GitLab managed state included), so these
 credentials go to every URL given. Plain http needs `-allow-http` and never
 carries credentials, since state read over it could be altered in transit.
 State must be raw state (`terraform state pull`), not `terraform show -json`.
+
+### Terragrunt
+
+`-terragrunt` makes `-state-roots` read Terragrunt units too: every
+directory with a `terragrunt.hcl`, such as `live/prod/app` under a
+`root.hcl`, except a parent: one with no `terraform` block, no `include`
+and no `.tf` files of its own that a unit includes, with
+`find_in_parent_folders()` or a literal path (a legacy top-level
+`terragrunt.hcl`). A parent included some other way is taken for a unit
+and shows as an unread state. The other way round, a unit that other units
+include as well, with all its configuration generated (no `terraform`
+block, no `.tf` files in a fresh checkout), cannot be told from a parent:
+it is taken for shared configuration, a `note:` names it, and
+`-terragrunt-unit DIR` (`terragrunt-unit:` in a config file) reads it as a
+unit. tforphans never runs terragrunt to tell the two apart. Each unit's state is read with
+`terragrunt run -- state pull` (Terragrunt 0.73 or newer in `PATH`; tested
+with 1.1.6), which renders the backend the unit's configuration describes,
+so remote state blocks, `generate` and includes all work. Terragrunt
+initializes a unit before reading it: it fetches the module source and
+providers into `.terragrunt-cache` next to `terragrunt.hcl`, as any
+terragrunt command does. Terragrunt also evaluates the units' HCL, which
+can run commands (`run_cmd`, hooks): the flag is opt-in and accepted only
+on the command line, like `-plugin`. It runs the terraform of
+`-terraform`. A `terragrunt.hcl` that cannot be read or parsed is an
+unread state (coverage incomplete, `adopt` refuses), not a missing unit. A
+unit cannot be a root argument as well: terraform query would read the
+backend of its `.tf` files, not the one terragrunt renders.
+
+```sh
+tforphans -no-query -scan cloudflare -state-roots live -terragrunt
+```
+
+Units are read as states only: their modules are not queried, and `-refresh`
+does not apply to them. Workspaces are not used by units and are not
+listed.
 
 ### Regions, locations and other list arguments
 
@@ -819,9 +854,9 @@ line, never from a config file a merge request could change.
 - The temporary files are written next to the configuration; there is no
   separate work directory, and a provider version cannot be overridden for
   the run (the root's installed providers are used).
-- Terragrunt is not supported yet: generated backends live in
-  `.terragrunt-cache`, which `-state-roots` skips. Pass such states with
-  `-state` or run tforphans in the generated directories.
+- Terragrunt units are read only as states (`-state-roots DIR -terragrunt`);
+  their modules are not queried. List their providers' objects from a plain
+  root with the same provider configuration, or with `-scan`.
 - Generated configuration can need manual fixes when the API does not return
   everything the resource requires. For example, Cloudflare does not return
   a Worker's code, so `cloudflare_workers_script` needs `content_file`, and

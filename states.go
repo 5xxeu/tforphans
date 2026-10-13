@@ -87,21 +87,41 @@ func inWorkspace(ws string, err error) error {
 // incomplete, not wrong.
 func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *report.Summary) ([]string, error) {
 	skip := map[string]bool{}
+	// A root argument is queried with terraform, which reads the backend of
+	// its .tf files, not the one terragrunt renders: a unit there would
+	// stand in with a stale state (or none).
+	for _, r := range o.roots {
+		if !o.terragrunt {
+			break
+		}
+		kind, err := tf.TerragruntKind(r)
+		if err != nil {
+			return nil, fmt.Errorf("root %s: %w", r, err)
+		}
+		if kind != tf.TerragruntNone {
+			return nil, fmt.Errorf("root %s is a Terragrunt unit: terraform query does not run in units, give its directory to -state-roots only", r)
+		}
+	}
 	for _, r := range o.roots {
 		if abs, err := filepath.Abs(r); err == nil {
 			skip[abs] = true
 		}
 	}
-	var dirs []string
+	var dirs, skipped []string
 	for _, tree := range o.stateRoots {
-		found, unread, err := tf.FindRoots(tree)
+		found, unread, parents, err := tf.FindRoots(tree, o.terragrunt)
 		if err != nil {
 			return nil, fmt.Errorf("-state-roots %s: %w", tree, err)
+		}
+		for _, p := range parents {
+			if !slices.ContainsFunc(o.tgUnits, func(u string) bool { return sameDir(u, p.Dir) }) {
+				skipped = append(skipped, fmt.Sprintf("%s (by %s)", p.Dir, p.By))
+			}
 		}
 		// A root there may manage what is found: like an unread state
 		// (adopt refuses, coverage is incomplete).
 		for _, u := range unread {
-			sum.UnreadStates = append(sum.UnreadStates, report.UnreadState{Root: u, Error: "directory could not be read (permission denied)"})
+			sum.UnreadStates = append(sum.UnreadStates, report.UnreadState{Root: u.Path, Error: u.Reason})
 		}
 		for _, d := range found {
 			abs, err := filepath.Abs(d)
@@ -113,6 +133,25 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 				dirs = append(dirs, d)
 			}
 		}
+	}
+
+	// Units named with -terragrunt-unit are read even when units include
+	// them (FindRoots took them for shared configuration).
+	for _, u := range o.tgUnits {
+		kind, err := tf.TerragruntKind(u)
+		if err != nil {
+			return nil, fmt.Errorf("-terragrunt-unit %s: %w", u, err)
+		}
+		if kind == tf.TerragruntNone {
+			return nil, fmt.Errorf("-terragrunt-unit %s: no terragrunt.hcl there", u)
+		}
+		if abs, err := filepath.Abs(u); err == nil && !skip[abs] {
+			skip[abs] = true
+			dirs = append(dirs, u)
+		}
+	}
+	if len(skipped) > 0 {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d terragrunt.hcl taken for shared configuration, since units include them, and not read as units: %s; -terragrunt-unit DIR reads one as a unit", len(skipped), strings.Join(firstN(skipped, 5), ", ")))
 	}
 
 	// A path that is wrong (.. from the wrong directory) can reach a whole
@@ -148,6 +187,28 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 	if err := tf.RemoveStale(dir); err != nil {
 		return nil, 0, err
 	}
+	// A Terragrunt unit: terragrunt renders the backend and initializes
+	// on its own. One state (units do not use workspaces), never refreshed.
+	unit := false
+	if o.terragrunt {
+		kind, err := tf.TerragruntKind(dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		// FindRoots kept only the parents with no units below.
+		unit = kind != tf.TerragruntNone
+	}
+	if unit {
+		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		insts, err := state.Parse(raw)
+		if err != nil {
+			return nil, 0, err
+		}
+		return insts, 1, nil
+	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
 	if !r.Initialized() {
 		if !o.init {
@@ -158,6 +219,13 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 		}
 	}
 	return pullRoot(ctx, o, dir)
+}
+
+// sameDir reports whether two paths name one directory.
+func sameDir(a, b string) bool {
+	x, err1 := filepath.Abs(a)
+	y, err2 := filepath.Abs(b)
+	return err1 == nil && err2 == nil && x == y
 }
 
 // firstN returns at most n elements and a count of the rest.
