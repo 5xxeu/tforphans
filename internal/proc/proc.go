@@ -191,19 +191,19 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 					stderrDeadline = nil
 				}
 				if wait != nil {
-					_ = cmd.Cancel()
+					kill(cmd)
 				}
 			}
 		case stderrErr = <-stderrRead:
 			stderrRead = nil
 			if stderrErr != nil && wait != nil {
-				_ = cmd.Cancel()
+				kill(cmd)
 			}
 			stderrReader.close()
 			stderrDeadline = nil
 		case <-ctxDone:
 			if wait != nil {
-				_ = cmd.Cancel()
+				kill(cmd)
 			}
 			reader.close()
 			if stderrReader != nil {
@@ -236,4 +236,13 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 		return exec.ErrWaitDelay
 	}
 	return nil
+}
+
+// kill signals a command that Wait has not reaped yet. The group signal
+// misses a command that moved to another group, so the command itself is
+// killed when it fails.
+func kill(cmd *exec.Cmd) {
+	if cmd.Cancel() != nil {
+		_ = cmd.Process.Kill()
+	}
 }
