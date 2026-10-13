@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -47,7 +48,7 @@ func TestStreamSlowConsumer(t *testing.T) {
 		}
 		sc := bufio.NewScanner(r)
 		for sc.Scan() {
-			time.Sleep(cmd.WaitDelay)
+			time.Sleep(2 * cmd.WaitDelay)
 			var object map[string]any
 			if err := json.Unmarshal(sc.Bytes(), &object); err != nil {
 				return err
@@ -61,6 +62,72 @@ func TestStreamSlowConsumer(t *testing.T) {
 	}
 	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
 		t.Errorf("parent did not exit successfully: %v", cmd.ProcessState)
+	}
+}
+
+func TestStreamDetachedDescendant(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStreamHelperProcess$")
+	// Skip the race runtime's exit sleep in the helper.
+	cmd.Env = append(os.Environ(), "TFORPHANS_PROC_HELPER=parent", "GORACE="+os.Getenv("GORACE")+" atexit_sleep_ms=0")
+	Group(cmd)
+	cmd.WaitDelay = 100 * time.Millisecond
+	var pid int
+	t.Cleanup(func() {
+		if pid != 0 {
+			if child, err := os.FindProcess(pid); err == nil {
+				child.Kill()
+			}
+		}
+	})
+	var got []string
+	start := time.Now()
+	err := Stream(ctx, cmd, func(r io.Reader) error {
+		sc := bufio.NewScanner(r)
+		if sc.Scan() {
+			if _, err := fmt.Sscan(sc.Text(), &pid); err != nil {
+				return err
+			}
+		}
+		for sc.Scan() {
+			got = append(got, sc.Text())
+		}
+		return sc.Err()
+	})
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Errorf("detached descendant: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 6*cmd.WaitDelay {
+		t.Errorf("returned after %v", elapsed)
+	}
+	if !slices.Equal(got, []string{"first", "second"}) {
+		t.Errorf("output: %v", got)
+	}
+	if pid == 0 || cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Fatalf("parent did not exit successfully: %d, %v", pid, cmd.ProcessState)
+	}
+}
+
+func TestStreamHelperProcess(t *testing.T) {
+	switch os.Getenv("TFORPHANS_PROC_HELPER") {
+	case "parent":
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStreamHelperProcess$")
+		cmd.Env = append(os.Environ(), "TFORPHANS_PROC_HELPER=child")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, cmd.Process.Pid)
+		fmt.Fprintln(os.Stdout, "first\nsecond")
+		cmd.Process.Release()
+		os.Exit(0)
+	case "child":
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
 	}
 }
 

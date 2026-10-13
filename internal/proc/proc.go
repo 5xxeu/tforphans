@@ -4,9 +4,11 @@ package proc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +19,28 @@ import (
 func Group(cmd *exec.Cmd) {
 	ownGroup(cmd)
 	cmd.WaitDelay = 5 * time.Second
+}
+
+type drainReader struct {
+	pipe     *os.File
+	delay    time.Duration
+	draining atomic.Bool
+	expired  atomic.Bool
+}
+
+func (r *drainReader) Read(p []byte) (int, error) {
+	if r.draining.Load() {
+		// Bound blocked reads, not time spent consuming output.
+		_ = r.pipe.SetReadDeadline(time.Now().Add(r.delay))
+	}
+	n, err := r.pipe.Read(p)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		r.expired.Store(true)
+		err = io.EOF
+	} else if errors.Is(err, os.ErrClosed) && r.expired.Load() {
+		err = io.EOF
+	}
+	return n, err
 }
 
 // Stream runs cmd and consumes stdout without bounding the reading time.
@@ -39,7 +63,8 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	read := make(chan error, 1)
-	go func() { read <- consume(pr) }()
+	reader := &drainReader{pipe: pr, delay: cmd.WaitDelay}
+	go func() { read <- consume(reader) }()
 	var waitErr, readErr error
 	var timer *time.Timer
 	var deadline <-chan time.Time
@@ -63,6 +88,9 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 			}
 		case readErr = <-read:
 			read = nil
+			if reader.expired.Load() && waitErr == nil {
+				waitErr = exec.ErrWaitDelay
+			}
 			if readErr != nil {
 				_ = cmd.Cancel()
 			}
@@ -76,9 +104,15 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 			pr.Close()
 			ctxDone = nil
 		case <-deadline:
-			// Kill descendants, but let the reader drain buffered output.
+			// Kill descendants and bound blocked reads while draining.
 			if err := cmd.Cancel(); err == nil && waitErr == nil {
 				waitErr = exec.ErrWaitDelay
+			}
+			reader.draining.Store(true)
+			if err := pr.SetReadDeadline(time.Now().Add(cmd.WaitDelay)); err != nil {
+				// Pipes without deadlines must be closed.
+				reader.expired.Store(true)
+				pr.Close()
 			}
 			deadline = nil
 		}
