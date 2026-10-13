@@ -294,7 +294,12 @@ directory with a `terragrunt.hcl`, such as `live/prod/app` under a
 and no `.tf` files of its own that a unit includes, with
 `find_in_parent_folders()` or a literal path (a legacy top-level
 `terragrunt.hcl`). A parent included some other way is taken for a unit
-and shows as an unread state. Each unit's state is read with
+and shows as an unread state. The other way round, a unit that other units
+include as well, with all its configuration generated (no `terraform`
+block, no `.tf` files in a fresh checkout), cannot be told from a parent:
+it is taken for shared configuration, a `note:` names it, and
+`-terragrunt-unit DIR` (`terragrunt-unit:` in a config file) reads it as a
+unit. tforphans never runs terragrunt to tell the two apart. Each unit's state is read with
 `terragrunt run -- state pull` (Terragrunt 0.73 or newer in `PATH`; tested
 with 1.1.6), which renders the backend the unit's configuration describes,
 so remote state blocks, `generate` and includes all work. Terragrunt

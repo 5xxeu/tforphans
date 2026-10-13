@@ -204,3 +204,21 @@ func TestConfigInside(t *testing.T) {
 		t.Errorf("-config root %s, want %s", o.roots[0], want)
 	}
 }
+
+// terragrunt-unit only classifies directories: a file read on its own may
+// set it (inside the current directory, like roots); terragrunt itself
+// still needs -terragrunt on the command line.
+func TestConfigTerragruntUnit(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	os.MkdirAll("live/app", 0o755)
+	os.WriteFile(defaultConfigFile, []byte("terragrunt-unit: [live/app]\n"), 0o644)
+	o, err := parseFlags([]string{"-terragrunt"}, io.Discard)
+	if err != nil || len(o.tgUnits) != 1 || !strings.HasSuffix(o.tgUnits[0], filepath.Join("live", "app")) {
+		t.Errorf("%+v %v", o, err)
+	}
+	os.WriteFile(defaultConfigFile, []byte("terragrunt-unit: [../x]\n"), 0o644)
+	if _, err := parseFlags([]string{"-terragrunt"}, io.Discard); err == nil {
+		t.Error("a path outside the current directory was accepted")
+	}
+}

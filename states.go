@@ -107,11 +107,16 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 			skip[abs] = true
 		}
 	}
-	var dirs []string
+	var dirs, skipped []string
 	for _, tree := range o.stateRoots {
-		found, unread, err := tf.FindRoots(tree, o.terragrunt)
+		found, unread, parents, err := tf.FindRoots(tree, o.terragrunt)
 		if err != nil {
 			return nil, fmt.Errorf("-state-roots %s: %w", tree, err)
+		}
+		for _, p := range parents {
+			if !slices.ContainsFunc(o.tgUnits, func(u string) bool { return sameDir(u, p.Dir) }) {
+				skipped = append(skipped, fmt.Sprintf("%s (by %s)", p.Dir, p.By))
+			}
 		}
 		// A root there may manage what is found: like an unread state
 		// (adopt refuses, coverage is incomplete).
@@ -128,6 +133,25 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 				dirs = append(dirs, d)
 			}
 		}
+	}
+
+	// Units named with -terragrunt-unit are read even when units include
+	// them (FindRoots took them for shared configuration).
+	for _, u := range o.tgUnits {
+		kind, err := tf.TerragruntKind(u)
+		if err != nil {
+			return nil, fmt.Errorf("-terragrunt-unit %s: %w", u, err)
+		}
+		if kind == tf.TerragruntNone {
+			return nil, fmt.Errorf("-terragrunt-unit %s: no terragrunt.hcl there", u)
+		}
+		if abs, err := filepath.Abs(u); err == nil && !skip[abs] {
+			skip[abs] = true
+			dirs = append(dirs, u)
+		}
+	}
+	if len(skipped) > 0 {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d terragrunt.hcl taken for shared configuration, since units include them, and not read as units: %s; -terragrunt-unit DIR reads one as a unit", len(skipped), strings.Join(firstN(skipped, 5), ", ")))
 	}
 
 	// A path that is wrong (.. from the wrong directory) can reach a whole
@@ -195,6 +219,13 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 		}
 	}
 	return pullRoot(ctx, o, dir)
+}
+
+// sameDir reports whether two paths name one directory.
+func sameDir(a, b string) bool {
+	x, err1 := filepath.Abs(a)
+	y, err2 := filepath.Abs(b)
+	return err1 == nil && err2 == nil && x == y
 }
 
 // firstN returns at most n elements and a count of the rest.

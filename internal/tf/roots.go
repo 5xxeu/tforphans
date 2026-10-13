@@ -38,11 +38,12 @@ import (
 // Directories below dir that cannot be read (permission denied), and with
 // units a terragrunt.hcl that cannot be read or parsed, are returned as
 // unread instead of failing the walk: a tree such as a home directory has
-// some, and a root there may manage what is found.
-func FindRoots(dir string, units bool) (roots []string, unread []Unread, err error) {
-	var maybe, tg []string // candidate parents, every directory with a terragrunt.hcl
-	parents := map[string]bool{}
-	var nearest []string // units that include the nearest terragrunt.hcl above
+// some, and a root there may manage what is found. parents are the
+// terragrunt.hcl files taken for shared configuration (see TerragruntKind).
+func FindRoots(dir string, units bool) (roots []string, unread []Unread, parents []Parent, err error) {
+	var maybe, tg []string            // candidate parents, every directory with a terragrunt.hcl
+	includedBy := map[string]string{} // absolute directory of an included terragrunt.hcl: a unit including it
+	var nearest []string              // units that include the nearest terragrunt.hcl above
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
@@ -80,7 +81,9 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 			if kind == TerragruntUnit {
 				dirs, near := terragruntIncludes(path)
 				for _, d := range dirs {
-					parents[absPath(d)] = true
+					if a := absPath(d); includedBy[a] == "" {
+						includedBy[a] = path
+					}
 				}
 				if near {
 					nearest = append(nearest, path)
@@ -104,8 +107,8 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 				best = a
 			}
 		}
-		if best != "" {
-			parents[best] = true
+		if best != "" && includedBy[best] == "" {
+			includedBy[best] = u
 		}
 	}
 	// A terragrunt.hcl with no terraform block, include or .tf files is a
@@ -114,12 +117,20 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, err err
 	// an unread state (terragrunt fails there); the other way round would
 	// lose a unit without a trace.
 	for _, m := range maybe {
-		if !parents[absPath(m)] {
+		if by := includedBy[absPath(m)]; by != "" {
+			parents = append(parents, Parent{m, by})
+		} else {
 			roots = append(roots, m)
 		}
 	}
 	sort.Strings(roots)
-	return roots, unread, err
+	return roots, unread, parents, err
+}
+
+// Parent is a terragrunt.hcl FindRoots took for shared configuration, not
+// a unit, and a unit that includes it.
+type Parent struct {
+	Dir, By string
 }
 
 // terragruntIncludes returns the directories of the terragrunt.hcl files a

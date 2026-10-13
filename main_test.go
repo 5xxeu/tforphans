@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -247,5 +248,37 @@ func TestTerragruntUnitAsRoot(t *testing.T) {
 	code := run(context.Background(), []string{"-no-query", "-plugin", "true", "-state-roots", dir, "-terragrunt", filepath.Join(dir, "app")}, &stdout, &stderr)
 	if code != exitError || !strings.Contains(stderr.String(), "is a Terragrunt unit") {
 		t.Errorf("exit %d\n%s", code, stderr.String())
+	}
+}
+
+// A generated unit that another unit includes is taken for shared
+// configuration, with a note; -terragrunt-unit reads it as a unit.
+func TestTerragruntUnitOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake terragrunt is a shell script")
+	}
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "terragrunt"), []byte("#!/bin/sh\necho '{\"version\":4,\"serial\":1,\"lineage\":\"x\",\"resources\":[]}'\n"), 0o755)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "app", "db"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app", "terragrunt.hcl"), []byte("remote_state {\n  backend = \"s3\"\n}\ngenerate \"main\" {\n  path = \"main.tf\"\n  contents = \"\"\n}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "app", "db", "terragrunt.hcl"), []byte("include \"app\" {\n  path = \"../terragrunt.hcl\"\n}\n"), 0o644)
+	tool := func(args ...string) (int, string) {
+		var stdout, stderr bytes.Buffer
+		code := run(context.Background(), append([]string{"-no-query", "-plugin", "true", "-state-roots", dir, "-terragrunt"}, args...), &stdout, &stderr)
+		return code, stderr.String()
+	}
+	if code, stderr := tool(); code != exitOK || !strings.Contains(stderr, "1 states read") || !strings.Contains(stderr, "note: 1 terragrunt.hcl taken for shared configuration") || !strings.Contains(stderr, filepath.Join(dir, "app")+" (by ") {
+		t.Errorf("default: exit %d\n%s", code, stderr)
+	}
+	if code, stderr := tool("-terragrunt-unit", filepath.Join(dir, "app")); code != exitOK || !strings.Contains(stderr, "2 states read") || strings.Contains(stderr, "shared configuration") {
+		t.Errorf("-terragrunt-unit: exit %d\n%s", code, stderr)
+	}
+	if code, stderr := tool("-terragrunt-unit", dir); code != exitError || !strings.Contains(stderr, "no terragrunt.hcl there") {
+		t.Errorf("-terragrunt-unit without terragrunt.hcl: exit %d\n%s", code, stderr)
+	}
+	if _, err := parseFlags([]string{"-terragrunt-unit", "app"}, io.Discard); err == nil || !strings.Contains(err.Error(), "needs -terragrunt") {
+		t.Errorf("without -terragrunt: %v", err)
 	}
 }

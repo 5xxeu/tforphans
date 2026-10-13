@@ -34,7 +34,7 @@ var configOnlyExplicit = []string{"init", "refresh", "allow-unpinned", "include-
 	"state", "proxmox-cluster-states", "plugin-cluster-states", "allow-incomplete"}
 
 // configPathKeys hold paths, which are relative to the config file.
-var configPathKeys = []string{"state-roots", "state", "ignore"}
+var configPathKeys = []string{"state-roots", "terragrunt-unit", "state", "ignore"}
 
 // modeOnly are flags of one mode (adopt or not): a config file shared by
 // both may set them, and the other mode skips them.
