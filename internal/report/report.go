@@ -248,6 +248,9 @@ type Summary struct {
 	// APIOff counts failed listings whose API is not enabled (they are in
 	// failed_queries too); they count as gaps only with -strict-api.
 	APIOff int `json:"api_not_enabled,omitempty"`
+	// StrictIgnored counts failed listings and skipped types that
+	// -strict-ignore kept from making coverage incomplete.
+	StrictIgnored int `json:"strict_ignored,omitempty"`
 	// Complete is false when something was not checked: failed or
 	// truncated listings, unread states, plugin errors, types that needed
 	// a check and were skipped.
@@ -313,6 +316,10 @@ type Coverage struct {
 // GapPrefix starts the reason of a type that needed a check and was
 // skipped (see BuildCoverage).
 const GapPrefix = "skipped: "
+
+// StrictIgnored starts the reason of a failure or a skip that -strict-ignore
+// kept from being a gap.
+const StrictIgnored = "-strict-ignore: "
 
 // BuildCoverage combines the counts per type and scope with the listings
 // that ran (checks), the types skipped and the listings that failed.
@@ -385,9 +392,17 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			continue
 		}
 		// A disabled API in one root says nothing about another root
-		// that listed the type: it keeps a row of its own.
-		if sk.Reason == tf.FailAPIOff && sk.Root != "" {
-			c := entry(sk.Type, "root "+sk.Root)
+		// that listed the type: it keeps a row of its own. So does a gap
+		// that -strict-ignore lets pass, to stay visible.
+		if sk.Reason == tf.FailAPIOff && sk.Root != "" || strings.HasPrefix(sk.Reason, StrictIgnored) {
+			if checked[[4]string{sk.Type, sk.Root, sk.Provider, sk.Kind}] {
+				continue
+			}
+			scope := ""
+			if sk.Root != "" {
+				scope = "root " + sk.Root
+			}
+			c := entry(sk.Type, scope)
 			if c.Status == Complete {
 				c.Status = Skipped
 			}

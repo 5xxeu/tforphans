@@ -118,6 +118,9 @@ type QueryResult struct {
 	Complete int // list block instances that finished
 	// Done are the instances that finished.
 	Done []Listing
+	// DataErrors are errors of data sources (data.<type>.<name>): the list
+	// blocks that need their values do not start.
+	DataErrors []Failure
 	// Unfinished are the list block instances that started but neither
 	// finished nor reported an error of their own.
 	Unfinished []string
@@ -185,6 +188,12 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 		}
 		defer os.Remove(base + "_override.tf")
 	}
+	if auto := p.AutoHCL(); auto != nil {
+		if err := writeTemp(base+"_auto.tf", auto); err != nil {
+			return nil, err
+		}
+		defer os.Remove(base + "_auto.tf")
+	}
 	if err := writeTemp(base+".tfquery.hcl", p.HCL(limitFor(""))); err != nil {
 		return nil, err
 	}
@@ -202,6 +211,23 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	res, fatal, err := ParseQueryStream(out, r.Dir, keys, limitFor)
 	if err != nil {
 		return nil, err
+	}
+	// The regions or zones of an auto argument could not be read: its
+	// queries fail (a disabled Compute API is classified as such).
+	failedAuto := map[string]bool{}
+	for _, e := range res.DataErrors {
+		local, ok := AutoDataAddress(e.Address)
+		if !ok {
+			fatal = append(fatal, e.Address+": "+e.Message)
+			continue
+		}
+		for _, q := range p.Queries {
+			if q.Provider == local && q.auto() && !failedAuto[q.Address()] {
+				failedAuto[q.Address()] = true
+				res.Failed = append(res.Failed, Failure{Address: q.Address(), Type: q.Type, Message: "reading the values of -arg ...=auto: " + e.Message})
+				res.errors++
+			}
+		}
 	}
 	if len(fatal) > 0 {
 		return nil, fmt.Errorf("terraform query in %s:\n%s", r.Dir, strings.Join(fatal, "\n"))
@@ -330,6 +356,10 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 	}
 	var fatal []string
 	for _, e := range errs {
+		if strings.HasPrefix(e.Address, "data.") {
+			res.DataErrors = append(res.DataErrors, e)
+			continue
+		}
 		if e.Type != "" && res.Started > 0 {
 			res.Failed = append(res.Failed, e)
 			res.errors++

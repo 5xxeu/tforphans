@@ -84,7 +84,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	sum.NoList = append(sum.NoList, plan.NoList...)
 	if o.printQuery {
-		fmt.Fprintf(stdout, "# %s\n%s%s", root, plan.ProvidersHCL(), plan.HCL(o.limit))
+		fmt.Fprintf(stdout, "# %s\n%s%s%s", root, plan.ProvidersHCL(), plan.AutoHCL(), plan.HCL(o.limit))
 		return nil, nil
 	}
 

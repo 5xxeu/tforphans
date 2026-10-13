@@ -2,6 +2,7 @@ package tf
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -15,6 +16,10 @@ import (
 // addresses, since a user's label may start with it too.
 const LabelPrefix = "tfo_"
 
+// MissingArgs starts the reason of a type skipped because its list config
+// has required arguments that no -arg gives.
+const MissingArgs = "list config requires "
+
 // Arg fans every list query whose config has a string argument Name out
 // over Values, for example region=eu-north-1,us-east-1. Types, when set,
 // limits it to the resource types it matches
@@ -27,6 +32,27 @@ type Arg struct {
 
 // Key identifies the argument among repeated -arg flags.
 func (a Arg) Key() string { return a.Types + ":" + a.Name }
+
+// Auto is the value that stands for every zone or region (see AutoArgs).
+const Auto = "auto"
+
+// AutoSource says how to read every region and zone of a provider family
+// (see family) with data sources: Regions lists the regions (attribute
+// expression RegionsAttr), Zones the zones of one region given as ZoneArg.
+type AutoSource struct {
+	Regions, RegionsAttr string
+	Zones, ZoneArg, Attr string
+}
+
+// AutoSources are the families whose region and zone arguments take Auto.
+// Google Cloud: read with the root's own provider configuration, so in its
+// project.
+var AutoSources = map[string]AutoSource{
+	"google": {Regions: "google_compute_regions", RegionsAttr: "names", Zones: "google_compute_zones", ZoneArg: "region", Attr: "names"},
+}
+
+// IsAuto reports whether the argument asks for every value (zone=auto).
+func (a Arg) IsAuto() bool { return len(a.Values) == 1 && a.Values[0] == Auto }
 
 func ParseArg(s string) (Arg, error) {
 	name, vals, ok := strings.Cut(s, "=")
@@ -46,6 +72,9 @@ func ParseArg(s string) (Arg, error) {
 	}
 	if len(a.Values) == 0 {
 		return Arg{}, fmt.Errorf("invalid -arg %q: no values", s)
+	}
+	if len(a.Values) > 1 && slices.Contains(a.Values, Auto) {
+		return Arg{}, fmt.Errorf("invalid -arg %q: %s stands for every value and takes no others", s, Auto)
 	}
 	return a, nil
 }
@@ -187,7 +216,7 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 				continue
 			}
-			q, reason := planType(t, local, ps.ListResourceSchemas[t], opt.Args)
+			q, reason := planType(t, local, addr, ps.ListResourceSchemas[t], opt.Args)
 			if reason != "" {
 				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: local})
 				continue
@@ -257,7 +286,7 @@ func isFamilyName(addr, family string) bool {
 	return strings.HasSuffix(strings.ToLower(addr), "/"+family) || strings.ToLower(addr) == family
 }
 
-func planType(typ, local string, ls ListSchema, args []Arg) (Query, string) {
+func planType(typ, local, addr string, ls ListSchema, args []Arg) (Query, string) {
 	q := Query{Type: typ, Provider: local}
 	// Arguments for matching types win over ones for all types; the values
 	// of several matching ones are combined (two attributes of one name
@@ -287,6 +316,16 @@ func planType(typ, local string, ls ListSchema, args []Arg) (Query, string) {
 			supplied[a.Name] = true
 		}
 	}
+	for i, a := range q.Args {
+		if !slices.Contains(a.Values, Auto) {
+			continue
+		}
+		// auto covers every value; another -arg of the same name adds none.
+		q.Args[i].Values = []string{Auto}
+		if _, ok := AutoSources[family(addr)]; !ok || a.Name != "region" && a.Name != "zone" {
+			return q, fmt.Sprintf("-arg %s=%s works only for %s", a.Name, Auto, autoHelp())
+		}
+	}
 	var missing []string
 	for name, at := range ls.Block.Attributes {
 		if at.Required && !supplied[name] {
@@ -300,9 +339,78 @@ func planType(typ, local string, ls ListSchema, args []Arg) (Query, string) {
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return q, "list config requires " + strings.Join(missing, ", ")
+		return q, MissingArgs + strings.Join(missing, ", ")
 	}
 	return q, ""
+}
+
+// family is the provider family of a provider address: google for
+// hashicorp/google and hashicorp/google-beta, else the address's type name.
+func family(addr string) string {
+	name := strings.ToLower(addr[strings.LastIndex(addr, "/")+1:])
+	if name == "google-beta" {
+		return "google"
+	}
+	return name
+}
+
+func autoHelp() string {
+	return "region and zone of " + strings.Join(slices.Sorted(maps.Keys(AutoSources)), ", ")
+}
+
+// auto reports whether the query fans out over values read at run time.
+func (q Query) auto() bool { return slices.ContainsFunc(q.Args, Arg.IsAuto) }
+
+// autoLabel is the label of the data sources that read the regions and
+// zones for queries through the provider's local name.
+func autoLabel(local string) string { return LabelPrefix + "auto_" + local }
+
+// AutoHCL renders the data sources that the queries with auto arguments
+// read their values from, or nil when there are none. They go into a .tf
+// file: terraform query reads data sources of the configuration, not of
+// .tfquery.hcl files.
+func (p Plan) AutoHCL() []byte {
+	sources := map[string]AutoSource{} // by local name
+	for _, q := range p.Queries {
+		if q.auto() {
+			sources[q.Provider] = AutoSources[family(q.Source)]
+		}
+	}
+	if len(sources) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("# Generated by tforphans; removed after the run.\n")
+	for _, l := range slices.Sorted(maps.Keys(sources)) {
+		src, label := sources[l], autoLabel(l)
+		fmt.Fprintf(&b, "\ndata %q %q {\n  provider = %s\n}\n", src.Regions, label, l)
+		fmt.Fprintf(&b, "\ndata %q %q {\n  provider = %s\n  for_each = toset(data.%s.%s.%s)\n  %s = each.key\n}\n",
+			src.Zones, label, l, src.Regions, label, src.RegionsAttr, src.ZoneArg)
+	}
+	return []byte(b.String())
+}
+
+// autoValues is the expression for every value of an auto argument of q.
+func (q Query) autoValues(name string) string {
+	src, label := AutoSources[family(q.Source)], autoLabel(q.Provider)
+	if name == "region" {
+		return "data." + src.Regions + "." + label + "." + src.RegionsAttr
+	}
+	return "flatten([for r in data." + src.Zones + "." + label + " : r." + src.Attr + "])"
+}
+
+// AutoDataAddress reports whether addr is one of the data sources AutoHCL
+// declares, and for which provider local name.
+func AutoDataAddress(addr string) (string, bool) {
+	for _, src := range AutoSources {
+		for _, typ := range []string{src.Regions, src.Zones} {
+			if rest, ok := strings.CutPrefix(addr, "data."+typ+"."+LabelPrefix+"auto_"); ok {
+				local, _, _ := strings.Cut(rest, "[")
+				return local, true
+			}
+		}
+	}
+	return "", false
 }
 
 // HCL renders the plan as a .tfquery.hcl file.
@@ -316,7 +424,34 @@ func (p Plan) HCL(limit int) []byte {
 		if q.IncludeResource {
 			b.WriteString("  include_resource = true\n")
 		}
-		if len(q.Args) > 0 {
+		if q.auto() {
+			// Values known only at run time: the combinations come from
+			// setproduct, keyed as the static ones are.
+			var lists, key, fields []string
+			for i, a := range q.Args {
+				if a.IsAuto() {
+					lists = append(lists, q.autoValues(a.Name))
+				} else {
+					var vals []string
+					for _, v := range a.Values {
+						vals = append(vals, HCLString(v))
+					}
+					lists = append(lists, "["+strings.Join(vals, ", ")+"]")
+				}
+				key = append(key, fmt.Sprintf("%s=${c[%d]}", a.Name, i))
+				fields = append(fields, fmt.Sprintf("%s = c[%d]", a.Name, i))
+			}
+			combos := "setproduct(" + strings.Join(lists, ", ") + ")"
+			if len(lists) == 1 { // setproduct wants two lists at least
+				combos = "[for v in " + lists[0] + " : [v]]"
+			}
+			fmt.Fprintf(&b, "  for_each = { for c in %s : \"%s\" => { %s } }\n", combos, strings.Join(key, ","), strings.Join(fields, ", "))
+			b.WriteString("  config {\n")
+			for _, a := range q.Args {
+				fmt.Fprintf(&b, "    %s = each.value.%s\n", a.Name, a.Name)
+			}
+			b.WriteString("  }\n")
+		} else if len(q.Args) > 0 {
 			b.WriteString("  for_each = {\n")
 			for _, combo := range product(q.Args) {
 				var key, fields []string

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 // TestIntegration runs the whole tool against a real terraform binary and the
@@ -798,6 +799,79 @@ func TestIntegrationAPIOff(t *testing.T) {
 	write(t, "mine.tfquery.hcl", "list \"fake_thing\" \"mine\" {\n  provider = fake.second\n}\n")
 	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOK {
 		t.Errorf("aliased block with the API off: exit %d\n%s", code, stderr)
+	}
+}
+
+// TestIntegrationStrictIgnore: failures and missing arguments of types
+// named in -strict-ignore are reported but are no gap.
+func TestIntegrationStrictIgnore(t *testing.T) {
+	_, root := setup(t)
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	t.Chdir(root)
+	t.Setenv("FAKE_FAIL", "thing:Error 403: permission denied on resource")
+	code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict")
+	if code != exitError || !strings.Contains(stderr, "1 failed or truncated listings, 1 types skipped that need an argument (-arg NAME=...") {
+		t.Errorf("exit %d\n%s", code, stderr)
+	}
+	code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict", "-strict-ignore", "fake_thing,fake_z*", "-format", "json")
+	if code != exitOK || !strings.Contains(stderr, "2 failed listings or skipped types of -strict-ignore") || !strings.Contains(stderr, "permission denied") {
+		t.Errorf("-strict-ignore: exit %d\n%s", code, stderr)
+	}
+	for _, want := range []string{`"strict_ignored": 2`, `"-strict-ignore: permission denied"`, `"-strict-ignore: list config requires zone"`, `"failed_queries"`} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("json lacks %s:\n%s", want, stdout)
+		}
+	}
+	// Only the types named.
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict", "-strict-ignore", "fake_thing"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that need an argument") {
+		t.Errorf("-strict-ignore one type: exit %d\n%s", code, stderr)
+	}
+}
+
+// TestIntegrationAutoZones: -arg zone=auto reads every region's zones with
+// data sources through the root's provider and fans the query out over
+// them. The fake provider stands in for google: its zones data source plays
+// the regions, its records data source the zones of one region.
+func TestIntegrationAutoZones(t *testing.T) {
+	data, root := setup(t)
+	saved := tf.AutoSources
+	tf.AutoSources = map[string]tf.AutoSource{"fake": {Regions: "fake_zones", RegionsAttr: "result[*].id", Zones: "fake_records", ZoneArg: "zone_id", Attr: "result[*].id"}}
+	t.Cleanup(func() { tf.AutoSources = saved })
+	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	for _, f := range []string{"zone/r1", "zone/r2", "record/r1/z1a", "record/r1/z1b", "record/r2/z2a", "zoned/z1a/a", "zoned/z1b/b", "zoned/z2a/c", "zoned/other/d", "thing/t"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(data, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(data, f), "")
+	}
+	t.Chdir(root)
+	code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict", "-format", "json")
+	if code != exitOrphans {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	for _, z := range []string{"z1a", "z1b", "z2a"} {
+		if !strings.Contains(stdout, `list.fake_zoned.tfo_fake_fake_zoned[\"zone=`+z+`\"]`) {
+			t.Errorf("zone %s not queried:\n%s", z, stdout)
+		}
+	}
+	if strings.Contains(stdout, "zone=other") {
+		t.Errorf("a zone of no region was queried:\n%s", stdout)
+	}
+	if code, stdout, _ := runTool("-types", "fake_zoned", "-arg", "zone=auto", "-print-query"); code != exitOK || !strings.Contains(stdout, `data "fake_records" "tfo_auto_fake"`) || !strings.Contains(stdout, "[for v in flatten([for r in data.fake_records.tfo_auto_fake : r.result[*].id]) : [v]]") {
+		t.Errorf("-print-query: exit %d\n%s", code, stdout)
+	}
+	if files, _ := filepath.Glob("zz_tforphans_*"); len(files) > 0 {
+		t.Errorf("temporary files left: %v", files)
+	}
+	// Zones that cannot be read: their queries fail, the others run. A
+	// disabled API holds nothing; any other error is a gap.
+	t.Setenv("FAKE_FAIL", "record:Compute Engine API has not been used in project p before or it is disabled")
+	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "coverage: complete") {
+		t.Errorf("zones with the API off: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	t.Setenv("FAKE_FAIL", "zone:Error 403: permission denied")
+	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict"); code != exitError || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "1 failed or truncated listings") {
+		t.Errorf("regions not readable: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }
 

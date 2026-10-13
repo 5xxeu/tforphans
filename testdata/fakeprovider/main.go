@@ -186,7 +186,15 @@ func (t *thing) List(ctx context.Context, req list.ListRequest, stream *list.Lis
 		stream.Results = list.ListResultsStreamDiagnostics(d)
 		return
 	}
-	entries, _ := os.ReadDir(t.dir())
+	dir := t.dir()
+	// fake_zoned lists the files of $FAKE_DIR/zoned/<zone>.
+	if t.kind == "zoned" {
+		var zone types.String
+		if d := req.Config.GetAttribute(ctx, path.Root("zone"), &zone); !d.HasError() {
+			dir = filepath.Join(dir, zone.ValueString())
+		}
+	}
+	entries, _ := os.ReadDir(dir)
 	var names []string
 	for _, e := range entries {
 		names = append(names, e.Name())
@@ -241,6 +249,11 @@ func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *dat
 		if os.Getenv("FAKE_PANIC") == "record:"+zone.ValueString() {
 			panic("fake provider crash")
 		}
+	}
+	// FAKE_FAIL=<kind>:<message> makes reading that data source fail.
+	if kind, msg, ok := strings.Cut(os.Getenv("FAKE_FAIL"), ":"); ok && kind == p.kind {
+		resp.Diagnostics.AddError("Error reading", msg)
+		return
 	}
 	entries, _ := os.ReadDir(dir)
 	var items []attr.Value
