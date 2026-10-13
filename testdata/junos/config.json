@@ -1,0 +1,25 @@
+{
+  "configuration": {
+    "@": {"junos:changed-seconds": "1760000000"},
+    "system": {"root-authentication": {"encrypted-password": "$6$secret-hash"}},
+    "interfaces": {
+      "interface": [
+        {"name": "ge-0/0/0", "description": "uplink", "unit": [{"name": "0", "family": {"inet": {"address": [{"name": "192.0.2.1/30"}]}}}]},
+        {"name": "ge-0/0/1", "unit": [{"name": "0"}, {"name": "100", "vlan-id": 100}]},
+        {"name": "lo0", "unit": {"name": "0"}}
+      ]
+    },
+    "protocols": {
+      "bgp": {"group": [{"name": "transit", "authentication-key": "$9$secret", "neighbor": [{"name": "192.0.2.2"}, {"name": "192.0.2.6"}]}]}
+    },
+    "routing-instances": {
+      "instance": [{"name": "VRF-A", "protocols": {"bgp": {"group": {"name": "customers", "neighbor": {"name": "198.51.100.1"}}}}}]
+    },
+    "policy-options": {
+      "policy-statement": [{"name": "EXPORT-DEFAULT"}, {"name": "IMPORT-ALL"}],
+      "prefix-list": [{"name": "MGMT"}]
+    },
+    "security": {"zones": {"security-zone": [{"name": "trust"}, {"name": "untrust"}], "functional-zone": {"management": {}}}},
+    "applications": {"application": [{"name": "tcp-8443"}], "application-set": [{"name": "web"}]}
+  }
+}

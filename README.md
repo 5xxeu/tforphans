@@ -701,6 +701,36 @@ covers Vault auth methods, roles, secret engines and policies with the
 `vault` CLI and `jq`, and marks every object `unverified`: scan one Vault
 per run with its own states and `-plugin-cluster-states`.
 
+### Junos
+
+[examples/plugins/junos.py](examples/plugins/junos.py) (Python 3, no other
+packages) covers `jeremmfr/junos` devices, whose provider has no list
+resources: it reads the configuration as JSON (`show configuration |
+display json`) and lists configured physical and logical interfaces, BGP
+groups and neighbors (also in routing instances), policy statements, prefix
+lists, security zones, applications and application sets, with the import
+IDs the provider takes (`transit_-_default` for a BGP group).
+
+```sh
+# over ssh (keys from your agent or ~/.ssh/config), one device per run
+tforphans -no-query -state-roots junos/fw1 \
+  -plugin 'python3 examples/plugins/junos.py --ssh admin@fw1' -plugin-cluster-states
+# or from a saved configuration (it holds secrets: keep it private)
+(umask 077; ssh admin@fw1 'show configuration | display json | no-more' > fw1.json)
+tforphans -no-query -state-roots junos/fw1 -plugin 'python3 examples/plugins/junos.py fw1.json'
+rm fw1.json
+```
+
+Junos state does not record the device, so every object is `unverified`:
+pass `-plugin-cluster-states` only when the states given are those of that
+one device. Only names leave the script; the configuration (with its `$9$`
+secrets and password hashes) is never printed. A physical interface whose
+stanza holds only units counts as configured through its logical
+interfaces, and objects that come from groups (`apply-groups`) are not
+listed. A device that cannot be read is a warning (coverage incomplete),
+not a failed run. The plugin is new: check its results against your own
+device before relying on them.
+
 ## In CI
 
 A scheduled job that fails when something is unmanaged or could not be
