@@ -1,0 +1,16 @@
+# Objects that AWS creates on its own, known by marks a user cannot give
+# their own objects. Applied by default (-no-default-presets turns it off).
+# The provider's list resources already leave out default VPCs, default
+# subnets, default network ACLs and service-linked roles.
+
+# The default security group of every VPC: AWS creates it with the VPC, and
+# "default" is a reserved group name. aws_security_group lists it too.
+aws_default_security_group
+aws_security_group attr.name=default
+# Aliases of AWS managed keys: the alias/aws/ prefix is reserved.
+aws_kms_alias name=alias/aws/*
+
+# Not included, since no field of theirs tells them from objects people
+# make: AWS managed KMS keys (only their aliases do), the main route table
+# of each VPC, and IAM Identity Center roles (AWSReservedSSO_*). Hide them
+# knowingly with rules of your own.
