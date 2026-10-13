@@ -240,9 +240,8 @@ func Stream(ctx context.Context, cmd *exec.Cmd, consume func(io.Reader) error) e
 
 // kill signals a command that Wait has not reaped yet. The group signal
 // misses a command that moved to another group, so the command itself is
-// killed when it fails.
+// killed as well.
 func kill(cmd *exec.Cmd) {
-	if cmd.Cancel() != nil {
-		_ = cmd.Process.Kill()
-	}
+	_ = cmd.Cancel()
+	_ = cmd.Process.Kill()
 }

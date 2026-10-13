@@ -328,24 +328,29 @@ func TestStreamCancelAfterParentExit(t *testing.T) {
 	}
 }
 
-func TestStreamKillsCommandWhenGroupSignalFails(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "printf 'invalid\\n'; exec sleep 30")
-	Group(cmd)
-	// As if the command had moved to another process group.
-	cmd.Cancel = func() error { return syscall.ESRCH }
-	start := time.Now()
-	err := Stream(ctx, cmd, func(r io.Reader) error {
-		// Read the line first: closing the pipe early would kill the
-		// shell with SIGPIPE before it reaches sleep.
-		bufio.NewScanner(r).Scan()
-		return errors.New("bad output")
-	})
-	if err == nil || err.Error() != "bad output" {
-		t.Fatalf("err = %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("returned after %v", elapsed)
+func TestStreamKillsCommandOutsideGroup(t *testing.T) {
+	// As if the command had moved to another process group: the group
+	// signal fails, or reaches only what is left in the old group.
+	for name, groupErr := range map[string]error{"failed": syscall.ESRCH, "missed": nil} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "sh", "-c", "printf 'invalid\\n'; exec sleep 30")
+			Group(cmd)
+			cmd.Cancel = func() error { return groupErr }
+			start := time.Now()
+			err := Stream(ctx, cmd, func(r io.Reader) error {
+				// Read the line first: closing the pipe early would kill the
+				// shell with SIGPIPE before it reaches sleep.
+				bufio.NewScanner(r).Scan()
+				return errors.New("bad output")
+			})
+			if err == nil || err.Error() != "bad output" {
+				t.Fatalf("err = %v", err)
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Errorf("returned after %v", elapsed)
+			}
+		})
 	}
 }
