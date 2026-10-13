@@ -15,11 +15,13 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -82,6 +84,32 @@ func (l *listFlag) Set(v string) error {
 	return nil
 }
 
+type sizeFlag int64
+
+func (s *sizeFlag) String() string { return strconv.FormatInt(int64(*s), 10) }
+func (s *sizeFlag) Set(v string) error {
+	multiplier := int64(1)
+	if len(v) > 0 {
+		switch v[len(v)-1] {
+		case 'k', 'K':
+			multiplier = 1 << 10
+		case 'm', 'M':
+			multiplier = 1 << 20
+		case 'g', 'G':
+			multiplier = 1 << 30
+		}
+		if multiplier != 1 {
+			v = v[:len(v)-1]
+		}
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 || n > (math.MaxInt64-1)/multiplier {
+		return errors.New("want a positive byte count, optionally followed by K, M or G (powers of 1024), below 9223372036854775807 bytes")
+	}
+	*s = sizeFlag(n * multiplier)
+	return nil
+}
+
 // csv splits comma-separated values from repeated flags.
 func (l listFlag) csv() []string {
 	var out []string
@@ -102,6 +130,7 @@ type options struct {
 	currentWS     bool // read only the selected workspace of each root
 	anyVersion    bool // lift the roots' required_version
 	states        listFlag
+	maxStateSize  int64
 	plugins       listFlag
 	scans         []string
 	scanScope     map[string][]string // -scan-scope ARG=values
@@ -171,7 +200,7 @@ func main() {
 }
 
 func parseFlags(argv []string, stderr io.Writer) (*options, error) {
-	o := &options{}
+	o := &options{maxStateSize: state.DefaultMaxSize}
 	name, help := "tforphans", usage
 	// A root module directory named "adopt" can be passed as ./adopt.
 	if len(argv) > 0 && argv[0] == "adopt" {
@@ -186,6 +215,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
+	fs.Var((*sizeFlag)(&o.maxStateSize), "max-state-size", "maximum bytes per state, including state pull and refresh output; accepts K, M or G suffixes (powers of 1024)")
 	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
 	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are uncertain, since state does not record the cluster")
 	fs.BoolVar(&o.pluginStates, "plugin-cluster-states", false, "state that every state given belongs to the cluster or account the plugins scan; without it results a plugin marks \"unverified\" (state does not record where they live) match only as uncertain")
@@ -444,7 +474,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	var sum report.Summary
 	idx := state.NewIndex()
 	for _, src := range o.states {
-		data, err := state.Fetch(ctx, src, o.allowHTTP)
+		data, err := state.Fetch(ctx, src, o.allowHTTP, o.maxStateSize)
 		if err != nil {
 			return fmt.Errorf("state %s: %w", state.Redact(src), err)
 		}

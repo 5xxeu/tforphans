@@ -775,16 +775,16 @@ func TerragruntKind(dir string) (int, error) {
 // which renders the backend and runs terraform (init included: it fetches
 // the module and providers into .terragrunt-cache). tfBin is the terraform
 // it runs.
-func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string) ([]byte, error) {
+func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string, maxSize int64) ([]byte, error) {
 	r := Runner{Bin: bin, Dir: dir, Env: []string{
 		// Current and older names of the same settings.
 		"TG_NON_INTERACTIVE=true", "TERRAGRUNT_NON_INTERACTIVE=true",
 		"TG_TF_PATH=" + tfBin, "TERRAGRUNT_TFPATH=" + tfBin,
 		"TG_LOG_LEVEL=error", "TERRAGRUNT_LOG_LEVEL=error",
-	}}
+	}, MaxStateSize: maxSize}
 	// "run --" needs Terragrunt 0.73 or newer.
 	args := []string{"run", "--", "state", "pull"}
-	out, stderr, err := r.run(ctx, args...)
+	out, stderr, err := r.runLimited(ctx, r.stateSize(), args...)
 	if err != nil {
 		return nil, cmdError(append([]string{"(terragrunt)"}, args...), stderr, err)
 	}

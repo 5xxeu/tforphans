@@ -4,11 +4,16 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -123,7 +128,7 @@ func TestManagedAltIdentity(t *testing.T) {
 func TestFetchRefusesCredentialsOverHTTP(t *testing.T) {
 	t.Setenv("TF_HTTP_USERNAME", "u")
 	t.Setenv("TF_HTTP_PASSWORD", "p")
-	_, err := Fetch(context.Background(), "http://127.0.0.1:1/state", true)
+	_, err := Fetch(context.Background(), "http://127.0.0.1:1/state", true, DefaultMaxSize)
 	if err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Errorf("err = %v", err)
 	}
@@ -172,10 +177,10 @@ func TestFetchRedirects(t *testing.T) {
 
 	t.Setenv("TF_HTTP_USERNAME", "u")
 	t.Setenv("TF_HTTP_PASSWORD", "p")
-	if _, err := Fetch(context.Background(), secure.URL+"/downgrade", true); err == nil || !strings.Contains(err.Error(), "refusing to follow") {
+	if _, err := Fetch(context.Background(), secure.URL+"/downgrade", true, DefaultMaxSize); err == nil || !strings.Contains(err.Error(), "refusing to follow") {
 		t.Errorf("downgrade redirect: err = %v", err)
 	}
-	if data, err := Fetch(context.Background(), secure.URL+"/same", false); err != nil || !strings.Contains(string(data), "version") {
+	if data, err := Fetch(context.Background(), secure.URL+"/same", false, DefaultMaxSize); err != nil || !strings.Contains(string(data), "version") {
 		t.Errorf("same-host redirect: %v", err)
 	}
 	// Another https host (a presigned URL) gets no credentials.
@@ -195,20 +200,20 @@ func TestFetchRedirects(t *testing.T) {
 	}))
 	defer presign.Close()
 	transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	if _, err := Fetch(context.Background(), presign.URL+"/state?X-Amz-Signature=SECRET", false); err != nil {
+	if _, err := Fetch(context.Background(), presign.URL+"/state?X-Amz-Signature=SECRET", false, DefaultMaxSize); err != nil {
 		t.Errorf("redirect to another https host: %v", err)
 	}
 	transport = secure.Client().Transport
 	t.Setenv("TF_HTTP_USERNAME", "")
 	// A downgrade is refused without credentials too: the state could be
 	// altered in transit.
-	if _, err := Fetch(context.Background(), secure.URL+"/downgrade", true); err == nil || !strings.Contains(err.Error(), "refusing to follow") {
+	if _, err := Fetch(context.Background(), secure.URL+"/downgrade", true, DefaultMaxSize); err == nil || !strings.Contains(err.Error(), "refusing to follow") {
 		t.Errorf("downgrade without credentials: %v", err)
 	}
-	if _, err := Fetch(context.Background(), plain.URL+"/state", false); err == nil || !strings.Contains(err.Error(), "-allow-http") {
+	if _, err := Fetch(context.Background(), plain.URL+"/state", false, DefaultMaxSize); err == nil || !strings.Contains(err.Error(), "-allow-http") {
 		t.Errorf("plain http without -allow-http: %v", err)
 	}
-	if _, err := Fetch(context.Background(), plain.URL+"/state", true); err != nil {
+	if _, err := Fetch(context.Background(), plain.URL+"/state", true, DefaultMaxSize); err != nil {
 		t.Errorf("plain http with -allow-http: %v", err)
 	}
 }
@@ -247,13 +252,13 @@ func TestRedact(t *testing.T) {
 		"Https://user:pass@127.0.0.1:1/state?sig=SECRET",
 		"s3://user:pass@bucket/state?sig=SECRET",
 	} {
-		_, err := Fetch(context.Background(), src, false)
+		_, err := Fetch(context.Background(), src, false, DefaultMaxSize)
 		if err == nil || strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "pass") {
 			t.Errorf("%s: error leaks credentials: %v", src, err)
 		}
 	}
 	t.Setenv("TF_HTTP_USERNAME", "")
-	if _, err := Fetch(context.Background(), "HTTP://127.0.0.1:1/state", false); err == nil || !strings.Contains(err.Error(), "plain http") {
+	if _, err := Fetch(context.Background(), "HTTP://127.0.0.1:1/state", false, DefaultMaxSize); err == nil || !strings.Contains(err.Error(), "plain http") {
 		t.Errorf("upper-case http not refused: %v", err)
 	}
 }
@@ -291,11 +296,11 @@ func TestMatchVerified(t *testing.T) {
 
 func TestFetchURLCredentials(t *testing.T) {
 	t.Setenv("TF_HTTP_USERNAME", "")
-	_, err := Fetch(context.Background(), "http://user:SECRET@127.0.0.1:1/state", true)
+	_, err := Fetch(context.Background(), "http://user:SECRET@127.0.0.1:1/state", true, DefaultMaxSize)
 	if err == nil || !strings.Contains(err.Error(), "refusing") || strings.Contains(err.Error(), "SECRET") {
 		t.Errorf("user info over http: %v", err)
 	}
-	_, err = Fetch(context.Background(), "https://user:SECRET@host:bad/state", false)
+	_, err = Fetch(context.Background(), "https://user:SECRET@host:bad/state", false, DefaultMaxSize)
 	if err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Errorf("invalid URL leaks: %v", err)
 	}
@@ -310,7 +315,7 @@ func TestFetchURLCredentials(t *testing.T) {
 	old := transport
 	transport = srv.Client().Transport
 	defer func() { transport = old }()
-	if _, err := Fetch(context.Background(), strings.Replace(srv.URL, "https://", "https://user:pw@", 1)+"/state", false); err != nil {
+	if _, err := Fetch(context.Background(), strings.Replace(srv.URL, "https://", "https://user:pw@", 1)+"/state", false, DefaultMaxSize); err != nil {
 		t.Errorf("https with user info: %v", err)
 	}
 }
@@ -585,5 +590,63 @@ func TestMatchBootDisk(t *testing.T) {
 	r.RequiredKeys = []string{"name", "zone"}
 	if m := ix.Match(r); !m.Managed || !m.Verified || m.Address != "google_compute_instance.vm.boot_disk" {
 		t.Errorf("owner after an unverified match: %+v", m)
+	}
+}
+
+func TestFetchSizeLimit(t *testing.T) {
+	data := `{"version":4}`
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TF_HTTP_USERNAME", "")
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.(http.Flusher).Flush()
+		io.WriteString(w, data)
+	}))
+	defer srv.Close()
+	old := transport
+	transport = srv.Client().Transport
+	t.Cleanup(func() { transport = old })
+	for _, src := range []string{path, "-", strings.Replace(srv.URL, "https://", "https://user:SECRET@", 1) + "/state?token=SECRET"} {
+		t.Run(Redact(src), func(t *testing.T) {
+			for _, limit := range []int64{int64(len(data)) - 1, int64(len(data)), int64(len(data)) + 1} {
+				if src == "-" {
+					f, err := os.Open(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					old := os.Stdin
+					os.Stdin = f
+					t.Cleanup(func() { os.Stdin = old; f.Close() })
+				}
+				out, err := Fetch(context.Background(), src, true, limit)
+				if limit < int64(len(data)) {
+					if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("state is larger than %d bytes; raise -max-state-size", limit)) || strings.Contains(err.Error(), "SECRET") || out != nil {
+						t.Errorf("oversized: %q, %v", out, err)
+					}
+				} else if err != nil || string(out) != data {
+					t.Errorf("limit %d: %q, %v", limit, out, err)
+				}
+			}
+		})
+	}
+}
+
+func TestReadLimited(t *testing.T) {
+	r := strings.NewReader(strings.Repeat("x", 100))
+	if out, err := ReadLimited(r, 10); err == nil || out != nil || r.Len() != 89 {
+		t.Errorf("read beyond limit+1: %q, %v, %d bytes left", out, err, r.Len())
+	}
+	for _, limit := range []int64{0, -1, 1<<63 - 1} {
+		if _, err := ReadLimited(strings.NewReader(""), limit); err == nil {
+			t.Errorf("invalid limit %d accepted", limit)
+		}
+	}
+	if out, err := ReadLimited(strings.NewReader(""), 1); err != nil || len(out) != 0 {
+		t.Errorf("empty state: %q, %v", out, err)
+	}
+	if _, err := ReadLimited(iotest.ErrReader(io.ErrUnexpectedEOF), 10); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("read error lost: %v", err)
 	}
 }

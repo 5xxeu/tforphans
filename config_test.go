@@ -77,6 +77,34 @@ limit: 5
 	}
 }
 
+func TestConfigMaxStateSize(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, value := range []string{"512M", "1024"} {
+		if err := os.WriteFile(defaultConfigFile, []byte("max-state-size: "+value+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		want := int64(512 << 20)
+		if value == "1024" {
+			want = 1024
+		}
+		for _, argv := range [][]string{nil, {"-config", defaultConfigFile}, {"-max-state-size", "2G"}} {
+			o, err := parseFlags(argv, io.Discard)
+			if len(argv) > 0 && argv[0] == "-max-state-size" {
+				want = 2 << 30
+			}
+			if err != nil || o.maxStateSize != want {
+				t.Errorf("%s, %v: %+v, %v", value, argv, o, err)
+			}
+		}
+	}
+	if err := os.WriteFile(defaultConfigFile, []byte("max-state-size: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "max-state-size") {
+		t.Errorf("invalid config limit: %v", err)
+	}
+}
+
 // No config file runs commands, sends credentials or writes files; one
 // read on its own (it may come with a cloned repository) cannot raise trust
 // either; unknown keys and bad values are errors.

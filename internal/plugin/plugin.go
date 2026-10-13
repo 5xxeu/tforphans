@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -37,19 +38,46 @@ type line struct {
 	Unverified bool `json:"unverified"`
 }
 
+const (
+	defaultMaxLineBytes   = 64 << 20
+	defaultMaxOutputBytes = 1 << 30
+	defaultMaxResources   = 1_000_000
+)
+
+var (
+	maxLineBytes         = defaultMaxLineBytes
+	maxOutputBytes int64 = defaultMaxOutputBytes
+	maxResources         = defaultMaxResources
+)
+
 // Run executes command with sh -c. Warnings are partial failures; the error
 // is returned when the command fails or prints invalid output. Reports and
 // errors use name (plugin1, plugin2, ...), never the command line: it may
 // carry tokens, and shell quoting makes it impossible to cut out safely.
 func Run(ctx context.Context, command, name string) ([]model.Resource, []error, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
 	proc.Group(cmd)
 	cmd.Stderr = os.Stderr
-	out, runErr := cmd.Output()
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if err := cmd.Start(); err != nil {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		return nil, nil, fmt.Errorf("%s: %w", name, err)
+	}
+	res, warns, err := parseReader(out, name)
+	if err != nil {
+		cancel()
+	}
+	runErr := cmd.Wait()
 	if ctx.Err() != nil {
 		return nil, nil, ctx.Err()
 	}
-	res, warns, err := Parse(out, name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -69,11 +97,35 @@ var (
 
 // Parse decodes plugin output.
 func Parse(out []byte, source string) ([]model.Resource, []error, error) {
+	return parseReader(bytes.NewReader(out), source)
+}
+
+type outputReader struct {
+	reader io.Reader
+	left   int64
+}
+
+func (r *outputReader) Read(p []byte) (int, error) {
+	if int64(len(p)) > r.left+1 {
+		p = p[:r.left+1]
+	}
+	n, err := r.reader.Read(p)
+	if int64(n) > r.left {
+		return 0, fmt.Errorf("output exceeds %d byte limit", maxOutputBytes)
+	}
+	r.left -= int64(n)
+	return n, err
+}
+
+func parseReader(out io.Reader, source string) ([]model.Resource, []error, error) {
 	var res []model.Resource
 	var warns []error
-	sc := bufio.NewScanner(bytes.NewReader(out))
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	sc := bufio.NewScanner(&outputReader{reader: out, left: maxOutputBytes})
+	sc.Buffer(make([]byte, min(1<<20, maxLineBytes)), maxLineBytes)
 	for n := 1; sc.Scan(); n++ {
+		if err := sc.Err(); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", source, err)
+		}
 		b := bytes.TrimSpace(sc.Bytes())
 		if len(b) == 0 {
 			continue
@@ -92,6 +144,9 @@ func Parse(out []byte, source string) ([]model.Resource, []error, error) {
 		if !typeName.MatchString(l.Type) || l.Provider != "" && !providerRef.MatchString(l.Provider) {
 			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"type" or "provider" is not a valid name`))
 		}
+		if len(res) >= maxResources {
+			return nil, nil, fmt.Errorf("%s: output exceeds %d resource limit", source, maxResources)
+		}
 		l.Resource.Source = source
 		if l.Unverified {
 			l.Resource.Scope = &model.Scope{Unverifiable: true}
@@ -103,5 +158,11 @@ func Parse(out []byte, source string) ([]model.Resource, []error, error) {
 		l.Resource.AttributeKeys = nil
 		res = append(res, l.Resource)
 	}
-	return res, warns, sc.Err()
+	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, nil, fmt.Errorf("%s: output line exceeds %d byte limit", source, maxLineBytes)
+		}
+		return nil, nil, fmt.Errorf("%s: %w", source, err)
+	}
+	return res, warns, nil
 }
