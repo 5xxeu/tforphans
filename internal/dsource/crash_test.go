@@ -277,3 +277,95 @@ func TestFailureScopes(t *testing.T) {
 		t.Errorf("scopes %q, want %q", got, want)
 	}
 }
+
+func TestAvailableValues(t *testing.T) {
+	desc := "Record type.\nAvailable values: \"A\", \"AAAA\", \"CAA\".\nMore text."
+	if got := availableValues(desc); !slices.Equal(got, []string{"A", "AAAA", "CAA"}) {
+		t.Errorf("values %q", got)
+	}
+	for _, d := range []string{"Record type.", "Available values: A, B.", `Available values: "a/b".`, `Available values: "".`} {
+		if got := availableValues(d); got != nil {
+			t.Errorf("%q: values %q, want none", d, got)
+		}
+	}
+}
+
+// TestSplitCrashed replaces crashed zones of a splittable block by a split
+// block, merges later rounds into it, and leaves other failures alone.
+func TestSplitCrashed(t *testing.T) {
+	sc := &Scope{Arg: "zone_id", Parent: "x_zones"}
+	sp := &split{attr: "type", values: []string{"A", "CAA"}}
+	splits := map[string]*split{"x_records": sp}
+	recs := block{dsType: "x_records", label: "by_zone_id", scope: sc, parent: "data.x_zones.all", exclude: []string{"z1"}}
+	other := block{dsType: "x_rules", label: "by_zone_id", scope: sc, parent: "data.x_zones.all"}
+	blocks := []block{recs, other}
+	why := "crashed: panic"
+	failed := []failure{
+		{block: recs.addr(), address: recs.addr() + `["z2"]`, message: why},
+		{block: recs.addr(), address: recs.addr() + `["z3"]`, message: why},
+		{block: other.addr(), address: other.addr() + `["z2"]`, message: why},
+		{block: recs.addr(), address: recs.addr() + `["z4"]`, message: "parent crashed"},
+	}
+	keep, rest, parts := splitCrashed(blocks, blocks, failed, why, splits)
+	if len(parts) != 1 || parts[0].label != "by_zone_id_by_type" || !slices.Equal(parts[0].only, []string{"z2", "z3"}) || parts[0].exclude != nil || parts[0].split != sp {
+		t.Fatalf("parts %+v", parts)
+	}
+	if len(keep) != 3 || len(rest) != 2 {
+		t.Errorf("keep %d, rest %+v", len(keep), rest)
+	}
+	// A later round adds a zone to the split block.
+	keep, _, parts = splitCrashed(keep, keep, []failure{{block: recs.addr(), address: recs.addr() + `["z5"]`, message: why}}, why, splits)
+	if len(parts) != 1 || !slices.Equal(parts[0].only, []string{"z2", "z3", "z5"}) || len(keep) != 3 {
+		t.Errorf("merged %+v, keep %d", parts, len(keep))
+	}
+	// A whole crash takes the block's own parents, and a later zone does
+	// not narrow that.
+	whole := []failure{{block: recs.addr(), address: recs.addr(), message: why}}
+	keep, _, parts = splitCrashed(blocks, []block{other}, whole, why, splits)
+	if len(parts) != 1 || parts[0].only != nil || !slices.Equal(parts[0].exclude, []string{"z1"}) {
+		t.Fatalf("whole %+v", parts)
+	}
+	_, _, parts = splitCrashed(blocks, keep, []failure{{block: recs.addr(), address: recs.addr() + `["z5"]`, message: why}}, why, splits)
+	if len(parts) != 1 || parts[0].only != nil {
+		t.Errorf("whole then zone %+v", parts)
+	}
+	// A zone split first, then the rest of the block crashing as a whole:
+	// the split keeps that zone and what failed in it.
+	rest1 := recs
+	rest1.exclude = []string{"z1", "z2"}
+	first := recs
+	first.label += "_by_type"
+	first.split, first.only, first.exclude = sp, []string{"z2"}, []string{"z2/CAA"}
+	_, _, parts = splitCrashed([]block{rest1, first}, []block{first}, whole, why, splits)
+	if len(parts) != 1 || parts[0].only != nil || !slices.Equal(parts[0].exclude, []string{"z2/CAA", "z1"}) {
+		t.Errorf("zone then whole %+v", parts)
+	}
+	rest1.only = []string{"z2", "z3"}
+	_, _, parts = splitCrashed([]block{rest1, first}, []block{first}, whole, why, splits)
+	if len(parts) != 1 || !slices.Equal(parts[0].only, []string{"z2", "z3"}) || !slices.Equal(parts[0].exclude, []string{"z2/CAA", "z1"}) {
+		t.Errorf("zone then whole, limited %+v", parts)
+	}
+	// A failure of the split block itself stays.
+	split := parts[0]
+	_, rest, parts = splitCrashed([]block{split}, nil, []failure{{block: split.addr(), address: split.addr() + `["z2/CAA"]`, message: why}}, why, splits)
+	if len(parts) != 0 || len(rest) != 1 {
+		t.Errorf("split failure: parts %+v, rest %+v", parts, rest)
+	}
+}
+
+func TestRenderSplit(t *testing.T) {
+	b := block{dsType: "x_records", label: "by_zone_id_by_type", scope: &Scope{Arg: "zone_id"}, parent: "data.x_zones.all",
+		split: &split{attr: "type", values: []string{"A", "CAA"}}, only: []string{"z2"}, exclude: []string{"z2/A"}, pairs: []string{"z2/A", "z2/CAA"}}
+	got := string(renderBlocks([]block{b}))
+	for _, want := range []string{
+		`for p in setproduct([for o in (data.x_zones.all.result == null ? [] : data.x_zones.all.result) : o.id if (contains(["z2"], o.id) || contains(["z2"], try(o.name, ""))) && !contains(["z2/A"], o.id)], ["A", "CAA"]) : "${p[0]}/${p[1]}" => p if contains(["z2/A", "z2/CAA"], "${p[0]}/${p[1]}") && !contains(["z2/A"], "${p[0]}/${p[1]}") }`,
+		"zone_id = each.value[0]", "type = each.value[1]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+	if b.scopeID("z2/CAA") != "z2" || (block{}).scopeID("z2/CAA") != "z2/CAA" {
+		t.Error("scopeID")
+	}
+}

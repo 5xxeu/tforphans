@@ -587,7 +587,11 @@ still listed. When the provider or terraform crashes (a panic names no
 data source), the data sources are read again in halves until the crash
 is pinned to a data source and, for those read per zone or account, to the
 zones or accounts that crash; those are reported as "crashed" and the rest
-is listed as usual. This takes extra runs (at most 80; what is still
+is listed as usual. Where the adapter knows a filter that splits a listing
+(Cloudflare DNS records by `type`), a zone that crashes is read again once
+per value, and only the values that still crash are reported, for example
+`data.cloudflare_dns_records.by_zone_id_by_type["<zone>/NAPTR"]` with
+`type NAPTR: crashed: ...`. This takes extra runs (at most 80; what is still
 suspect after them is reported as crashed), and a note says so while it
 happens. With
 `-strict` such gaps are errors; leave out products you do not use with
@@ -720,9 +724,11 @@ when someone configures rules or alerts there (configuration outside
 Terraform), for example `cloudflare_notification_policy:Default*`.
 
 **Crashes.** Some provider versions return values that crash terraform for
-some objects (for example DNS records of mixed types in one list). Such a
-crash costs only the zones it happens in (see above); report it to the
-provider with the message from `-v`.
+some objects. DNS records whose data differ in shape (CAA and NAPTR in one
+zone, cloudflare/terraform-provider-cloudflare#5581) are then read one
+record type at a time, the values taken from the provider schema, so the
+zone is still listed in full. Other crashes cost only the zones they happen
+in (see above); report them to the provider with the message from `-v`.
 
 ## Plugins: other providers without list support
 

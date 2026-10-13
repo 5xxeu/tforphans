@@ -75,6 +75,19 @@ type Adapter struct {
 	// type with its deprecation flag; hasPlural tells which have a plural
 	// data source.
 	Prepare func(deprecated map[string]bool, hasPlural func(string) bool) (skip map[string]string, alt map[string][]string)
+	// Split names, by data source type, an argument that filters a listing
+	// into parts. A scoped listing that crashes for one parent (zone) is
+	// read again once per value of it, so that objects the provider cannot
+	// put into one list (DNS records of different types) are listed apart.
+	Split map[string]Split
+}
+
+// Split is an argument a listing can be read in parts by.
+type Split struct {
+	Attr string
+	// Values is used when the schema description of Attr does not list
+	// its values ("Available values: ...").
+	Values []string
 }
 
 // ListSpec says where a plural data source keeps its objects.
@@ -193,6 +206,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		return nil, err
 	}
 	a = a.prepared(sch)
+	splits := a.splits(sch)
 	p := buildPlan(sch, a, opt)
 	res := &Result{Skipped: p.skipped}
 	if len(p.listings) == 0 {
@@ -260,7 +274,15 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s: reading data sources: %v\n%s", a.Name, err, strings.TrimSpace(string(stderr)))
 			}
-			if len(failed) == 0 {
+			pinned := len(failed) > 0
+			var parts []block
+			keep, failed, parts = splitCrashed(blocks, keep, failed, why, splits)
+			for _, b := range parts {
+				if !slices.ContainsFunc(all, func(c block) bool { return c.addr() == b.addr() }) {
+					all = append(all, b)
+				}
+			}
+			if !pinned {
 				// Not repeated: the next full read is an extra run too.
 				if spent++; spent > maxProbes {
 					for _, b := range blocks {
@@ -325,7 +347,12 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType})
 				continue
 			}
+			var seen []string
 			for _, k := range keys {
+				if k = b.scopeID(k); slices.Contains(seen, k) {
+					continue
+				}
+				seen = append(seen, k)
 				res.Checks = append(res.Checks, tf.Check{Type: l.resourceType, Scope: scopeLabel(b.scope, k, names[b.parent][k]), Kind: strings.TrimSuffix(b.scope.Arg, "_id")})
 			}
 		}
@@ -443,10 +470,11 @@ func lockEntry(root, provider string) ([]byte, error) {
 // attr is a schema attribute. Object lists come either as NestedType
 // (framework providers) or as a cty Type such as ["list",["object",{...}]].
 type attr struct {
-	Required   bool            `json:"required"`
-	Optional   bool            `json:"optional"`
-	Type       json.RawMessage `json:"type"`
-	NestedType *struct {
+	Required    bool            `json:"required"`
+	Description string          `json:"description"`
+	Optional    bool            `json:"optional"`
+	Type        json.RawMessage `json:"type"`
+	NestedType  *struct {
 		Attributes map[string]attr `json:"attributes"`
 	} `json:"nested_type"`
 }
@@ -540,6 +568,27 @@ type block struct {
 	// lists too (account objects in zone listings); their own objects and
 	// failures are not reported.
 	hidden bool
+	// split, when set, reads each parent once per value of an argument;
+	// instance keys are then "<parent ID>/<value>" (see Adapter.Split).
+	split *split
+	// pairs, when set, limits a split block to these instance keys (a half
+	// of them while a crash is isolated).
+	pairs []string
+}
+
+type split struct {
+	attr   string
+	values []string
+}
+
+// scopeID returns the parent ID of an instance key.
+func (b block) scopeID(key string) string {
+	if b.split != nil {
+		if i := strings.LastIndex(key, "/"); i >= 0 {
+			return key[:i]
+		}
+	}
+	return key
 }
 
 // failure is a data block, or one instance of it, that could not be read.
@@ -717,6 +766,133 @@ func (p plan) blocks() []block {
 	return out
 }
 
+// splits returns the Split of each data source in the schema, with the
+// values its description lists, else those the adapter gives.
+func (a Adapter) splits(s *schema) map[string]*split {
+	out := map[string]*split{}
+	for ds, sp := range a.Split {
+		at, ok := s.DataSources[ds].Block.Attributes[sp.Attr]
+		if !ok || !at.Optional {
+			continue
+		}
+		vals := availableValues(at.Description)
+		if len(vals) == 0 {
+			vals = sp.Values
+		}
+		if len(vals) > 0 {
+			out[ds] = &split{attr: sp.Attr, values: vals}
+		}
+	}
+	return out
+}
+
+// availableValues returns the values a schema description lists the way
+// generated providers do: `Available values: "A", "AAAA".`
+func availableValues(desc string) []string {
+	_, rest, ok := strings.Cut(desc, "Available values:")
+	if !ok {
+		return nil
+	}
+	rest, _, _ = strings.Cut(rest, "\n")
+	var out []string
+	for _, f := range strings.Split(rest, ",") {
+		f = strings.TrimSuffix(strings.TrimSpace(f), ".")
+		v, err := strconv.Unquote(f)
+		if err != nil || v == "" || strings.ContainsAny(v, "/\"") {
+			return nil
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// splitCrashed reads again, in parts (see Adapter.Split), the parents of
+// scoped blocks whose crash isolate pinned down to them or to the whole
+// block: their failures are replaced by a split block covering those
+// parents. Failures of split blocks themselves stay.
+func splitCrashed(blocks, keep []block, failed []failure, why string, splits map[string]*split) ([]block, []failure, []block) {
+	byAddr := map[string]block{}
+	for _, b := range blocks {
+		byAddr[b.addr()] = b
+	}
+	var rest []failure
+	var parts []block
+	idx := map[string]int{}
+	fresh := map[string]bool{}   // only lists the crashed parents so far
+	earlier := map[string]bool{} // split in an earlier round
+	for _, f := range failed {
+		b, ok := byAddr[f.block]
+		sp := splits[b.dsType]
+		if !ok || sp == nil || b.scope == nil || b.split != nil || f.message != why {
+			rest = append(rest, f)
+			continue
+		}
+		var zone string
+		if _, key, ok := strings.Cut(f.address, "["); ok {
+			k, err := strconv.Unquote(strings.TrimSuffix(key, "]"))
+			if err != nil {
+				rest = append(rest, f)
+				continue
+			}
+			zone = k
+		}
+		s := b
+		s.label += "_by_" + sp.attr
+		s.split, s.pairs = sp, nil
+		i, seen := idx[s.addr()]
+		if !seen {
+			if j := slices.IndexFunc(keep, func(c block) bool { return c.addr() == s.addr() }); j >= 0 {
+				// Split in an earlier round already.
+				s = keep[j]
+				keep = slices.Delete(keep, j, j+1)
+				earlier[s.addr()] = true
+			} else if zone != "" {
+				s.only, s.exclude = nil, nil
+				fresh[s.addr()] = true
+			}
+			parts = append(parts, s)
+			i = len(parts) - 1
+			idx[s.addr()] = i
+		}
+		switch {
+		case zone == "" && earlier[s.addr()] && len(parts[i].only) > 0:
+			// The whole block, after some of its zones were split: its own
+			// parents (it excluded those zones) and those zones too, with
+			// what already failed in the split.
+			prev := parts[i]
+			if b.only == nil {
+				parts[i].only = nil
+			} else {
+				parts[i].only = slices.Clone(b.only)
+				for _, z := range prev.only {
+					if !slices.Contains(parts[i].only, z) {
+						parts[i].only = append(parts[i].only, z)
+					}
+				}
+			}
+			parts[i].exclude = slices.Clone(prev.exclude)
+			for _, z := range b.exclude {
+				if !slices.Contains(prev.only, z) && !slices.Contains(parts[i].exclude, z) {
+					parts[i].exclude = append(parts[i].exclude, z)
+				}
+			}
+			fresh[s.addr()] = false
+		case zone == "":
+			// The whole block: its own parents, as it read them.
+			if !earlier[s.addr()] {
+				parts[i].only, parts[i].exclude = b.only, slices.Clone(b.exclude)
+			}
+			fresh[s.addr()] = false
+		case fresh[s.addr()] || len(parts[i].only) > 0:
+			// An empty only of an earlier split covers every parent.
+			if !slices.Contains(parts[i].only, zone) {
+				parts[i].only = append(slices.Clone(parts[i].only), zone)
+			}
+		}
+	}
+	return append(keep, parts...), rest, parts
+}
+
 // renderBlocks writes the data blocks. Scope parents are result[] lists of
 // objects with an id (the convention of every adapter so far).
 func renderBlocks(blocks []block) []byte {
@@ -736,8 +912,26 @@ func renderBlocks(blocks []block) []byte {
 			if len(conds) > 0 {
 				cond = " if " + strings.Join(conds, " && ")
 			}
-			fmt.Fprintf(&b, "  for_each  = { for o in (%s.result == null ? [] : %s.result) : o.id => o.id%s }\n", bl.parent, bl.parent, cond)
-			fmt.Fprintf(&b, "  %s = each.value\n", bl.scope.Arg)
+			ids := fmt.Sprintf("(%s.result == null ? [] : %s.result)", bl.parent, bl.parent)
+			if bl.split == nil {
+				fmt.Fprintf(&b, "  for_each  = { for o in %s : o.id => o.id%s }\n", ids, cond)
+				fmt.Fprintf(&b, "  %s = each.value\n", bl.scope.Arg)
+			} else {
+				var pc []string
+				if len(bl.pairs) > 0 {
+					pc = append(pc, fmt.Sprintf("contains(%s, \"${p[0]}/${p[1]}\")", hclList(bl.pairs)))
+				}
+				if len(bl.exclude) > 0 {
+					pc = append(pc, fmt.Sprintf("!contains(%s, \"${p[0]}/${p[1]}\")", hclList(bl.exclude)))
+				}
+				pcond := ""
+				if len(pc) > 0 {
+					pcond = " if " + strings.Join(pc, " && ")
+				}
+				fmt.Fprintf(&b, "  for_each  = { for p in setproduct([for o in %s : o.id%s], %s) : \"${p[0]}/${p[1]}\" => p%s }\n", ids, cond, hclList(bl.split.values), pcond)
+				fmt.Fprintf(&b, "  %s = each.value[0]\n", bl.scope.Arg)
+				fmt.Fprintf(&b, "  %s = each.value[1]\n", bl.split.attr)
+			}
 		}
 		if bl.maxItems {
 			fmt.Fprintf(&b, "  max_items = %d\n", maxItems)
@@ -926,6 +1120,11 @@ func reportFailures(failures []failure, all []block, listed map[string]bool, a A
 	var out []tf.Failure
 	for _, f := range failures {
 		b := byAddr[f.block]
+		if _, key, ok := strings.Cut(f.address, "["); ok && b.split != nil {
+			if k, err := strconv.Unquote(strings.TrimSuffix(key, "]")); err == nil && k != b.scopeID(k) {
+				f.message = b.split.attr + " " + k[len(b.scopeID(k))+1:] + ": " + f.message
+			}
+		}
 		f.message = note(b) + f.message
 		if len(b.listings) == 0 {
 			// A context data source: the adapter treats it as missing.
@@ -1014,6 +1213,7 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[s
 		spec := a.spec(b.dsType)
 		for _, in := range r.Instances {
 			scopeVal, _ := in.IndexKey.(string)
+			scopeVal = b.scopeID(scopeVal)
 			for _, item := range listItems(in.Attributes, spec) {
 				id, ok := model.Scalar(item[spec.Field])
 				if !ok || id == "" {
