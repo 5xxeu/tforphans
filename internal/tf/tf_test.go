@@ -690,3 +690,15 @@ func TestAutoArg(t *testing.T) {
 		t.Errorf("no auto arguments: %q", got)
 	}
 }
+
+func TestClassifyElsewhere(t *testing.T) {
+	off := "reading the values of -arg ...=auto: Compute Engine API has not been used in project p before or it is disabled"
+	f := Failure{Message: off}
+	if f.Classify(); f.Category != FailAPIOff {
+		t.Errorf("category %q", f.Category)
+	}
+	f = Failure{Message: off, Elsewhere: true}
+	if f.Classify(); f.Category != FailOther {
+		t.Errorf("API off in the provider's project, query in another: %q", f.Category)
+	}
+}

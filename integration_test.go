@@ -875,6 +875,10 @@ func TestIntegrationAutoZones(t *testing.T) {
 	// Zones that cannot be read: their queries fail, the others run. A
 	// disabled API holds nothing; any other error is a gap.
 	t.Setenv("FAKE_FAIL", "record:Compute Engine API has not been used in project p before or it is disabled")
+	// Nothing else runs: the disabled API still is the check.
+	if code, stdout, stderr := runTool("-types", "fake_zoned", "-arg", "zone=auto", "-strict"); code != exitOK || !strings.Contains(stderr, "coverage: complete") {
+		t.Errorf("only zones with the API off: exit %d\n%s\n%s", code, stdout, stderr)
+	}
 	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "coverage: complete") {
 		t.Errorf("zones with the API off: exit %d\n%s\n%s", code, stdout, stderr)
 	}

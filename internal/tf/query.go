@@ -31,6 +31,11 @@ type Failure struct {
 	// Category groups failures by cause (see Classify); set by Classify.
 	Category string `json:"category,omitempty"`
 	Message  string `json:"message"`
+	// Elsewhere marks a failure read in another place than the listing
+	// would have looked: zones read in the provider's project for a query
+	// with its own -arg project. A disabled API there proves nothing about
+	// the query's project.
+	Elsewhere bool `json:"-"`
 }
 
 // Failure categories.
@@ -82,6 +87,9 @@ func (f *Failure) Classify() {
 	default:
 		f.Category = FailOther
 	}
+	if f.Elsewhere && f.Category == FailAPIOff {
+		f.Category = FailOther
+	}
 	f.Message = OneLine(f.Message, 300)
 }
 
@@ -112,9 +120,11 @@ type Listing struct {
 }
 
 type QueryResult struct {
-	Found    []model.Resource
-	Failed   []Failure
-	Started  int // list block instances that started
+	Found  []model.Resource
+	Failed []Failure
+	// Started counts list block instances that started, and generated
+	// blocks that failed to read the values of their auto arguments.
+	Started  int
 	Complete int // list block instances that finished
 	// Done are the instances that finished.
 	Done []Listing
@@ -224,8 +234,12 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 		for _, q := range deps {
 			if !failedAuto[q.Address()] {
 				failedAuto[q.Address()] = true
-				res.Failed = append(res.Failed, Failure{Address: q.Address(), Type: q.Type, Message: "reading the values of -arg ...=auto: " + e.Message})
+				res.Failed = append(res.Failed, Failure{Address: q.Address(), Type: q.Type, Message: "reading the values of -arg ...=auto: " + e.Message,
+					Elsewhere: slices.ContainsFunc(q.Args, func(a Arg) bool { return a.Name == "project" })})
 				res.errors++
+				// It got as far as asking the provider: for a disabled
+				// API that is the check (a run is not "nothing checked").
+				res.Started++
 			}
 		}
 	}
