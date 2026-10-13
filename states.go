@@ -18,9 +18,9 @@ import (
 )
 
 // pullRoot reads the state of every workspace of a root module and returns
-// the instances and the number of states read. A workspace that fails does
-// not stop the others: the instances read so far come back with the error.
-func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
+// the snapshots and the number of states read. A workspace that fails does
+// not stop the others: the snapshots read so far come back with the error.
+func pullRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, int, error) {
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion, MaxStateSize: o.maxStateSize}
 	// "" is the selected workspace (no TF_WORKSPACE).
 	workspaces := []string{""}
@@ -30,7 +30,7 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, in
 			return nil, 0, err
 		}
 	}
-	var all []state.Instance
+	var all []state.Snapshot
 	var errs []error
 	n := 0
 	for _, ws := range workspaces {
@@ -46,9 +46,9 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, in
 			raw, err := r.RefreshedState(ctx)
 			o.progressf("refreshed %s in %s", inWorkspaceName(dir, ws), time.Since(start).Round(time.Second))
 			if err == nil {
-				var insts []state.Instance
-				if insts, err = state.ParseShow(raw); err == nil {
-					all = append(all, insts...)
+				var snapshot state.Snapshot
+				if snapshot, err = state.ParseShowSnapshot(raw, inWorkspaceName(dir, ws)); err == nil {
+					all = append(all, snapshot)
 					n++
 					continue
 				}
@@ -65,12 +65,12 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Instance, in
 			errs = append(errs, inWorkspace(ws, err))
 			continue
 		}
-		insts, err := state.Parse(raw)
+		snapshot, err := state.ParseSnapshot(raw, inWorkspaceName(dir, ws))
 		if err != nil {
 			errs = append(errs, inWorkspace(ws, err))
 			continue
 		}
-		all = append(all, insts...)
+		all = append(all, snapshot)
 		n++
 	}
 	return all, n, errors.Join(errs...)
@@ -171,11 +171,11 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			insts, n, err := pullStateRoot(ctx, o, d)
+			snapshots, n, err := pullStateRoot(ctx, o, d)
 			mu.Lock()
 			defer mu.Unlock()
 			// The workspaces that were read still count.
-			idx.Add(insts)
+			idx.AddSnapshots(snapshots)
 			sum.States += n
 			if err != nil {
 				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(d, err))
@@ -188,7 +188,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	return dirs, ctx.Err()
 }
 
-func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instance, int, error) {
+func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, int, error) {
 	if err := tf.RemoveStale(dir); err != nil {
 		return nil, 0, err
 	}
@@ -208,11 +208,11 @@ func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Instanc
 		if err != nil {
 			return nil, 0, err
 		}
-		insts, err := state.Parse(raw)
+		snapshot, err := state.ParseSnapshot(raw, dir)
 		if err != nil {
 			return nil, 0, err
 		}
-		return insts, 1, nil
+		return []state.Snapshot{snapshot}, 1, nil
 	}
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
 	if !r.Initialized() {

@@ -32,7 +32,9 @@ type Instance struct {
 }
 
 type rawState struct {
-	Version   int `json:"version"`
+	Version   int    `json:"version"`
+	Lineage   string `json:"lineage"`
+	Serial    *int64 `json:"serial"`
 	Resources []struct {
 		Module    string `json:"module"`
 		Mode      string `json:"mode"`
@@ -51,15 +53,21 @@ type rawState struct {
 // and returned by `terraform state pull`). Data sources are skipped. Empty
 // input is an empty state.
 func Parse(data []byte) ([]Instance, error) {
+	s, err := ParseSnapshot(data, "")
+	return s.Instances, err
+}
+
+// ParseSnapshot reads a raw state and retains its provenance.
+func ParseSnapshot(data []byte, source string) (Snapshot, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil, nil
+		return Snapshot{Sources: []string{source}}, nil
 	}
 	var st rawState
 	if err := model.DecodeJSON(data, &st); err != nil {
-		return nil, fmt.Errorf("decode state: %w", err)
+		return Snapshot{}, fmt.Errorf("decode state: %w", err)
 	}
 	if st.Version != 4 {
-		return nil, fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)
+		return Snapshot{}, fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)
 	}
 	var out []Instance
 	for _, r := range st.Resources {
@@ -82,7 +90,7 @@ func Parse(data []byte) ([]Instance, error) {
 			out = append(out, Instance{Type: r.Type, Address: a, Provider: providerAddress(r.Provider), Identity: in.Identity, Attributes: in.Attributes})
 		}
 	}
-	return out, nil
+	return Snapshot{Lineage: st.Lineage, Serial: st.Serial, Instances: out, Sources: []string{source}}, nil
 }
 
 // providerAddress extracts the provider address from a state reference
@@ -298,11 +306,13 @@ type showModule struct {
 
 // Index looks up state instances by type and attribute values.
 type Index struct {
-	byValue    map[string][]*Instance // type \x00 key \x00 value
-	count      int
-	noIdentity int
-	owned      map[string][]ownedBy // type \x00 owned-object key
-	root       map[string]bool      // resource addresses in root modules
+	byValue      map[string][]*Instance // type \x00 key \x00 value
+	count        int
+	noIdentity   int
+	owned        map[string][]ownedBy // type \x00 owned-object key
+	snapshots    []Snapshot
+	snapshotKeys map[string]int
+	root         map[string]bool // resource addresses in root modules
 }
 
 func NewIndex() *Index {

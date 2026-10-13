@@ -51,7 +51,7 @@ state is read with "terraform state pull" and its providers are asked to list
 live resources with "terraform query".
 
 Exit status: 0 nothing found, 2 unmanaged resources found, 1 error (also on
-incomplete coverage with -strict).
+incomplete coverage with -strict, duplicate ownership with -strict-ownership).
 
 Run "tforphans adopt -h" to generate import blocks for what it finds.
 
@@ -71,7 +71,7 @@ When a state could not be read, adopt stops: objects of that state would show
 as unmanaged and be imported a second time (-allow-incomplete writes anyway).
 
 Exit status: 0 on success, whether or not anything was found; 1 on error
-(also on incomplete coverage with -strict).
+(also on incomplete coverage with -strict, duplicate ownership with -strict-ownership).
 
 Flags:
 `
@@ -171,6 +171,7 @@ type options struct {
 	impliedNoQuery bool
 	// noDefaultPresets: report.DefaultPresets are not applied.
 	noDefaultPresets bool
+	strictOwnership  bool
 	strictAPI        bool
 	strictIgnore     glob.List // -strict-ignore
 	terragrunt       bool
@@ -247,6 +248,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
 	fs.BoolVar(&o.noDefaultPresets, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
+	fs.BoolVar(&o.strictOwnership, "strict-ownership", false, "exit 1 for confirmed duplicate state ownership or duplicate addresses within a state; possible ownership does not fail")
 	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
 	fs.BoolVar(&o.quiet, "quiet", false, "print no progress lines (by default printed on a terminal: roots read, roots queried, data source scans, -refresh)")
@@ -478,11 +480,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("state %s: %w", state.Redact(src), err)
 		}
-		insts, err := state.Parse(data)
+		snapshot, err := state.ParseSnapshot(data, state.Redact(src))
 		if err != nil {
 			return fmt.Errorf("state %s: %w", state.Redact(src), err)
 		}
-		idx.Add(insts)
+		idx.AddSnapshots([]state.Snapshot{snapshot})
 		sum.States++
 	}
 
@@ -516,6 +518,15 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if o.printQuery {
 		return nil
 	}
+	sum.Ownership, sum.InState = idx.Duplicates()
+	for _, d := range sum.Ownership {
+		if d.Confidence == "confirmed" {
+			sum.DuplicateOwnership++
+		} else {
+			sum.PossibleDuplicateOwnership++
+		}
+	}
+	sum.DuplicateInState = len(sum.InState)
 	sum.Notes = append(sum.Notes, o.stateNotes...)
 	if len(o.scans) > 0 && len(o.stateRoots) == 0 && o.scanScope == nil && !o.scopeState {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-scan lists whole accounts, but only %d states were read: objects that other root modules manage show up as unmanaged. Read every root's state with -state-roots DIR, or narrow the scan with -scan-scope zone_id=ID_OR_NAME or -scan-scope state.", sum.States))
@@ -820,6 +831,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 
 	switch {
+	case o.strictOwnership && (sum.DuplicateOwnership > 0 || sum.DuplicateInState > 0):
+		return exitCode(exitError)
 	case o.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)
 	case len(orphans) > 0 && !o.adopt:

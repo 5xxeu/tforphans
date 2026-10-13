@@ -42,6 +42,17 @@ that is not initialized and fails for it is not queried and its state not
 read: a warning names it, coverage is incomplete, and the other roots still
 run (`-init` runs `terraform init` there first).
 
+Duplicate state ownership is also checked across every state read. A warning
+lists confirmed ownership by different states, possible matches (with their
+reason), and objects held at several addresses within one state. It shows
+the first eight objects; `-format json` includes all owners and sources.
+These warnings stay visible with `-quiet`, like other warnings, and do not
+fail `-strict` or change the default exit status. `-strict-ownership` exits
+`1` for confirmed duplicate ownership or any duplicate within a state;
+possible ownership alone never fails it. The flag only makes a run stricter,
+so automatic `.tforphans.yaml` files may set `strict-ownership: true`.
+Import blocks from `adopt` are unchanged.
+
 Queries that did not list everything are summed up by cause: crashed,
 missing argument, permission denied, truncated, not found, request rejected
 (often a feature the plan does not include), API retired, provider bug, API

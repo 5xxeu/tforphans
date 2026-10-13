@@ -18,6 +18,7 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
 
@@ -232,7 +233,12 @@ func NewUnreadState(root string, err error) UnreadState {
 
 // Summary describes how complete the scan was.
 type Summary struct {
-	States int `json:"states"`
+	States                     int               `json:"states"`
+	DuplicateOwnership         int               `json:"duplicate_ownership"`
+	PossibleDuplicateOwnership int               `json:"possible_duplicate_ownership"`
+	DuplicateInState           int               `json:"duplicate_in_state"`
+	Ownership                  []state.Duplicate `json:"-"`
+	InState                    []state.Duplicate `json:"-"`
 	// UnreadStates are root modules whose state could not be read in full:
 	// their objects may show as unmanaged.
 	UnreadStates []UnreadState `json:"unread_states,omitempty"`
@@ -603,11 +609,13 @@ func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summar
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(struct {
-		SchemaVersion int              `json:"schema_version"`
-		Orphans       []model.Resource `json:"orphans"`
-		Uncertain     []Uncertain      `json:"uncertain"`
-		Summary       Summary          `json:"summary"`
-	}{SchemaVersion, orphans, uncertain, s})
+		SchemaVersion      int               `json:"schema_version"`
+		Orphans            []model.Resource  `json:"orphans"`
+		Uncertain          []Uncertain       `json:"uncertain"`
+		Summary            Summary           `json:"summary"`
+		DuplicateOwnership []state.Duplicate `json:"duplicate_ownership,omitempty"`
+		DuplicateInState   []state.Duplicate `json:"duplicate_in_state,omitempty"`
+	}{SchemaVersion, orphans, uncertain, s, s.Ownership, s.InState})
 }
 
 // SchemaVersion of the JSON output. It goes up when a field is removed or
