@@ -60,21 +60,30 @@ func Run(ctx context.Context, command, name string) ([]model.Resource, []error, 
 	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
 	proc.Group(cmd)
 	cmd.Stderr = os.Stderr
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", name, err)
-	}
+	out, stdout := io.Pipe()
+	defer out.Close()
+	defer stdout.Close()
+	// Let exec copy stdout so WaitDelay bounds inherited open pipes.
+	cmd.Stdout = stdout
 	if err := cmd.Start(); err != nil {
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
 		}
 		return nil, nil, fmt.Errorf("%s: %w", name, err)
 	}
+	wait := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		// Parsing must see EOF even when the command failed.
+		stdout.Close()
+		wait <- err
+	}()
 	res, warns, err := parseReader(out, name)
 	if err != nil {
 		cancel()
+		out.CloseWithError(err)
 	}
-	runErr := cmd.Wait()
+	runErr := <-wait
 	if ctx.Err() != nil {
 		return nil, nil, ctx.Err()
 	}

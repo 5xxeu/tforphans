@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -66,6 +67,36 @@ func TestRunCancelPipeline(t *testing.T) {
 		t.Errorf("cancellation error: %v", err)
 	}
 	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("returned after %v", d)
+	}
+}
+
+func TestRunWaitDelay(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var pid int
+		if _, err := fmt.Sscan(string(data), &pid); err != nil {
+			t.Error(err)
+			return
+		}
+		if child, err := os.FindProcess(pid); err == nil {
+			child.Kill()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	start := time.Now()
+	command := fmt.Sprintf(`printf '%%s\n' '{"type":"t","identity":{"id":"x"}}'; sleep 30 & echo $! > '%s'; exit 0`, pidFile)
+	res, warns, err := Run(ctx, command, "plugin1")
+	if !errors.Is(err, exec.ErrWaitDelay) || !strings.HasPrefix(err.Error(), "plugin1:") || res != nil || warns != nil {
+		t.Errorf("inherited stdout: %v, %v, %v", res, warns, err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("returned after %v", d)
 	}
 }
@@ -159,12 +190,12 @@ func TestRunStopsOnInvalidOutputAndLimits(t *testing.T) {
 
 func TestRunExitAfterParse(t *testing.T) {
 	for _, out := range []string{`{"type":"t","identity":{"id":"x"}}`, `{"error":"permission denied"}`} {
-		res, warns, err := Run(context.Background(), fmt.Sprintf("printf '%%s\\n' '%s'; exit 7", out), "plugin1")
+		res, warns, err := Run(context.Background(), fmt.Sprintf("printf '%%s' '%s'; exit 7", out), "plugin1")
 		if err == nil || !strings.Contains(err.Error(), "plugin1: exit status 7") || res != nil || warns != nil {
 			t.Errorf("exit after parse: %v, %v, %v", res, warns, err)
 		}
 	}
-	_, _, err := Run(context.Background(), "echo 'not json'; exit 7", "plugin1")
+	_, _, err := Run(context.Background(), "printf '%s' 'not json'; exit 7", "plugin1")
 	if err == nil || !strings.HasPrefix(err.Error(), "plugin1 line 1") {
 		t.Errorf("invalid output should precede exit error: %v", err)
 	}

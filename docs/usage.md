@@ -23,9 +23,10 @@ pulls, and JSON output from `-refresh`. Oversized input is rejected with an
 error that names the limit and suggests raising it. Give a positive byte
 count or an integer with a `K`, `M` or `G` suffix (powers of 1024,
 case-insensitive), for example `-max-state-size 512M` or
-`-max-state-size 2G`. Zero and negative sizes are invalid. The harmless
-`max-state-size` key is also accepted in automatic `.tforphans.yaml` files;
-the command line takes precedence.
+`-max-state-size 2G`. Zero and negative sizes are invalid. Automatic
+`.tforphans.yaml` files may set `max-state-size` only up to the 1 GiB default;
+a larger value is an error even when overridden on the command line. To
+raise the limit, pass it on the command line or via `-config FILE`.
 
 Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
 Without `-strict` the status speaks of findings only: a run with incomplete

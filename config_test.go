@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/state"
 )
 
 // A config file in the current directory supplies flags; the command line
@@ -79,21 +81,38 @@ limit: 5
 
 func TestConfigMaxStateSize(t *testing.T) {
 	t.Chdir(t.TempDir())
-	for _, value := range []string{"512M", "1024"} {
-		if err := os.WriteFile(defaultConfigFile, []byte("max-state-size: "+value+"\n"), 0o644); err != nil {
+	for _, c := range []struct {
+		value string
+		size  int64
+	}{
+		{"512M", 512 << 20},
+		{"1024", 1024},
+		{"1G", state.DefaultMaxSize},
+		{"1073741825", state.DefaultMaxSize + 1},
+		{"2G", 2 << 30},
+	} {
+		if err := os.WriteFile(defaultConfigFile, []byte("max-state-size: "+c.value+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		want := int64(512 << 20)
-		if value == "1024" {
-			want = 1024
-		}
-		for _, argv := range [][]string{nil, {"-config", defaultConfigFile}, {"-max-state-size", "2G"}} {
+		for _, argv := range [][]string{nil, {"-max-state-size", "2G"}} {
 			o, err := parseFlags(argv, io.Discard)
-			if len(argv) > 0 && argv[0] == "-max-state-size" {
+			if c.size > state.DefaultMaxSize {
+				if err == nil || !strings.Contains(err.Error(), "max-state-size") || !strings.Contains(err.Error(), "command line or via -config") {
+					t.Errorf("automatic %s, %v: %v", c.value, argv, err)
+				}
+				continue
+			}
+			want := c.size
+			if len(argv) > 0 {
 				want = 2 << 30
 			}
 			if err != nil || o.maxStateSize != want {
-				t.Errorf("%s, %v: %+v, %v", value, argv, o, err)
+				t.Errorf("automatic %s, %v: %+v, %v", c.value, argv, o, err)
+			}
+		}
+		for _, argv := range [][]string{{"-config", defaultConfigFile}, {"-no-config", "-max-state-size", c.value}, {"-config", defaultConfigFile, "-max-state-size", c.value}} {
+			if o, err := parseFlags(argv, io.Discard); err != nil || o.maxStateSize != c.size {
+				t.Errorf("explicit %s, %v: %+v, %v", c.value, argv, o, err)
 			}
 		}
 	}

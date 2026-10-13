@@ -3,13 +3,16 @@ linters:
   settings:
     errcheck:
       # Output to the terminal and cleanup of temporary files: a failure
-      # there has nothing better to do than the code already does.
+      # there has nothing better to do than the code already does. Closing
+      # an io.Pipe end never fails.
       exclude-functions:
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
         - (*os.File).Close
         - (io.ReadCloser).Close
+        - (*io.PipeReader).Close
+        - (*io.PipeWriter).Close
         - os.Remove
         - os.RemoveAll
     staticcheck:

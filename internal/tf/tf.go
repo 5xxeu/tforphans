@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,18 +98,26 @@ func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) (
 		err := cmd.Run()
 		return stdout.Bytes(), stderr.Bytes(), err
 	}
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, err
-	}
+	pipe, output := io.Pipe()
+	defer pipe.Close()
+	defer output.Close()
+	// Let exec copy stdout so WaitDelay bounds inherited open pipes.
+	cmd.Stdout = output
 	if err := cmd.Start(); err != nil {
 		return nil, stderr.Bytes(), err
 	}
+	wait := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		output.Close()
+		wait <- err
+	}()
 	out, readErr := state.ReadLimited(pipe, maxSize)
 	if readErr != nil {
 		cancel()
+		pipe.CloseWithError(readErr)
 	}
-	err = cmd.Wait()
+	err := <-wait
 	if ctx.Err() != nil {
 		return nil, stderr.Bytes(), ctx.Err()
 	}

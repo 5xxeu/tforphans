@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -750,6 +751,45 @@ func TestStateOutputLimits(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Errorf("wrapper did not stop promptly: %v", time.Since(start))
+	}
+}
+
+func TestStateOutputWaitDelay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "terraform")
+	pidFile := filepath.Join(dir, "pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var pid int
+		if _, err := fmt.Sscan(string(data), &pid); err != nil {
+			t.Error(err)
+			return
+		}
+		if child, err := os.FindProcess(pid); err == nil {
+			child.Kill()
+		}
+	})
+	data := `{"version":4}`
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' '%s'\nsleep 30 & echo $! > '%s'; exit 0\n", data, pidFile)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	start := time.Now()
+	out, stderr, err := (Runner{Bin: bin, Dir: dir}).runLimited(ctx, int64(len(data)), "state", "pull")
+	if !errors.Is(err, exec.ErrWaitDelay) || string(out) != data || len(stderr) != 0 {
+		t.Errorf("inherited stdout: %q, %q, %v", out, stderr, err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("returned after %v", d)
 	}
 }
 

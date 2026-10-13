@@ -19,8 +19,8 @@
   telemetry. State contents are kept in memory and never printed. Each
   state read is limited to 1 GiB by default, including state pulls and
   refresh JSON; `-max-state-size` sets a positive byte count or a size such
-  as `512M` or `2G` (powers of 1024). This harmless limit may also be set in
-  an automatic `.tforphans.yaml` file.
+  as `512M` or `2G` (powers of 1024). An automatic `.tforphans.yaml` may
+  lower this limit; raising it requires the command line or `-config FILE`.
 - Files it writes: a temporary `zz_tforphans_<pid>.tfquery.hcl` (and
   `zz_tforphans_<pid>_override.tf` when a provider is declared only in child
   modules, `zz_tforphans_<pid>_auto.tf` for automatic list arguments,
