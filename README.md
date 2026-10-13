@@ -164,7 +164,15 @@ through google, a scope not asked for) or one with no list resource or
 data source at all does not make coverage incomplete; the line then reads
 `coverage: complete for what can be listed; not checked: ...`, and `-v`
 lists those types. A type listed in one root does not cover a root where
-it was skipped, since the roots may look at different accounts. Before the slow part,
+it was skipped, since the roots may look at different accounts.
+`-strict-ignore TYPE_GLOB,...` names types whose failed listings and
+missing arguments do not make coverage incomplete either: they are still
+listed where possible and still reported (`summary.strict_ignored`, and
+coverage rows with the reason `-strict-ignore: ...`), so that a CI gate
+fails only on what it did not expect, for example a product the project
+does not use (`-strict-ignore 'google_firebase_*'`). Unlike
+`-exclude-types`, which does not list a type at all, its objects are still
+found. Before the slow part,
 a `plan:` line says what the run checks: which roots are queried, how many
 states are read, what is scanned and with which scope.
 
@@ -340,8 +348,22 @@ require (the query fails with "Cannot determine zone" unless the provider
 block sets one), so the first scan of a GCP project usually needs:
 
 ```sh
-tforphans -arg location=global,europe-west1 \
-  -arg "google_compute_*:zone=$(gcloud compute zones list --filter='region:europe-west1' --format='value(name)' | paste -sd, -)"
+tforphans -arg location=global,europe-west1 -arg 'google_compute_*:zone=auto'
+```
+
+`zone=auto` and `region=auto` (google and google-beta) stand for every zone
+or region: a temporary `zz_tforphans_<pid>_auto.tf` in the root reads them
+with the data sources `google_compute_regions` and `google_compute_zones`,
+through the root's own provider configuration (its project), and the
+queries fan out over what they return. Nothing is missed for a zone that
+nobody thought of, at the price of one query per zone and type (GCP has
+about 130 zones). When the zones cannot be read,
+the queries that need them fail with that error, the others still run; a
+disabled Compute API counts as one (see `-strict-api`). A shorter list
+is still possible:
+
+```sh
+tforphans -arg "google_compute_*:zone=$(gcloud compute zones list --filter='region:europe-west1' --format='value(name)' | paste -sd, -)"
 ```
 
 Types whose list config has a required argument that no `-arg` supplies (for
@@ -425,6 +447,13 @@ google_compute_firewall name=gke-* project=my-gke-project
 google_compute_firewall name=k8s-* project=my-gke-project
 google_storage_bucket name=gcf-sources-*
 ```
+
+`-ignore-preset gcp-gke-names` hides the firewall rules and health checks
+that GKE and its load balancer controllers create (`gke-*`, `k8s-fw-*`,
+`k8s-*-node-hc`, `k8s2-*`, and rules whose description names a Kubernetes
+service), by exactly those names and descriptions: anyone who can create
+a firewall rule can hide it this way, so it is a separate, explicit choice.
+See [the preset](internal/report/presets/gcp-gke-names.ignore).
 
 `-ignore-preset cloudflare-system` is the same for `-scan cloudflare`; see
 [Cloudflare](#cloudflare) for what it covers.
@@ -785,7 +814,9 @@ tforphans:
 ```
 
 Exit status `2` means unmanaged objects, `1` an error or, with `-strict`,
-incomplete coverage; `jq '.orphans'` and `jq '.summary.coverage[] |
+incomplete coverage. Products a project does not use go into
+`-exclude-types` (not listed) or `-strict-ignore` (listed, but their
+failures do not fail the job). `jq '.orphans'` and `jq '.summary.coverage[] |
 select(.status != "complete")'` show what to look at. Run it on a schedule
 or on the default branch, with read-only credentials: commands
 (`-plugin`, `-terraform`) and state URLs come only from the job's command

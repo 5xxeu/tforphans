@@ -162,13 +162,16 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 	// The last line says whether "nothing unmanaged" can be trusted.
 	// Complete covers what can be listed; say what could not be.
 	var out []string
-	gapTypes := map[string]bool{}
+	gapTypes, argTypes := map[string]bool{}, map[string]bool{}
 	for _, c := range s.Coverage {
 		switch {
 		case c.Status == report.Skipped:
 			out = append(out, c.Type)
 		case slices.ContainsFunc(c.Reasons, func(r string) bool { return strings.HasPrefix(r, report.GapPrefix) }):
 			gapTypes[c.Type] = true
+			if slices.ContainsFunc(c.Reasons, func(r string) bool { return strings.HasPrefix(r, report.GapPrefix+tf.MissingArgs) }) {
+				argTypes[c.Type] = true
+			}
 		}
 	}
 	if s.Complete {
@@ -182,6 +185,9 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		if s.APIOff > 0 && !o.strictAPI {
 			beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api counts them)", s.APIOff))
 		}
+		if s.StrictIgnored > 0 {
+			beyond = append(beyond, fmt.Sprintf("%d failed listings or skipped types of -strict-ignore", s.StrictIgnored))
+		}
 		if len(beyond) == 0 {
 			fmt.Fprintln(w, "coverage: complete")
 			return
@@ -190,14 +196,21 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		return
 	}
 	var gaps []string
-	failed := len(s.Failed)
-	if !o.strictAPI {
-		failed -= s.APIOff
+	failed := 0
+	for _, f := range s.Failed {
+		if (f.Category != tf.FailAPIOff || o.strictAPI) && !o.strictIgnore.Match(f.Type) {
+			failed++
+		}
 	}
 	if n := failed; n > 0 {
 		gaps = append(gaps, fmt.Sprintf("%d failed or truncated listings", n))
 	}
-	if n := len(gapTypes); n > 0 {
+	switch n, a := len(gapTypes), len(argTypes); {
+	case n > 0 && a == n:
+		gaps = append(gaps, fmt.Sprintf("%d types skipped that need an argument (-arg NAME=...; -v lists them)", n))
+	case a > 0:
+		gaps = append(gaps, fmt.Sprintf("%d types skipped that needed a check, %d of them for want of an argument (-arg NAME=...; -v lists them)", n, a))
+	case n > 0:
 		gaps = append(gaps, fmt.Sprintf("%d types skipped that needed a check", n))
 	}
 	if n := len(s.UnreadStates); n > 0 {
@@ -256,7 +269,7 @@ func printFailed(w io.Writer, o *options, failed []tf.Failure) {
 		slices.Sort(types)
 		fmt.Fprintf(w, "  %s (%d): %s\n", cat, len(types), report.Clean(strings.Join(types, ", ")))
 		if cat == tf.FailMissingArg {
-			fmt.Fprintln(w, "    pass the argument with -arg, for one set of types if needed: -arg 'google_compute_*:zone=europe-west1-b,europe-west1-c'")
+			fmt.Fprintln(w, "    pass the argument with -arg, for one set of types if needed: -arg 'google_compute_*:zone=europe-west1-b,europe-west1-c' (google: zone=auto reads every zone)")
 		}
 	}
 }

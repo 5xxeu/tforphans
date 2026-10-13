@@ -229,6 +229,24 @@ func TestPresets(t *testing.T) {
 	if ig.Match(model.Resource{Type: "google_service_account", Identity: map[string]any{"email": "ci@p.iam.gserviceaccount.com", "project": "p"}}) {
 		t.Error("user service account ignored")
 	}
+	gke, err := Preset("gcp-gke-names")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := func(name, description string) model.Resource {
+		return model.Resource{Type: "google_compute_firewall", Identity: map[string]any{"name": name, "project": "p"}, Attributes: map[string]any{"description": description}}
+	}
+	for _, r := range []model.Resource{fw("k8s-0a1b-node-hc", ""), fw("k8s-fw-0a1b", ""), fw("k8s2-x-y-l4-shared-hc-fw", ""), fw("0a1b2c-hc", `{"kubernetes.io/service-name":"ns/svc"}`), fw("lb-0a1b", "GCE L7 firewall rule")} {
+		if !gke.Match(r) {
+			t.Errorf("GKE rule %v not ignored", r.Identity["name"])
+		}
+	}
+	if gke.Match(fw("allow-ssh", "office")) {
+		t.Error("user firewall rule ignored")
+	}
+	if ig.Match(fw("k8s-fw-0a1b", "")) {
+		t.Error("gcp-system ignores by name")
+	}
 	cf, err := Preset("cloudflare-system")
 	if err != nil {
 		t.Fatal(err)

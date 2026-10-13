@@ -31,6 +31,11 @@ type Failure struct {
 	// Category groups failures by cause (see Classify); set by Classify.
 	Category string `json:"category,omitempty"`
 	Message  string `json:"message"`
+	// Elsewhere marks a failure read in another place than the listing
+	// would have looked: zones read in the provider's project for a query
+	// with its own -arg project. A disabled API there proves nothing about
+	// the query's project.
+	Elsewhere bool `json:"-"`
 }
 
 // Failure categories.
@@ -82,6 +87,9 @@ func (f *Failure) Classify() {
 	default:
 		f.Category = FailOther
 	}
+	if f.Elsewhere && f.Category == FailAPIOff {
+		f.Category = FailOther
+	}
 	f.Message = OneLine(f.Message, 300)
 }
 
@@ -112,12 +120,17 @@ type Listing struct {
 }
 
 type QueryResult struct {
-	Found    []model.Resource
-	Failed   []Failure
-	Started  int // list block instances that started
+	Found  []model.Resource
+	Failed []Failure
+	// Started counts list block instances that started, and generated
+	// blocks that failed to read the values of their auto arguments.
+	Started  int
 	Complete int // list block instances that finished
 	// Done are the instances that finished.
 	Done []Listing
+	// DataErrors are errors of data sources (data.<type>.<name>): the list
+	// blocks that need their values do not start.
+	DataErrors []Failure
 	// Unfinished are the list block instances that started but neither
 	// finished nor reported an error of their own.
 	Unfinished []string
@@ -185,6 +198,12 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 		}
 		defer os.Remove(base + "_override.tf")
 	}
+	if auto := p.AutoHCL(); auto != nil {
+		if err := writeTemp(base+"_auto.tf", auto); err != nil {
+			return nil, err
+		}
+		defer os.Remove(base + "_auto.tf")
+	}
 	if err := writeTemp(base+".tfquery.hcl", p.HCL(limitFor(""))); err != nil {
 		return nil, err
 	}
@@ -202,6 +221,27 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	res, fatal, err := ParseQueryStream(out, r.Dir, keys, limitFor)
 	if err != nil {
 		return nil, err
+	}
+	// The regions or zones of an auto argument could not be read: its
+	// queries fail (a disabled Compute API is classified as such).
+	failedAuto := map[string]bool{}
+	for _, e := range res.DataErrors {
+		deps, ok := p.AutoDependents(e.Address)
+		if !ok {
+			fatal = append(fatal, e.Address+": "+e.Message)
+			continue
+		}
+		for _, q := range deps {
+			if !failedAuto[q.Address()] {
+				failedAuto[q.Address()] = true
+				res.Failed = append(res.Failed, Failure{Address: q.Address(), Type: q.Type, Message: "reading the values of -arg ...=auto: " + e.Message,
+					Elsewhere: slices.ContainsFunc(q.Args, func(a Arg) bool { return a.Name == "project" })})
+				res.errors++
+				// It got as far as asking the provider: for a disabled
+				// API that is the check (a run is not "nothing checked").
+				res.Started++
+			}
+		}
 	}
 	if len(fatal) > 0 {
 		return nil, fmt.Errorf("terraform query in %s:\n%s", r.Dir, strings.Join(fatal, "\n"))
@@ -330,6 +370,10 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 	}
 	var fatal []string
 	for _, e := range errs {
+		if strings.HasPrefix(e.Address, "data.") {
+			res.DataErrors = append(res.DataErrors, e)
+			continue
+		}
 		if e.Type != "" && res.Started > 0 {
 			res.Failed = append(res.Failed, e)
 			res.errors++

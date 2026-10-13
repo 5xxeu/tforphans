@@ -1,0 +1,23 @@
+# Firewall rules and health checks that GKE and its load balancer
+# controllers create, known only by names and descriptions. GCP gives them
+# no reserved mark: anyone who can create a firewall rule can call it
+# gke-public-ssh or write kubernetes.io into its description, and this
+# preset then hides it. Use it only where that is acceptable, ideally for
+# one GKE project with project= rules of your own instead. gcp-system holds
+# the rules that rely on reserved marks.
+
+# GKE cluster rules (gke-<cluster>-<hash>-all, -master, -vms, -ssh)
+google_compute_firewall name=gke-*
+# Ingress and service load balancers (k8s-fw-*, k8s-<hash>-node-hc,
+# k8s2-...-l4-shared-hc-fw)
+google_compute_firewall name=k8s-fw-*
+google_compute_firewall name=k8s-*-node-hc
+google_compute_firewall name=k8s-*-node-http-hc
+google_compute_firewall name=k8s2-*
+# Rules named by a bare hash (<hash>-hc) carry the service in their
+# description; checking it fetches firewall attributes (slower)
+google_compute_firewall attr.description=*kubernetes.io/*
+google_compute_firewall attr.description=GCE?L7?firewall?rule
+# Health checks of those load balancers
+google_compute_health_check name=k8s-*
+google_compute_health_check name=k8s2-*

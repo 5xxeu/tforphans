@@ -134,6 +134,7 @@ type options struct {
 	maxRoots        int
 	progress        io.Writer // progress lines of long steps (stderr)
 	strictAPI       bool
+	strictIgnore    glob.List // -strict-ignore
 	terragrunt      bool
 	tgUnits         listFlag // -terragrunt-unit
 	configFile      string   // flags read from this file
@@ -174,7 +175,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fmt.Fprint(stderr, help)
 		fs.PrintDefaults()
 	}
-	var argFlags, include, exclude, scans, presets, attrs, scanScopes listFlag
+	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
 	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are uncertain, since state does not record the cluster")
@@ -185,6 +186,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.BoolVar(&o.anyVersion, "ignore-required-version", false, "lift the root modules' required_version with a temporary override file, so that a root pinned to an older Terraform can be queried (child modules' constraints still apply)")
 	fs.BoolVar(&o.refresh, "refresh", false, "read each root's state through terraform plan -refresh-only (no lock, nothing written) instead of state pull: state written before Terraform 1.12 gets resource identities, so matches are exact; slower, needs the root's credentials and variables")
 	fs.BoolVar(&o.strictAPI, "strict-api", false, "count listings that failed because the API is not enabled (GCP) as incomplete coverage; by default a disabled API is taken to hold no objects")
+	fs.Var(&strictIgnore, "strict-ignore", "types matching these globs do not make coverage incomplete when their listing fails or they are skipped for want of an argument (still listed when possible, and still reported), e.g. google_firebase_*")
 	fs.IntVar(&o.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules than this, before terraform runs in them (0: no limit)")
 	fs.BoolVar(&o.terragrunt, "terragrunt", false, "with -state-roots, also read Terragrunt units (directories with a terragrunt.hcl, except parents that units include) through terragrunt in PATH; terragrunt initializes them (.terragrunt-cache)")
 	fs.Var(&o.tgUnits, "terragrunt-unit", "with -terragrunt, read DIR as a Terragrunt unit even though units include its terragrunt.hcl (taken for shared configuration otherwise); repeatable")
@@ -192,7 +194,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*), not from the root's provider block; repeatable")
 	fs.Var(&scanScopes, "scan-scope", "limit -scan to some zones or accounts: zone_id=ID_OR_NAME,... or account_id=...; with no value (account_id=) that scope is not read; \"state\" limits every other scope to the IDs found in the states read; repeatable")
 	fs.Var(&o.plugins, "plugin", "discovery command for providers without list support, run with sh -c; repeatable")
-	fs.Var(&argFlags, "arg", "fan list queries out over values of a list config argument, e.g. region=eu-north-1,us-east-1; TYPE_GLOB:name=... limits it to matching types (google_compute_*:zone=europe-west1-b) and wins over the same name without one; repeatable")
+	fs.Var(&argFlags, "arg", "fan list queries out over values of a list config argument, e.g. region=eu-north-1,us-east-1; TYPE_GLOB:name=... limits it to matching types (google_compute_*:zone=europe-west1-b) and wins over the same name without one; zone=auto or region=auto (google) reads every zone or region through the root's provider; repeatable")
 	fs.Var(&include, "types", "only query resource types matching these globs, e.g. aws_s3_*,aws_iam_role")
 	fs.Var(&exclude, "exclude-types", "do not query resource types matching these globs")
 	fs.IntVar(&o.limit, "limit", 100000, "maximum results per list query")
@@ -339,6 +341,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	o.include = glob.CompileList(include.csv())
 	o.exclude = glob.CompileList(exclude.csv())
+	o.strictIgnore = glob.CompileList(strictIgnore.csv())
 	if len(o.roots) == 0 && !o.noQuery {
 		o.roots = []string{"."}
 	}
@@ -609,19 +612,29 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Failed[i].Classify()
 	}
 	// A disabled API (GCP) can hold no objects: such listings stay in
-	// failed_queries but are no gap, unless -strict-api.
+	// failed_queries but are no gap, unless -strict-api. Types named in
+	// -strict-ignore are no gap either, whatever went wrong.
 	counting, skipped, checks := sum.Failed, sum.Skipped, sum.Checks
 	for _, f := range sum.Failed {
 		if f.Category == tf.FailAPIOff {
 			sum.APIOff++
 		}
 	}
-	if !o.strictAPI {
+	// A skip that -strict-ignore lets pass says so in skipped_types too.
+	for i, sk := range sum.Skipped {
+		if !sk.Excluded && o.strictIgnore.Match(sk.Type) {
+			sum.Skipped[i].Excluded = true
+			sum.Skipped[i].Reason = report.StrictIgnored + sk.Reason
+			sum.StrictIgnored++
+		}
+	}
+	if !o.strictAPI || len(o.strictIgnore) > 0 {
 		counting = nil
 		skipped = slices.Clone(sum.Skipped)
 		checks = slices.Clone(sum.Checks)
 		for _, f := range sum.Failed {
-			if f.Category == tf.FailAPIOff {
+			switch {
+			case f.Category == tf.FailAPIOff && !o.strictAPI:
 				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
 				// The listing ran far enough to learn there is nothing:
 				// it stands for the check (an aliased block of the user's
@@ -629,9 +642,12 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 				if f.Root != "" {
 					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
 				}
-				continue
+			case o.strictIgnore.Match(f.Type):
+				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: report.StrictIgnored + f.Category, Excluded: true, Root: f.Root})
+				sum.StrictIgnored++
+			default:
+				counting = append(counting, f)
 			}
-			counting = append(counting, f)
 		}
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)

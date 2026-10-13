@@ -614,3 +614,91 @@ func TestCmdErrorRequiredVersion(t *testing.T) {
 		t.Errorf("%v", err)
 	}
 }
+
+func TestAutoArg(t *testing.T) {
+	if _, err := ParseArg("zone=auto,z1"); err == nil {
+		t.Error("auto with other values: no error")
+	}
+	var s Schemas
+	json.Unmarshal([]byte(`{"provider_schemas": {
+	  "registry.terraform.io/hashicorp/google-beta": {"list_resource_schemas": {
+	    "google_compute_instance": {"block": {"attributes": {"zone": {"type": "string", "required": true}, "location": {"type": "string", "optional": true}}}}
+	  }},
+	  "registry.terraform.io/hashicorp/aws": {"list_resource_schemas": {
+	    "aws_instance": {"block": {"attributes": {"region": {"type": "string", "optional": true}}}}
+	  }}
+	}}`), &s)
+	auto, _ := ParseArg("zone=auto")
+	region, _ := ParseArg("region=auto")
+	loc, _ := ParseArg("location=global,eu")
+	z1, _ := ParseArg("google_compute_*:zone=z1")
+	// A scoped zone=z1 wins over zone=auto for the type; auto for the
+	// same type absorbs it.
+	scopedAuto, _ := ParseArg("google_compute_*:zone=auto")
+	p := BuildPlan(&s, nil, PlanOptions{Args: []Arg{auto, region, loc, z1, scopedAuto}})
+	var reasons []string
+	for _, sk := range p.Skipped {
+		reasons = append(reasons, sk.Type+": "+sk.Reason)
+	}
+	if len(p.Queries) != 1 || p.Queries[0].Type != "google_compute_instance" {
+		t.Fatalf("queries %+v, skipped %v", p.Queries, reasons)
+	}
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "aws_instance: -arg region=auto works only for region and zone of google") {
+		t.Errorf("skipped %v", reasons)
+	}
+	hcl := string(p.HCL(10))
+	for _, want := range []string{
+		`for_each = { for c in setproduct(flatten([for r in data.google_compute_zones.tfo_auto_google-beta : r.names]), ["global", "eu"]) : "zone=${c[0]},location=${c[1]}" => { zone = c[0], location = c[1] } }`,
+		`zone = each.value.zone`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("HCL lacks %q:\n%s", want, hcl)
+		}
+	}
+	data := string(p.AutoHCL())
+	for _, want := range []string{
+		"data \"google_compute_regions\" \"tfo_auto_google-beta\" {\n  provider = google-beta\n}",
+		"for_each = toset(data.google_compute_regions.tfo_auto_google-beta.names)\n  region = each.key",
+	} {
+		if !strings.Contains(data, want) {
+			t.Errorf("auto HCL lacks %q:\n%s", want, data)
+		}
+	}
+	if deps, ok := p.AutoDependents(`data.google_compute_zones.tfo_auto_google-beta["europe-west1"]`); !ok || len(deps) != 1 {
+		t.Errorf("zones dependents = %v, %v", deps, ok)
+	}
+	for _, addr := range []string{"data.google_compute_zones.mine", "data.google_compute_zones.tfo_auto_custom", "data.google_compute_regions.tfo_auto_google"} {
+		if _, ok := p.AutoDependents(addr); ok {
+			t.Errorf("%s taken for a data source of the plan", addr)
+		}
+	}
+	// region=auto alone needs no zones; a zones error concerns only the
+	// queries with zone=auto.
+	regional := Query{Type: "google_compute_subnetwork", Provider: "google", Source: "registry.terraform.io/hashicorp/google", Args: []Arg{{Name: "region", Values: []string{Auto}}}}
+	zonal := Query{Type: "google_compute_instance", Provider: "google", Source: "registry.terraform.io/hashicorp/google", Args: []Arg{{Name: "zone", Values: []string{Auto}}}}
+	if got := string((Plan{Queries: []Query{regional}}).AutoHCL()); strings.Contains(got, "google_compute_zones") || !strings.Contains(got, "google_compute_regions") {
+		t.Errorf("region=auto alone:\n%s", got)
+	}
+	both := Plan{Queries: []Query{regional, zonal}}
+	if deps, _ := both.AutoDependents(`data.google_compute_zones.tfo_auto_google["r"]`); len(deps) != 1 || deps[0].Type != "google_compute_instance" {
+		t.Errorf("zones dependents %v", deps)
+	}
+	if deps, _ := both.AutoDependents("data.google_compute_regions.tfo_auto_google"); len(deps) != 2 {
+		t.Errorf("regions dependents %v", deps)
+	}
+	if got := (Plan{}).AutoHCL(); got != nil {
+		t.Errorf("no auto arguments: %q", got)
+	}
+}
+
+func TestClassifyElsewhere(t *testing.T) {
+	off := "reading the values of -arg ...=auto: Compute Engine API has not been used in project p before or it is disabled"
+	f := Failure{Message: off}
+	if f.Classify(); f.Category != FailAPIOff {
+		t.Errorf("category %q", f.Category)
+	}
+	f = Failure{Message: off, Elsewhere: true}
+	if f.Classify(); f.Category != FailOther {
+		t.Errorf("API off in the provider's project, query in another: %q", f.Category)
+	}
+}

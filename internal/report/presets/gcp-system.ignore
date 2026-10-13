@@ -5,14 +5,10 @@
 # create a firewall rule can call it gke-public-ssh. Built from one large
 # project's results; check what it hides before relying on it.
 #
-# GKE also creates firewall rules, health checks and forwarding rules
-# (k8s-fw-*, k8s-*-node-hc, k8s2-*); GCP gives them no reserved mark, only
-# names and descriptions anyone can set. If you accept that, put lines such
-# as these into your own .tforphans-ignore:
-#   google_compute_firewall name=k8s-fw-*
-#   google_compute_firewall name=k8s2-*
-#   google_compute_health_check name=k8s-*-node-hc
-#   google_compute_firewall attr.description=*kubernetes.io/*
+# GKE also creates firewall rules and health checks (k8s-fw-*,
+# k8s-*-node-hc, k8s2-*); GCP gives them no reserved mark, only names and
+# descriptions anyone can set. The separate preset gcp-gke-names hides them
+# by those, if you accept that.
 
 # GKE nodes, their boot disks and persistent volume disks
 google_compute_instance attr.labels.goog-gke-node=*
