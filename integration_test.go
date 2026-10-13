@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/report"
@@ -315,6 +316,7 @@ var pveData = map[string]string{
 	"/api2/json/cluster/replication":   `[{"id":"100-0","guest":100,"target":"pve2","type":"local","jobnum":0}]`,
 	"/api2/json/cluster/sdn/vnets":     `[{"vnet":"vnet1","zone":"z1","type":"vnet"}]`,
 	"/api2/json/cluster/backup/":       `[{"id":"backup-1","schedule":"daily","storage":"local","enabled":1}]`,
+	"/api2/json/version":               `{"version":"8.2.4","release":"8.2","repoid":"faa83925c9641325"}`,
 }
 
 // TestIntegrationProxmox runs the real bpg/proxmox provider (downloaded on
@@ -324,7 +326,30 @@ func TestIntegrationProxmox(t *testing.T) {
 	if _, err := exec.LookPath("terraform"); err != nil {
 		t.Skip("terraform not in PATH")
 	}
+	// fail maps paths ("" for all) to a status line Proxmox VE would send:
+	// it puts the error into the reason phrase.
+	var mu sync.Mutex
+	fail := map[string]string{}
+	requests := 0
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		status, failed := fail[r.URL.Path]
+		if all, ok := fail[""]; ok {
+			status, failed = all, true
+		}
+		mu.Unlock()
+		if failed {
+			conn, buf, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer conn.Close()
+			fmt.Fprintf(buf, "HTTP/1.1 %s\r\nContent-Type: application/json\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"data\":null}", status)
+			buf.Flush()
+			return
+		}
 		d, ok := pveData[r.URL.Path]
 		if !ok {
 			t.Errorf("unexpected request %s", r.URL)
@@ -429,6 +454,43 @@ func TestIntegrationProxmox(t *testing.T) {
 	code, stdout, stderr = runTool("adopt", "-no-query", "-scan", "proxmox", "-state", statePath, pinned)
 	if code != exitOK || !strings.Contains(stdout, "to = proxmox_virtual_environment_vm.forgotten\n  provider = pve\n  # found with the proxmox provider configured from the environment;\n") {
 		t.Errorf("adopt with a pinned root: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+
+	// Proxmox VE 9 answers HA groups with 500: skipped, not a gap.
+	mu.Lock()
+	fail["/api2/json/cluster/ha/groups/"] = "500 ha groups have been migrated to rules"
+	mu.Unlock()
+	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict", "-v")
+	if code != exitOrphans || !strings.Contains(stderr, "coverage: complete") || !strings.Contains(stderr, "HA rules instead of HA groups") {
+		t.Errorf("PVE 9 HA groups: exit %d\n%s", code, stderr)
+	}
+	// Rejected credentials: one request, then exit 1.
+	mu.Lock()
+	fail[""] = "401 invalid token value!"
+	requests = 0
+	mu.Unlock()
+	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-allow-unpinned")
+	mu.Lock()
+	n := requests
+	mu.Unlock()
+	if code != exitError || !strings.Contains(stderr, "authentication failed") || n > 2 {
+		t.Errorf("401: exit %d, %d requests\n%s", code, n, stderr)
+	}
+	// With a user and password the login (a ticket) fails when the
+	// provider is configured, before any data source.
+	t.Setenv("PROXMOX_VE_API_TOKEN", "")
+	t.Setenv("PROXMOX_VE_USERNAME", "root@pam")
+	t.Setenv("PROXMOX_VE_PASSWORD", "wrong")
+	mu.Lock()
+	fail[""] = "401 authentication failure"
+	requests = 0
+	mu.Unlock()
+	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-allow-unpinned")
+	mu.Lock()
+	n = requests
+	mu.Unlock()
+	if code != exitError || !strings.Contains(stderr, "authentication failed") || n > 2 {
+		t.Errorf("401 for a password: exit %d, %d requests\n%s", code, n, stderr)
 	}
 }
 

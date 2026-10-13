@@ -23,6 +23,10 @@ type Resource struct {
 	AltIdentity map[string]map[string]any `json:"-"`
 	Identity    map[string]any            `json:"identity"`
 	DisplayName string                    `json:"display_name"`
+	// BaseName, when set, is the object's own name where DisplayName adds
+	// to it ("web" for "web (pve1)"): import addresses and ignore rules by
+	// name use it.
+	BaseName string `json:"-"`
 	// ScopeName says for people where the object lives: "zone example.com",
 	// "project my-project".
 	ScopeName string `json:"scope,omitempty"`

@@ -1,6 +1,7 @@
 package dsource
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -79,10 +80,34 @@ var Proxmox = Adapter{
 		}
 		return id
 	},
+	// The version is one cheap request: wrong credentials fail it once,
+	// not once per data source.
+	Probe:      "proxmox_virtual_environment_version",
+	AuthFailed: func(message string) bool { return proxmoxAuthFailed.MatchString(message) },
+	// Proxmox VE 9 migrated HA groups to HA rules and answers 500.
+	Unsupported: func(dsType, message string) string {
+		if strings.HasSuffix(dsType, "_hagroups") && strings.Contains(strings.ToLower(message), "migrated to rules") {
+			return "the cluster has HA rules instead of HA groups (Proxmox VE 9); HA rules have no plural data source"
+		}
+		return ""
+	},
+	// Template and VM names repeat per node.
+	DisplayName: func(resourceType string, item map[string]any, name string) string {
+		if node, ok := item["node_name"].(string); ok && node != "" {
+			return name + " (" + node + ")"
+		}
+		return name
+	},
 	Prepare: proxmoxRenames,
 	Context: []string{"proxmox_virtual_environment_nodes"},
 	Finish:  proxmoxScope,
 }
+
+// proxmoxAuthFailed matches a rejected login: bpg reports "received an
+// HTTP 401 response - Reason: ..." (the reason is Proxmox VE's own text,
+// such as "authentication failure" or "invalid token value!"), and a 401
+// alone in an ID or a URL must not count.
+var proxmoxAuthFailed = regexp.MustCompile(`(?i)\bHTTP 401\b|\bstatus(?: ?code)?:? 401\b|\b401 unauthorized\b|authentication failure|failed to authenticate`)
 
 // proxmoxGuestNodes are the state attributes holding a guest's node.
 var proxmoxGuestNodes = map[string]string{

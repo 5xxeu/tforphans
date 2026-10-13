@@ -75,6 +75,18 @@ type Adapter struct {
 	// type with its deprecation flag; hasPlural tells which have a plural
 	// data source.
 	Prepare func(deprecated map[string]bool, hasPlural func(string) bool) (skip map[string]string, alt map[string][]string)
+	// Probe is a data source read alone before the others, and AuthFailed
+	// recognises its error as rejected credentials: the scan then stops
+	// with that error instead of failing one login per data source, which
+	// can lock the account (Proxmox, fail2ban).
+	Probe      string
+	AuthFailed func(message string) bool
+	// Unsupported recognises errors meaning that the server no longer has
+	// what a data source lists, and returns why: the types are skipped
+	// (left out on purpose) instead of failed.
+	Unsupported func(dsType, message string) string
+	// DisplayName adjusts the name an object is reported under.
+	DisplayName func(resourceType string, item map[string]any, name string) string
 	// Split names, by data source type, an argument that filters a listing
 	// into parts. A scoped listing that crashes for one parent (zone) is
 	// read again once per value of it, so that objects the provider cannot
@@ -250,6 +262,22 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			opt.Progress(fmt.Sprintf("%s: the crash was not pinned down in %d extra runs; what is still suspect is reported as crashed", a.Name, maxProbes))
 		}
 	})
+	if _, ok := sch.DataSources[a.Probe]; ok && a.AuthFailed != nil {
+		out, _, runErr, err := apply([]block{{dsType: a.Probe, label: "probe"}})
+		if err != nil {
+			return nil, err
+		}
+		if runErr != nil {
+			// Every error counts, with or without an address and in full:
+			// the probe is the only block. Any other failure is left to the
+			// scan, which reports it.
+			for _, msg := range errorMessages(out) {
+				if a.AuthFailed(msg) {
+					return nil, fmt.Errorf("%s: authentication failed, so nothing was listed (%s was read first, so that one failed login is tried instead of one per data source): %s", a.Name, a.Probe, tf.OneLine(msg, 240))
+				}
+			}
+		}
+	}
 	var failures []failure
 	for len(blocks) > 0 {
 		out, stderr, runErr, err := apply(blocks)
@@ -358,6 +386,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 	}
 	res.Listed = slices.Sorted(maps.Keys(listed))
+	failures = unsupported(failures, all, a, res)
 	res.Failed = append(res.Failed, reportFailures(failures, all, listed, a)...)
 	defer func() { failureScopes(res.Failed, all, names) }()
 	if len(blocks) == 0 {
@@ -953,6 +982,21 @@ func hclList(vals []string) string {
 // belong to a data block (with the for_each key when they name one), and
 // the errors not tied to a block.
 func applyErrors(out []byte) ([]diagErr, []string) {
+	return splitErrors(out, 240)
+}
+
+// errorMessages returns every error diagnostic of `terraform apply -json`
+// in full.
+func errorMessages(out []byte) []string {
+	errs, fatal := splitErrors(out, 0)
+	for _, e := range errs {
+		fatal = append(fatal, e.message)
+	}
+	return fatal
+}
+
+// splitErrors is applyErrors with messages cut to max bytes (0: not cut).
+func splitErrors(out []byte, max int) ([]diagErr, []string) {
 	var failed []diagErr
 	var fatal []string
 	for _, line := range bytes.Split(out, []byte("\n")) {
@@ -972,8 +1016,8 @@ func applyErrors(out []byte) ([]diagErr, []string) {
 		if d.Detail != "" {
 			msg += ": " + strings.Join(strings.Fields(d.Detail), " ")
 		}
-		if len(msg) > 240 {
-			msg = msg[:240] + "..."
+		if max > 0 && len(msg) > max {
+			msg = msg[:max] + "..."
 		}
 		addr, index, hasIndex := strings.Cut(d.Address, "[")
 		if !strings.HasPrefix(addr, "data.") {
@@ -1141,6 +1185,33 @@ func reportFailures(failures []failure, all []block, listed map[string]bool, a A
 	return out
 }
 
+// unsupported turns failures the adapter recognises as "the server no
+// longer has this" (Adapter.Unsupported) into skips, and returns the rest.
+func unsupported(failures []failure, all []block, a Adapter, res *Result) []failure {
+	if a.Unsupported == nil {
+		return failures
+	}
+	var rest []failure
+	for _, f := range failures {
+		i := slices.IndexFunc(all, func(b block) bool { return b.addr() == f.block })
+		if i < 0 || len(all[i].listings) == 0 {
+			rest = append(rest, f)
+			continue
+		}
+		why := a.Unsupported(all[i].dsType, f.message)
+		if why == "" {
+			rest = append(rest, f)
+			continue
+		}
+		for _, l := range all[i].listings {
+			if !slices.ContainsFunc(res.Skipped, func(s tf.Skip) bool { return s.Type == l.resourceType && s.Reason == why }) {
+				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: why, Excluded: true})
+			}
+		}
+	}
+	return rest
+}
+
 // note is the start of a block's failure messages: a hidden block's
 // failure means that objects of its scope, which the listing asked for may
 // return too, can no longer be told apart (see block.hidden).
@@ -1234,12 +1305,19 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[s
 					if a.Keep != nil && !a.Keep(l.resourceType, item) {
 						continue
 					}
+					name, base := displayName(item, id), ""
+					if a.DisplayName != nil {
+						if n := a.DisplayName(l.resourceType, item, name); n != name {
+							name, base = n, name
+						}
+					}
 					res := model.Resource{
 						Type:           l.resourceType,
 						ProviderSource: a.Provider,
 						AltTypes:       a.AltTypes[l.resourceType],
 						Identity:       map[string]any{spec.Key: id},
-						DisplayName:    displayName(item, id),
+						DisplayName:    name,
+						BaseName:       base,
 						ScopeName:      where,
 						Attributes:     item,
 						ImportID:       id,

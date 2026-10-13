@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
 
@@ -280,5 +281,90 @@ func TestTerragruntUnitOverride(t *testing.T) {
 	}
 	if _, err := parseFlags([]string{"-terragrunt-unit", "app"}, io.Discard); err == nil || !strings.Contains(err.Error(), "needs -terragrunt") {
 		t.Errorf("without -terragrunt: %v", err)
+	}
+}
+
+// TestImpliedNoQuery: -scan without ROOT_DIR in a directory without
+// Terraform configuration runs no terraform query.
+func TestImpliedNoQuery(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	o, err := parseFlags([]string{"-scan", "proxmox"}, io.Discard)
+	if err != nil || !o.noQuery || !o.impliedNoQuery || len(o.roots) != 0 {
+		t.Fatalf("no config: %+v, %v", o, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte("terraform {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err = parseFlags([]string{"-scan", "proxmox"}, io.Discard)
+	if err != nil || o.noQuery || !slices.Equal(o.roots, []string{"."}) {
+		t.Fatalf("with config: %+v, %v", o, err)
+	}
+}
+
+func TestIgnoreHints(t *testing.T) {
+	var rs []model.Resource
+	for i := range hintMin {
+		rs = append(rs, model.Resource{Type: "cloudflare_certificate_pack", ScopeName: "zone example.com", RequiredKeys: []string{"id"},
+			Identity: map[string]any{"id": fmt.Sprint(i), "zone_id": "z1"}})
+	}
+	rs = append(rs, model.Resource{Type: "cloudflare_dns_record", ScopeName: "zone example.com", Identity: map[string]any{"id": "r", "zone_id": "z1"}})
+	hints := ignoreHints(rs)
+	if len(hints) != 1 || !strings.HasSuffix(hints[0], ": cloudflare_certificate_pack zone_id=z1") || !strings.HasPrefix(hints[0], "20 unmanaged cloudflare_certificate_pack in zone example.com") {
+		t.Fatalf("hints %q", hints)
+	}
+	// The suggested line parses and hides them.
+	line := hints[0][strings.LastIndex(hints[0], ": ")+2:]
+	ig, err := report.ParseIgnore(strings.NewReader(line + "\n"))
+	if err != nil || !ig.Match(rs[0]) || ig.Match(rs[len(rs)-1]) {
+		t.Errorf("line %q: %v", line, err)
+	}
+	// Different zones under one name, or no scope: no hint.
+	rs[0].Identity = map[string]any{"id": "0", "zone_id": "z2"}
+	if hints := ignoreHints(rs); len(hints) != 0 {
+		t.Errorf("mixed scope values: %q", hints)
+	}
+	for i := range rs {
+		rs[i].ScopeName = ""
+	}
+	if hints := ignoreHints(rs); len(hints) != 0 {
+		t.Errorf("no scope: %q", hints)
+	}
+}
+
+// TestSortBaseName: guests named alike keep their listed order whatever
+// node the display name adds, so import addresses keep their suffixes.
+func TestSortBaseName(t *testing.T) {
+	rs := []model.Resource{
+		{Type: "vm", DisplayName: "tmpl (pve2)", BaseName: "tmpl", ImportID: "pve2/100"},
+		{Type: "vm", DisplayName: "tmpl (pve1)", BaseName: "tmpl", ImportID: "pve1/200"},
+		{Type: "vm", DisplayName: "app (pve3)", BaseName: "app", ImportID: "pve3/300"},
+	}
+	sortResources(rs)
+	var got []string
+	for _, r := range rs {
+		got = append(got, r.ImportID)
+	}
+	if want := []string{"pve3/300", "pve2/100", "pve1/200"}; !slices.Equal(got, want) {
+		t.Errorf("order %v, want %v", got, want)
+	}
+}
+
+func TestPrintFailedLongList(t *testing.T) {
+	var failed []tf.Failure
+	for i := range 12 {
+		failed = append(failed, tf.Failure{Address: fmt.Sprintf("data.x.t%02d", i), Type: fmt.Sprintf("t%02d", i), Category: tf.FailDenied, Message: "403"})
+	}
+	failed = append(failed, tf.Failure{Address: "data.x.c", Type: "c", Category: tf.FailCrash, Message: "crashed"})
+	var b strings.Builder
+	printFailed(&b, &options{}, failed)
+	out := b.String()
+	if !strings.Contains(out, "permission denied (12): t00, t01, t02, t03, t04, t05, t06, t07, and 4 more\n") || !strings.Contains(out, "lack permission") || !strings.Contains(out, "crashed (1): c\n") {
+		t.Errorf("output:\n%s", out)
+	}
+	b.Reset()
+	printFailed(&b, &options{verbose: true}, failed)
+	if !strings.Contains(b.String(), "t11\n") {
+		t.Errorf("-v output:\n%s", b.String())
 	}
 }

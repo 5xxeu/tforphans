@@ -130,9 +130,13 @@ coverage: complete
 (Illustrative output.)
 
 Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
-A run that queried no resource type at all is an error too, since it could
-not have found anything (for example a provider version without list
-resources; the error names such providers). With `-strict`, incomplete
+Without `-strict` the status speaks of findings only: a run with incomplete
+coverage and nothing found exits `0`, so check `coverage:` (or
+`summary.complete`) or pass `-strict`. A run that queried no resource type
+at all is an error too, since it could not have found anything: every
+listing failed (the error counts them by cause; usually the credentials),
+or a provider version has no list resources (the error names such
+providers). With `-strict`, incomplete
 coverage (a failed list query, a plugin error, a type skipped for want of
 an argument) is also an error, which suits CI. A root given as an argument
 that is not initialized and fails for it is not queried and its state not
@@ -143,7 +147,8 @@ Queries that did not list everything are summed up by cause: crashed,
 missing argument, permission denied, truncated, not found, request rejected
 (often a feature the plan does not include), API retired, provider bug, API
 not enabled, other. Messages are cut to one line; `-v` prints each failed
-query.
+query. A cause with many types names the first eight (a token without most
+permissions would otherwise bury a crash in a list of 77).
 
 Every live object ends up in one of four groups: **managed** (matched to
 state, its account or cluster confirmed), **uncertain** (matched to state,
@@ -174,7 +179,34 @@ does not use (`-strict-ignore 'google_firebase_*'`). Unlike
 `-exclude-types`, which does not list a type at all, its objects are still
 found. Before the slow part,
 a `plan:` line says what the run checks: which roots are queried, how many
-states are read, what is scanned and with which scope.
+states are read, what is scanned and with which scope. On a terminal,
+progress lines follow (each root's state read, each root queried, each
+`-scan`), so that a long run does not look hung; `-quiet` turns them off,
+and they are not printed when stderr is not a terminal (CI logs).
+
+### JSON output
+
+`-format json` prints one object. `schema_version` (now `1`) goes up when a
+field is removed or changes its type or meaning, so a consumer can refuse a
+format it does not know; new fields do not change it.
+
+- `orphans`, `uncertain`: objects with `type`, `identity` (the keys state is
+  matched on), `display_name`, `scope` (where it lives, `-scan` and some
+  list resources), `import_id`, `provider` (local name in the root),
+  `provider_source`, `list_address`, `source` (root, `-scan NAME` or
+  `pluginN`), `attributes` (only with `-include-attrs`); `uncertain` adds
+  `state_address`, the state instance it matched.
+- `summary`: counters (`live`, `managed`, `managed_by_identity`,
+  `uncertain`, `ignored`, `orphans`, `states`, `queried_types`,
+  `api_not_enabled`, `strict_ignored`), `complete`, `unread_states`
+  (`[{root, error}]`), `failed_queries` (`address`, `type`, `scope`,
+  `root`, `category`, `message`), `skipped_types` (`type`, `reason`,
+  `root`, `excluded`: left out on purpose or without any listing),
+  `warnings`, `notes`, `providers_without_list`, `by_type` and `by_scope`
+  (counters per type and per scope), `coverage` (`type`, `scope`,
+  `status` complete/incomplete/skipped, `reasons`, `live`).
+
+Empty lists and zero counters marked above as optional may be left out.
 
 ### Config file
 
@@ -411,7 +443,8 @@ tforphans -print-query      # show the generated .tfquery.hcl and exit
 
 `.tforphans-ignore` in the working directory (or `-ignore FILE`)
 holds `TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...]` lines. `*` matches any
-characters. The name glob is tried against the display name, the import ID
+characters. The name glob is tried against the display name (and the bare
+name where it adds to it, like the node of a Proxmox guest), the import ID
 and every identity value. Each `KEY=GLOB` must match as well: an identity
 key (`project=prod-*`), or `attr.` and a path into the resource's
 attributes (`attr.labels.goog-gke-node=*`), which tforphans then fetches for
@@ -456,7 +489,15 @@ a firewall rule can hide it this way, so it is a separate, explicit choice.
 See [the preset](internal/report/presets/gcp-gke-names.ignore).
 
 `-ignore-preset cloudflare-system` is the same for `-scan cloudflare`; see
-[Cloudflare](#cloudflare) for what it covers.
+[Cloudflare](#cloudflare) for what it covers. `-ignore-preset
+proxmox-templates` hides Proxmox VM and container templates (by their
+`template` flag); use it where templates are built outside Terraform.
+
+When 20 or more unmanaged objects share a type and a scope (certificate
+packs a zone got automatically), a note prints the ignore line that would
+hide them, such as `cloudflare_certificate_pack zone_id=<id>`. It hides
+every object of that type there, later ones too, so add it only when they
+are expected.
 
 ### Bringing orphans under Terraform: `tforphans adopt`
 
@@ -612,16 +653,32 @@ An adapter per provider holds what the schema cannot say. For Cloudflare
   `cloudflare_worker` next to `cloudflare_workers_script` count as managing
   the same object.
 
-`-scan proxmox` covers `bpg/proxmox` (credentials from `PROXMOX_VE_ENDPOINT`,
-`PROXMOX_VE_API_TOKEN` and the other `PROXMOX_VE_*` variables; a token with
-the PVEAuditor role is enough): VMs, containers, pools, users, groups,
+`-scan proxmox` covers `bpg/proxmox`: VMs, containers, pools, users, groups,
 roles, HA groups and resources, replication jobs, SDN vnets, backup jobs and
 ACME accounts. Guests are matched by VM ID, which is unique in a cluster
 and survives migration; `telmate/proxmox` resources
 (`proxmox_vm_qemu`, `proxmox_lxc`) and the deprecated
 `proxmox_virtual_environment_*` names of renamed types count as managing the
 same objects. Built-in roles and `root@pam` are not reported. Import IDs
-are `<node>/<vm_id>` for guests and the object ID otherwise.
+are `<node>/<vm_id>` for guests and the object ID otherwise. Guests are
+shown as `name (node)`, since template names repeat per node; ignore rules
+by name still match the bare name.
+
+Credentials come from the environment only: `PROXMOX_VE_ENDPOINT` and
+either `PROXMOX_VE_API_TOKEN` (`user@realm!token=secret`, a token with the
+PVEAuditor role is enough) or `PROXMOX_VE_USERNAME` and
+`PROXMOX_VE_PASSWORD`, plus `PROXMOX_VE_INSECURE=true` for a self-signed
+certificate. The provider block of your root is not used, as with every
+`-scan`: the data sources are read in a temporary root of their own, so
+that nothing in your configuration (or its state lock) is touched. No
+`ROOT_DIR` is needed: in a directory without Terraform files `-scan` runs
+alone, as with `-no-query`. Before the listings, one cheap request (the
+version) checks the credentials: if they are rejected (401), the run stops
+with `authentication failed` and exit 1, so a wrong password costs one
+failed login, not one per data source (which could trip fail2ban or lock
+the account). On Proxmox VE 9, which replaced HA groups with HA rules, HA
+groups are skipped (left out, not a gap); HA rules have no plural data
+source to list them.
 
 Proxmox state does not record which cluster an object belongs to, and VM
 IDs repeat across clusters. A guest never matches state whose node

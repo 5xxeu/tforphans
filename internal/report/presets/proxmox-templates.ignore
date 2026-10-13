@@ -1,0 +1,6 @@
+# Proxmox VE VM and container templates (the template flag of -scan
+# proxmox results). Templates are often built outside Terraform (Packer,
+# by hand) and cloned from; use this preset where that is how they are
+# made, since it also hides a template a Terraform root should manage.
+proxmox_virtual_environment_vm attr.template=true
+proxmox_virtual_environment_container attr.template=true

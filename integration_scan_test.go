@@ -193,6 +193,46 @@ func TestIntegrationScanSplit(t *testing.T) {
 	}
 }
 
+// TestIntegrationScanProbe: rejected credentials stop the scan after the
+// probe, with exit 1; other probe errors leave the scan going. An error the
+// adapter knows as "the server no longer has this" skips the type.
+func TestIntegrationScanProbe(t *testing.T) {
+	root := scanSetup(t)
+	t.Chdir(root)
+	a := fakeAdapter
+	a.Probe = "fake_zones"
+	a.AuthFailed = func(m string) bool { return strings.Contains(m, "401") }
+	a.Unsupported = func(_, m string) string {
+		if strings.Contains(m, "migrated to rules") {
+			return "gone in this server version"
+		}
+		return ""
+	}
+	sources["fake"] = a
+
+	t.Setenv("FAKE_FAIL", "zone:HTTP 401 authentication failure")
+	code, _, stderr := runTool("-no-query", "-scan", "fake", "-allow-unpinned")
+	if code != exitError || !strings.Contains(stderr, "authentication failed") || strings.Contains(stderr, "not fully listed") {
+		t.Errorf("401: exit %d\n%s", code, stderr)
+	}
+	// The mark past the length messages are cut to for reports.
+	t.Setenv("FAKE_FAIL", "zone:"+strings.Repeat("x", 300)+" HTTP 401")
+	if code, _, stderr := runTool("-no-query", "-scan", "fake", "-allow-unpinned"); code != exitError || !strings.Contains(stderr, "authentication failed") {
+		t.Errorf("401 after a long message: exit %d\n%s", code, stderr)
+	}
+	t.Setenv("FAKE_FAIL", "zone:HTTP 403 forbidden")
+	// The scan went on: every listing failed, and the error says so.
+	if code, out, stderr := scanJSON(t); code != exitError || strings.Contains(stderr, "authentication failed") || len(out.Summary.Failed) != 2 || !strings.Contains(stderr, "every listing failed (2: permission denied 2)") {
+		t.Errorf("403: exit %d, failed %+v\n%s", code, out.Summary.Failed, stderr)
+	}
+
+	t.Setenv("FAKE_FAIL", "record:HTTP 500 ha groups have been migrated to rules")
+	code, out, stderr := scanJSON(t)
+	if code != exitOrphans || len(out.Summary.Failed) != 0 || !out.Summary.Complete {
+		t.Errorf("unsupported: exit %d, complete %v, failed %+v\n%s", code, out.Summary.Complete, out.Summary.Failed, stderr)
+	}
+}
+
 // TestIntegrationScanScope limits the scan to some zones, by ID or name,
 // or to the zones of the states read.
 func TestIntegrationScanScope(t *testing.T) {
