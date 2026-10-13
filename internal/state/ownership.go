@@ -46,15 +46,24 @@ func (ix *Index) AddSnapshots(snapshots []Snapshot) {
 		key := canonical([]any{s.Lineage, serial, fmt.Sprintf("%x", sha256.Sum256([]byte(canonical(rows))))})
 		if i, ok := ix.snapshotKeys[key]; ok {
 			ix.snapshots[i].Sources = sortedSources(append(ix.snapshots[i].Sources, s.Sources...))
-			sensitive := map[string]bool{}
-			for _, in := range s.Instances {
-				if in.IDSensitive {
-					sensitive[canonical([]string{in.Type, in.Address})] = true
-				}
+			// Equivalent identities can still carry different legacy IDs.
+			instanceKey := func(in Instance) string {
+				kind, value := objectKey(in)
+				return canonical([]any{in.Type, providerFamily(in.Provider), in.Address, kind, value, in.Attributes["id"]})
 			}
-			for j := range ix.snapshots[i].Instances {
-				in := &ix.snapshots[i].Instances[j]
-				in.IDSensitive = in.IDSensitive || sensitive[canonical([]string{in.Type, in.Address})]
+			instances := map[string]int{}
+			for j, in := range ix.snapshots[i].Instances {
+				instances[instanceKey(in)] = j
+			}
+			for _, in := range s.Instances {
+				key := instanceKey(in)
+				if j, ok := instances[key]; ok {
+					stored := &ix.snapshots[i].Instances[j]
+					stored.IDSensitive = stored.IDSensitive || in.IDSensitive
+				} else {
+					instances[key] = len(ix.snapshots[i].Instances)
+					ix.snapshots[i].Instances = append(ix.snapshots[i].Instances, in)
+				}
 			}
 			continue
 		}
@@ -129,10 +138,21 @@ type objectOwner struct {
 }
 
 type stateObject struct {
-	instance Instance
-	owners   []objectOwner
-	known    map[string]string
-	full     bool
+	instance  Instance
+	owners    []objectOwner
+	known     map[string]string
+	legacyIDs map[string]bool // canonical JSON ID to sensitivity
+	full      bool
+}
+
+func (o *stateObject) addLegacyID(in Instance) {
+	if id := in.Attributes["id"]; knownValue(id) {
+		if o.legacyIDs == nil {
+			o.legacyIDs = map[string]bool{}
+		}
+		key := canonical(id)
+		o.legacyIDs[key] = o.legacyIDs[key] || in.IDSensitive
+	}
 }
 
 // identityValues excludes unknown values, including empty containers.
@@ -268,12 +288,6 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 				value = canonical([]any{value, si, in.Address})
 			}
 			addressKey := canonical([]string{key, in.Address})
-			if seen[addressKey] {
-				i := byObject[key]
-				objects[i].instance.IDSensitive = objects[i].instance.IDSensitive || in.IDSensitive
-				continue
-			}
-			seen[addressKey] = true
 			i, ok := byObject[key]
 			if !ok {
 				i = len(objects)
@@ -283,8 +297,12 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 				known := identityValues(in.Identity)
 				objects = append(objects, stateObject{instance: in, known: known, full: len(in.Identity) > 0 && len(known) == len(in.Identity)})
 			}
-			objects[i].owners = append(objects[i].owners, objectOwner{si, in.Address})
+			objects[i].addLegacyID(in)
 			objects[i].instance.IDSensitive = objects[i].instance.IDSensitive || in.IDSensitive
+			if !seen[addressKey] {
+				objects[i].owners = append(objects[i].owners, objectOwner{si, in.Address})
+				seen[addressKey] = true
+			}
 		}
 	}
 	// An unknown provider can join an exact object when only one known
@@ -301,6 +319,12 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 		}
 		if unknown >= 0 && families == 1 {
 			objects[known].instance.IDSensitive = objects[known].instance.IDSensitive || objects[unknown].instance.IDSensitive
+			for id, sensitive := range objects[unknown].legacyIDs {
+				if objects[known].legacyIDs == nil {
+					objects[known].legacyIDs = map[string]bool{}
+				}
+				objects[known].legacyIDs[id] = objects[known].legacyIDs[id] || sensitive
+			}
 			seen := map[objectOwner]bool{}
 			for _, o := range objects[known].owners {
 				seen[o] = true
@@ -323,8 +347,8 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 	legacyID := map[identityValue][]int{}
 	for i, o := range objects {
 		typ := o.instance.Type
-		if knownValue(o.instance.Attributes["id"]) {
-			key := identityValue{typ, canonical(o.instance.Attributes["id"])}
+		for id := range o.legacyIDs {
+			key := identityValue{typ, id}
 			byID[key] = append(byID[key], i)
 			if len(o.instance.Identity) == 0 {
 				legacyID[key] = append(legacyID[key], i)
@@ -397,8 +421,8 @@ func (ix *Index) Duplicates() (ownership, inState []Duplicate) {
 				}
 			}
 		}
-		if knownValue(o.instance.Attributes["id"]) {
-			key := identityValue{o.instance.Type, canonical(o.instance.Attributes["id"])}
+		for id := range o.legacyIDs {
+			key := identityValue{o.instance.Type, id}
 			bucket := legacyID[key]
 			if len(o.instance.Identity) == 0 {
 				bucket = byID[key]
@@ -473,8 +497,12 @@ func objectEquality(a, b stateObject) (bool, string) {
 		return false, ""
 	}
 	if len(a.instance.Identity) == 0 || len(b.instance.Identity) == 0 {
-		id := a.instance.Attributes["id"]
-		return knownValue(id) && knownValue(b.instance.Attributes["id"]) && canonical(id) == canonical(b.instance.Attributes["id"]), "no_identity"
+		for id := range a.legacyIDs {
+			if _, ok := b.legacyIDs[id]; ok {
+				return true, "no_identity"
+			}
+		}
+		return false, "no_identity"
 	}
 	overlap := 0
 	for k, value := range a.known {

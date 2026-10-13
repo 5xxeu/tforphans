@@ -8,6 +8,92 @@ import (
 	"github.com/5xxeu/tforphans/internal/model"
 )
 
+func TestOwnershipFullIdentityPreservesLegacyIDs(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		firstID    string
+		equivalent bool
+		unknown    bool
+	}{
+		{"missing first ID", "", false, false},
+		{"different first ID", "disk-2", false, false},
+		{"equivalent snapshots", "", true, false},
+		{"unknown provider", "", false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			identity := map[string]any{"name": "disk", "project": "p", "zone": "z"}
+			a := ownershipInstance("disk.a", identity)
+			if c.firstID == "" {
+				delete(a.Attributes, "id")
+			} else {
+				a.Attributes["id"] = c.firstID
+			}
+			b := ownershipInstance("disk.b", identity)
+			if c.unknown {
+				b.Provider = ""
+			}
+			legacy := ownershipInstance("disk.legacy", nil)
+			snapshots := []Snapshot{
+				ownershipSnapshot("a", "a", 1, a),
+				ownershipSnapshot("b", "b", 1, b),
+				ownershipSnapshot("c", "c", 1, legacy),
+			}
+			if c.firstID != "" {
+				legacyFirst := ownershipInstance("disk.legacy_first", nil)
+				legacyFirst.Attributes["id"] = c.firstID
+				snapshots[2].Instances = append(snapshots[2].Instances, legacyFirst)
+			}
+			if c.equivalent {
+				snapshots[1].Lineage = "a"
+				snapshots[1].Instances[0].Address = "disk.a"
+			}
+			var previous string
+			for _, order := range [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+				t.Run(fmt.Sprint(order), func(t *testing.T) {
+					ix := NewIndex()
+					ix.AddSnapshots([]Snapshot{snapshots[order[0]], snapshots[order[1]], snapshots[order[2]]})
+					own, within := ix.Duplicates()
+					wantRows, wantOwners := 2, 3
+					if c.firstID != "" {
+						wantOwners++
+					}
+					if c.equivalent {
+						wantRows, wantOwners = 1, 2
+					}
+					if len(own) != wantRows || len(within) != 0 {
+						t.Fatalf("ownership %+v, within %+v", own, within)
+					}
+					confirmed, possible := 0, 0
+					for _, d := range own {
+						if canonical(d.Identity) != canonical(identity) {
+							t.Fatalf("lost full identity: %+v", d)
+						}
+						if d.Reason == "no_identity" {
+							possible++
+							if d.Confidence != "possible" || len(d.Owners) != wantOwners || !slices.ContainsFunc(d.Owners, func(o Owner) bool { return o.Address == "disk.legacy" }) {
+								t.Fatalf("legacy fallback lost owners: %+v", d)
+							}
+						} else {
+							confirmed++
+							if d.Reason != "" || d.Confidence != "confirmed" || len(d.Owners) != 2 {
+								t.Fatalf("full identity ownership: %+v", d)
+							}
+						}
+					}
+					if confirmed != wantRows-1 || possible != 1 {
+						t.Fatalf("expected confirmed ownership and legacy fallback: %+v", own)
+					}
+					result := canonical([]any{own, within})
+					if previous != "" && previous != result {
+						t.Fatalf("snapshot order changed ownership: %s, %s", previous, result)
+					}
+					previous = result
+				})
+			}
+		})
+	}
+}
+
 func TestOwnershipIncompleteIdentityPreservesLegacyIDs(t *testing.T) {
 	a := ownershipInstance("disk.a", map[string]any{"id": ""})
 	b := ownershipInstance("disk.b", map[string]any{"id": ""})

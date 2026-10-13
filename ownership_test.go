@@ -102,6 +102,68 @@ func TestOwnershipConfig(t *testing.T) {
 	}
 }
 
+func TestAdoptStrictOwnershipDiagnostics(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	dir := t.TempDir()
+	write := func(name, lineage, identity string, addresses ...string) string {
+		t.Helper()
+		var resources []string
+		for _, address := range addresses {
+			resources = append(resources, fmt.Sprintf(`{"mode":"managed","type":"aws_instance","name":%q,"provider":"provider[\"registry.terraform.io/hashicorp/aws\"]","instances":[{"identity":%s,"attributes":{"id":"i-1"}}]}`, address, identity))
+		}
+		path := filepath.Join(dir, name+".tfstate")
+		data := fmt.Sprintf(`{"version":4,"lineage":%q,"serial":1,"resources":[%s]}`, lineage, strings.Join(resources, ","))
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	a := write("a", "a", `{"id":"i-1","account_id":"111"}`, "a")
+	b := write("b", "b", `{"id":"i-1","account_id":"111"}`, "b")
+	partial := write("partial", "partial", `{"id":"i-1"}`, "a")
+	within := write("within", "within", `{"id":"i-1"}`, "a", "b")
+	legacy := write("legacy", "legacy", `null`, "a", "b")
+	for _, c := range []struct {
+		name    string
+		paths   []string
+		strict  bool
+		want    int
+		warning string
+	}{
+		{"confirmed", []string{a, b}, true, exitError, "confirmed duplicate ownership"},
+		{"within", []string{within}, true, exitError, "confirmed duplicate in state"},
+		{"within legacy", []string{legacy}, true, exitError, "possible duplicate in state (no identity)"},
+		{"possible", []string{a, partial}, true, exitOK, ""},
+		{"without strict", []string{a, b}, false, exitOK, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := []string{"adopt", "-no-config", "-no-query", "-plugin", "true"}
+			for _, path := range c.paths {
+				args = append(args, "-state", path)
+			}
+			if c.strict {
+				args = append(args, "-strict-ownership")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := run(context.Background(), args, &stdout, &stderr); code != c.want {
+				t.Fatalf("exit %d, want %d: %s", code, c.want, &stderr)
+			}
+			if !strings.Contains(stderr.String(), "Nothing to adopt.") {
+				t.Fatalf("expected no orphans: %s", &stderr)
+			}
+			if c.warning != "" {
+				if !strings.Contains(stderr.String(), "warning: duplicate state ownership:") || !strings.Contains(stderr.String(), c.warning) {
+					t.Fatalf("missing ownership warning: %s", &stderr)
+				}
+			} else if strings.Contains(stderr.String(), "duplicate state ownership") {
+				t.Fatalf("unexpected ownership warning: %s", &stderr)
+			}
+		})
+	}
+}
+
 func TestPrintOwnershipTruncation(t *testing.T) {
 	var entries []state.Duplicate
 	serial := int64(7)
