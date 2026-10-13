@@ -354,3 +354,23 @@ func TestStreamKillsCommandOutsideGroup(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamTricklingDescendant(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// The descendant writes more often than WaitDelay, forever.
+	cmd := exec.CommandContext(ctx, "sh", "-c", "(while :; do printf '\\n'; sleep 0.02; done) & exit 0")
+	Group(cmd)
+	cmd.WaitDelay = 200 * time.Millisecond
+	start := time.Now()
+	err := Stream(ctx, cmd, func(r io.Reader) error {
+		_, err := io.Copy(io.Discard, r)
+		return err
+	})
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Errorf("trickling descendant: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*cmd.WaitDelay {
+		t.Errorf("returned after %v", elapsed)
+	}
+}

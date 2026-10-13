@@ -57,18 +57,26 @@ type drainReader struct {
 	draining atomic.Bool
 	expired  atomic.Bool
 	timer    *time.Timer
+	// blocked is the time reads spent waiting after the command exited.
+	blocked time.Duration
 }
 
 func (r *drainReader) Read(p []byte) (int, error) {
-	if !r.fixed && r.draining.Load() {
-		// Bound blocked reads, not time spent consuming output.
-		limit := time.Now()
-		if !r.expired.Load() {
-			limit = limit.Add(r.delay)
+	draining := !r.fixed && r.draining.Load()
+	start := time.Now()
+	if draining {
+		// Bound the total time spent blocked, not the time spent consuming
+		// output: a descendant writing now and then cannot extend it.
+		limit := start
+		if !r.expired.Load() && r.blocked < r.delay {
+			limit = limit.Add(r.delay - r.blocked)
 		}
 		_ = r.pipe.SetReadDeadline(limit)
 	}
 	n, err := r.pipe.Read(p)
+	if draining {
+		r.blocked += time.Since(start)
+	}
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		r.expired.Store(true)
 		err = io.EOF
