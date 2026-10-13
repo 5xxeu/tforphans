@@ -15,7 +15,7 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    files: [LICENSE, README.md]
+    files: [LICENSE, README.md, docs/*, examples/plugins/*, internal/report/presets/*.ignore]
 
 checksum:
   name_template: checksums.txt
