@@ -319,6 +319,34 @@ func TestIgnoreHints(t *testing.T) {
 	if err != nil || !ig.Match(rs[0]) || ig.Match(rs[len(rs)-1]) {
 		t.Errorf("line %q: %v", line, err)
 	}
+	// Packs of one kind: the line names it and leaves an uploaded pack in
+	// the same zone alone.
+	kinds := slices.Clone(rs)
+	for i := range kinds {
+		kinds[i].Attributes = map[string]any{"type": "advanced"}
+	}
+	upload := model.Resource{Type: "cloudflare_certificate_pack", ScopeName: "zone example.com", RequiredKeys: []string{"id"},
+		Identity: map[string]any{"id": "u", "zone_id": "z1"}, Attributes: map[string]any{"type": "sni_custom"}}
+	kinds = append(kinds, upload)
+	hints = ignoreHints(kinds)
+	if len(hints) != 1 || !strings.HasSuffix(hints[0], ": cloudflare_certificate_pack zone_id=z1 attr.type=advanced") || !strings.HasPrefix(hints[0], "20 unmanaged cloudflare_certificate_pack (type advanced) in zone example.com") {
+		t.Fatalf("hints by kind %q", hints)
+	}
+	line = hints[0][strings.LastIndex(hints[0], ": ")+2:]
+	if ig, err = report.ParseIgnore(strings.NewReader(line + "\n")); err != nil || !ig.Match(kinds[0]) || ig.Match(upload) {
+		t.Errorf("line %q: %v", line, err)
+	}
+	// A kind that would not parse as one word, or would match as a glob,
+	// gives no hint.
+	for _, kind := range []string{"a b", "a\u00a0b", "a\nb", "a*"} {
+		for i := range kinds {
+			kinds[i].Attributes = map[string]any{"type": kind}
+		}
+		if hints := ignoreHints(kinds); len(hints) != 0 {
+			t.Errorf("unsafe kind %q: %q", kind, hints)
+		}
+	}
+
 	// Different zones under one name, or no scope: no hint.
 	rs[0].Identity = map[string]any{"id": "0", "zone_id": "z2"}
 	if hints := ignoreHints(rs); len(hints) != 0 {
@@ -366,5 +394,23 @@ func TestPrintFailedLongList(t *testing.T) {
 	printFailed(&b, &options{verbose: true}, failed)
 	if !strings.Contains(b.String(), "t11\n") {
 		t.Errorf("-v output:\n%s", b.String())
+	}
+}
+
+// TestKeepAttrs: a list result keeps the attributes asked for and its kind
+// for ignore hints; the output then drops the kind unless asked for.
+func TestKeepAttrs(t *testing.T) {
+	attrs := map[string]any{"labels": map[string]any{"a": "b"}, "type": "pd-ssd", "size": json.Number("10"), "nested": map[string]any{"type": "x"}}
+	got := keepAttrs(attrs, []string{"labels"})
+	if len(got) != 2 || got["type"] != "pd-ssd" || got["labels"] == nil {
+		t.Errorf("kept %v", got)
+	}
+	if got := keepAttrs(map[string]any{"type": map[string]any{}}, nil); got != nil {
+		t.Errorf("a type that is no scalar kept: %v", got)
+	}
+	r := model.Resource{Attributes: keepAttrs(attrs, []string{"labels"})}
+	(&options{includeAttrs: []string{"labels"}}).trimAttrs(&r)
+	if _, ok := r.Attributes["type"]; ok || r.Attributes["labels"] == nil {
+		t.Errorf("output attributes %v", r.Attributes)
 	}
 }

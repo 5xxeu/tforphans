@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/model"
@@ -297,21 +298,32 @@ func printFailed(w io.Writer, o *options, failed []tf.Failure) {
 // ignore hint worth printing.
 const hintMin = 20
 
+// hintSafe reports whether a value can go into a suggested ignore line:
+// it must stay one word (no space or control character of any kind) and
+// match only itself (no glob or brace characters).
+func hintSafe(v string) bool {
+	return v != "" && !strings.ContainsAny(v, "*?[]\\{},") && !strings.ContainsFunc(v, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
 // ignoreHints suggests ignore lines for many unmanaged objects of one type
 // in one scope (certificate packs a zone got automatically): the line
 // hides every object of the type there, now and later, so it is only a
-// suggestion for objects that are expected.
+// suggestion for objects that are expected. Objects with a kind of their
+// own (the type attribute: advanced or uploaded certificate packs, DNS
+// record types) are grouped by it too, and the line names it, so that it
+// does not hide a later object of another kind.
 func ignoreHints(orphans []model.Resource) []string {
 	type group struct {
-		typ, scope string
-		rs         []model.Resource
+		typ, scope, kind string
+		rs               []model.Resource
 	}
 	var groups []*group
 	byKey := map[string]*group{}
 	for _, r := range orphans {
-		k := r.Type + "\x00" + r.ScopeName
+		kind, _ := model.Scalar(r.Attributes["type"])
+		k := r.Type + "\x00" + r.ScopeName + "\x00" + kind
 		if byKey[k] == nil {
-			byKey[k] = &group{typ: r.Type, scope: r.ScopeName}
+			byKey[k] = &group{typ: r.Type, scope: r.ScopeName, kind: kind}
 			groups = append(groups, byKey[k])
 		}
 		byKey[k].rs = append(byKey[k].rs, r)
@@ -325,7 +337,7 @@ func ignoreHints(orphans []model.Resource) []string {
 		cond := ""
 		for _, k := range slices.Sorted(maps.Keys(g.rs[0].Identity)) {
 			v, ok := model.Scalar(g.rs[0].Identity[k])
-			if !ok || v == "" || slices.Contains(g.rs[0].RequiredKeys, k) || strings.ContainsAny(v, " \t*?[]\\{},") {
+			if !ok || !hintSafe(v) || slices.Contains(g.rs[0].RequiredKeys, k) {
 				continue
 			}
 			if !slices.ContainsFunc(g.rs, func(r model.Resource) bool { s, _ := model.Scalar(r.Identity[k]); return s != v }) {
@@ -336,7 +348,15 @@ func ignoreHints(orphans []model.Resource) []string {
 		if cond == "" {
 			continue
 		}
-		out = append(out, fmt.Sprintf("%d unmanaged %s in %s; if they are expected (created by the service, not by people), this line in the ignore file hides them, and any later ones there: %s %s", len(g.rs), g.typ, g.scope, g.typ, cond))
+		what := g.typ
+		if g.kind != "" {
+			if !hintSafe(g.kind) {
+				continue
+			}
+			cond += " attr.type=" + g.kind
+			what += " (type " + g.kind + ")"
+		}
+		out = append(out, fmt.Sprintf("%d unmanaged %s in %s; if they are expected (created by the service, not by people), this line in the ignore file hides them, and any later ones there: %s %s", len(g.rs), what, g.scope, g.typ, cond))
 		if len(out) == 3 {
 			break
 		}
