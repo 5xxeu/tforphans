@@ -115,6 +115,9 @@ func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) (
 	out, readErr := state.ReadLimited(pipe, maxSize)
 	if readErr != nil {
 		cancel()
+		// Wait stops watching the context once the command exits, and a
+		// child may still be writing: kill the group directly.
+		_ = cmd.Cancel()
 		pipe.CloseWithError(readErr)
 	}
 	err := <-wait

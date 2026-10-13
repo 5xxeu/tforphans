@@ -81,6 +81,9 @@ func Run(ctx context.Context, command, name string) ([]model.Resource, []error, 
 	res, warns, err := parseReader(out, name)
 	if err != nil {
 		cancel()
+		// Wait stops watching the context once the command exits, and a
+		// child may still be writing: kill the group directly.
+		_ = cmd.Cancel()
 		out.CloseWithError(err)
 	}
 	runErr := <-wait

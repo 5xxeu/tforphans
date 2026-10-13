@@ -242,3 +242,28 @@ func TestRunStopsEndlessOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestRunKillsGroupAfterParentExit(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	// The shell exits first; its child prints invalid output later.
+	command := fmt.Sprintf("(sleep 1; printf 'invalid\\n'; sleep 30) & echo $! > '%s'; exit 0", pidFile)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, _, err := Run(ctx, command, "plugin1"); err == nil || !strings.Contains(err.Error(), "plugin1 line 1") {
+		t.Fatalf("err = %v", err)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(data), &pid); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); proc.Alive(pid) && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if proc.Alive(pid) {
+		t.Errorf("child %d still running", pid)
+	}
+}
