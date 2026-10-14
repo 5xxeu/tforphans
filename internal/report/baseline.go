@@ -214,7 +214,7 @@ func missingReason(r model.Resource, rows []Coverage, listings []Listing, hasEvi
 			continue
 		}
 		complete = true
-		if len(l.Scopes) == 0 || r.ScopeName == "" || slices.Contains(l.Scopes, r.ScopeName) {
+		if r.ScopeName == "" || slices.Contains(l.Scopes, r.ScopeName) {
 			scoped = true
 		}
 	}

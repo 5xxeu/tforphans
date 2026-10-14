@@ -115,8 +115,9 @@ same path restrictions as `ignore`.
 
 A previous finding that is absent now is resolved only when the same root
 or scan, with a compatible provider, fully listed its type again this run.
-If the listing used explicit scopes, the finding's scope must be among them.
-A listing without explicit scopes covers what the provider configuration sees.
+A finding's scope must appear in the listing's generated or scan scopes, or
+in objects returned by that same source, provider family and type this run.
+Without an explicit scope, when the last object of a scope is deleted, its finding shows as not verified rather than resolved, because nothing proves that scope was listed.
 Running from another directory changes root names, so findings show as not
 verified. It may have been deleted, become managed, been ignored or become
 uncertain. "Not verified" means the current run lacks matching listing

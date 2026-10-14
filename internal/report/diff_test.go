@@ -22,7 +22,7 @@ func TestDiff(t *testing.T) {
 	current := Snapshot{
 		Orphans: []model.Resource{r("known", "a"), r("added", "a")},
 		Summary: Summary{Live: 5, Managed: 1, Uncertain: 0, Ignored: 4, Orphans: 2, States: 2, Queried: 3,
-			Listings: []Listing{{Provider: "hashicorp/foo", Type: "thing", Complete: true}},
+			Listings: []Listing{{Provider: "hashicorp/foo", Type: "thing", Scopes: []string{"a", "b"}, Complete: true}},
 			Coverage: []Coverage{{Type: "thing", Scope: "a", Status: Complete}, {Type: "thing", Scope: "b", Status: Incomplete}, {Type: "introduced", Status: Complete}}},
 	}
 	d := CompareSnapshots(old, current)

@@ -192,7 +192,12 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	for _, q := range res.Queried {
 		source := providerSource(q.Address, q.Type)
 		queried[source] = append(queried[source], q.Type)
-		sum.AddListing(root, source, q.Type, listingScope(q.Address), !incomplete[[2]string{listingFamily(source), q.Type}])
+		scope := ""
+		block, _, _ := strings.Cut(q.Address, "[")
+		if _, generated := byAddress[block]; generated {
+			scope = listingScope(q.Address)
+		}
+		sum.AddListing(root, source, q.Type, scope, !incomplete[[2]string{listingFamily(source), q.Type}])
 	}
 	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with
@@ -225,14 +230,13 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		f := &res.Found[i]
 		block, _, _ := strings.Cut(f.ListAddress, "[")
 		q, generated := byAddress[block]
+		f.ProviderSource = providerSource(f.ListAddress, f.Type)
 		if !generated {
 			// A block without a provider argument uses the type's default
 			// provider, and so does an import block without one.
 			f.Provider = userLists[block].Provider
-			f.ProviderSource = userListProvider(f.Provider, f.Type, declared, schemas)
 			continue
 		}
-		f.ProviderSource = q.Source
 		switch {
 		case q.Temporary:
 			f.UndeclaredProvider = q.Source
@@ -240,7 +244,26 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			f.Provider = q.Provider
 		}
 	}
+	addListingObjectScopes(sum, res.Found)
 	return res.Found, nil
+}
+
+// Returned objects contribute scopes only to their own source's existing
+// listing for the same provider family and type, without changing completeness.
+func addListingObjectScopes(sum *report.Summary, objects []model.Resource) {
+	for _, r := range objects {
+		for _, l := range sum.Listings {
+			if l.Source != r.Source || l.Provider != listingFamily(r.ProviderSource) || l.Type != r.Type {
+				continue
+			}
+			scope := r.ScopeName
+			if scope == "" {
+				scope = scopeName(r.Identity)
+			}
+			sum.AddListing(l.Source, l.Provider, l.Type, scope, l.Complete)
+			break
+		}
+	}
 }
 
 // wantedAttrs returns the attributes to keep for a type: -include-attrs and
@@ -330,8 +353,8 @@ func listingFamily(provider string) string {
 	return model.ProviderFamily(provider)
 }
 
-// listingScope reads the check scope from an actual for_each instance.
-// Generated keys use argument=value pairs. Other keys are kept verbatim.
+// listingScope reads the check scope from a generated for_each instance.
+// Generated keys use argument=value pairs.
 func listingScope(address string) string {
 	_, key, ok := strings.Cut(address, "[")
 	if !ok {

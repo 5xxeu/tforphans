@@ -24,3 +24,24 @@ func TestListingInstances(t *testing.T) {
 		t.Fatalf("listing instances: %+v", s.Listings)
 	}
 }
+
+func TestListingMixedScopes(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		for _, complete := range []bool{false, true} {
+			var s Summary
+			scopes := []string{"", "project B"}
+			if reverse {
+				scopes[0], scopes[1] = scopes[1], scopes[0]
+			}
+			for _, scope := range scopes {
+				s.AddListing("infra", "hashicorp/foo", "thing", scope, scope != "" || complete)
+			}
+			// The listing without an explicit scope returned an object in A.
+			s.AddListing("infra", "hashicorp/foo", "thing", "project A", true)
+			want := []Listing{{Source: "infra", Provider: "hashicorp/foo", Type: "thing", Scopes: []string{"project A", "project B"}, Complete: complete}}
+			if !reflect.DeepEqual(s.Listings, want) {
+				t.Fatalf("reverse %t, complete %t: %+v", reverse, complete, s.Listings)
+			}
+		}
+	}
+}

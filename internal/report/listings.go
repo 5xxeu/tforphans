@@ -7,7 +7,8 @@ import (
 	"github.com/5xxeu/tforphans/internal/model"
 )
 
-// Listing records actual checks, never evidence inferred from found objects.
+// Listing records actual checks and scopes from explicit checks or their
+// returned objects.
 type Listing struct {
 	Source   string   `json:"source"`
 	Provider string   `json:"provider"`

@@ -595,8 +595,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		// Only checks and failed listings establish evidence. Objects can
-		// describe a scope without showing that its type was fully listed.
+		// Checks and failed listings establish evidence and completeness;
+		// returned objects add scopes to those listings.
 		incomplete := map[string]bool{}
 		for _, f := range res.Failed {
 			if o.listingFailure(f) {
@@ -637,6 +637,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			// provider block points to.
 			r.ImportNote = "found with the " + a.Name + " provider configured from the environment;\ncheck that this root's provider points to the same " + a.Target
 		}
+		addListingObjectScopes(&sum, res.Resources)
 		live = append(live, res.Resources...)
 	}
 	sum.SortListings()

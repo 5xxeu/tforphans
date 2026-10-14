@@ -152,7 +152,7 @@ func TestBaselineMissingSource(t *testing.T) {
 		{name: "incomplete listing", source: "infra", listings: []Listing{{Source: "infra", Type: "thing"}}, reason: "listing incomplete"},
 		{name: "explicit scope present", source: "infra", scope: "project P", listings: []Listing{{Source: "infra", Type: "thing", Scopes: []string{"project P"}, Complete: true}}},
 		{name: "explicit scope absent", source: "infra", scope: "project P", listings: []Listing{{Source: "infra", Type: "thing", Scopes: []string{"project Q"}, Complete: true}}, reason: "scope not listed"},
-		{name: "no explicit scopes", source: "infra", scope: "project P", listings: []Listing{listed}},
+		{name: "no explicit scopes", source: "infra", scope: "project P", listings: []Listing{listed}, reason: "scope not listed"},
 		{name: "finding without scope", source: "infra", listings: []Listing{{Source: "infra", Type: "thing", Scopes: []string{"project Q"}, Complete: true}}},
 		{name: "scan ran", source: "-scan cloudflare", listings: []Listing{other("-scan cloudflare", "cloudflare/cloudflare", "thing")}},
 		{name: "another scan ran", source: "-scan cloudflare", listings: []Listing{other("-scan proxmox", "bpg/proxmox", "thing")}, reason: "not listed by the same source"},
