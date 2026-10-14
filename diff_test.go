@@ -16,10 +16,10 @@ func TestDiffRun(t *testing.T) {
 	t.Chdir(dir)
 	old, current := filepath.Join(dir, "old.json"), filepath.Join(dir, "new.json")
 	r := func(id, scope string) model.Resource {
-		return model.Resource{Type: "thing", Identity: map[string]any{"id": id}, ScopeName: scope}
+		return model.Resource{Type: "thing", Identity: map[string]any{"id": id}, ScopeName: scope, Source: "infra", ListAddress: "list.thing." + scope}
 	}
-	saveReportTest(t, old, []model.Resource{r("resolved", "a"), r("missing", "b")}, report.Summary{Live: 2, Orphans: 2, Complete: true, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}, {Type: "thing", Scope: "b", Status: report.Complete}}})
-	saveReportTest(t, current, []model.Resource{r("added", "a")}, report.Summary{Live: 1, Orphans: 1, Listings: []report.Listing{{Provider: "hashicorp/foo", Type: "thing", Scopes: []string{"a"}, Complete: true}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}}})
+	saveReportTest(t, old, []model.Resource{r("resolved", "a"), r("missing", "b")}, report.Summary{Live: 2, Orphans: 2, Complete: true, Listings: []report.Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "same"}, {Source: "infra", Address: "list.thing.b", Type: "thing", Complete: true, Fingerprint: "same"}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}, {Type: "thing", Scope: "b", Status: report.Complete}}})
+	saveReportTest(t, current, []model.Resource{r("added", "a")}, report.Summary{Live: 1, Orphans: 1, Listings: []report.Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "same"}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}}})
 	// A config that could run a command must not be read by diff.
 	if err := os.WriteFile(defaultConfigFile, []byte("plugin: exit 99\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -33,11 +33,11 @@ func TestDiffRun(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &d); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Added) != 1 || len(d.Resolved) != 1 || len(d.Unverified) != 1 || d.Unverified[0].Reason != "scope not listed" || len(d.Counters) != 7 || len(d.CoverageChanges) != 1 || !d.Complete.Old || d.Complete.New {
+	if len(d.Added) != 1 || len(d.Resolved) != 1 || len(d.Unverified) != 1 || d.Unverified[0].Reason != "not listed this run" || len(d.Counters) != 7 || len(d.CoverageChanges) != 1 || !d.Complete.Old || d.Complete.New {
 		t.Fatalf("diff JSON: %s", stdout)
 	}
 	code, stdout, stderr = runReportTest(t, "diff", old, current)
-	if code != exitOrphans || !strings.Contains(stdout, "thing id=resolved (a)") || !strings.Contains(stdout, "thing id=missing (b): scope not listed") || !strings.Contains(stdout, "orphans: 2 to 1") {
+	if code != exitOrphans || !strings.Contains(stdout, "thing id=resolved (a)") || !strings.Contains(stdout, "thing id=missing (b): not listed this run") || !strings.Contains(stdout, "orphans: 2 to 1") {
 		t.Fatalf("text exit %d: %s%s", code, stdout, stderr)
 	}
 	code, stdout, stderr = runReportTest(t, "diff", current, current)

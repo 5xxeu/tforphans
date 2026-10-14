@@ -1,41 +1,41 @@
 package report
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"slices"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
 )
 
-// Listing records actual checks and scopes from explicit checks or their
-// returned objects.
+// Listing records one listing instance that actually started.
 type Listing struct {
-	Source   string   `json:"source"`
-	Provider string   `json:"provider"`
-	Type     string   `json:"type"`
-	Scopes   []string `json:"scopes"`
-	Complete bool     `json:"complete"`
+	Source      string `json:"source"`
+	Address     string `json:"address"`
+	Provider    string `json:"provider"`
+	Type        string `json:"type"`
+	Complete    bool   `json:"complete"`
+	Fingerprint string `json:"fingerprint"`
 }
 
-// AddListing combines instances of the same source, provider family and type.
-// Any incomplete instance keeps the combined listing incomplete.
-func (s *Summary) AddListing(source, provider, typ, scope string, complete bool) {
-	if provider != "" {
-		provider = model.ProviderFamily(provider)
-	}
-	i := slices.IndexFunc(s.Listings, func(l Listing) bool {
-		return l.Source == source && l.Provider == provider && l.Type == typ
+// ListingFingerprint hashes the configuration as written, without evaluating
+// variables, locals, data sources or the provider configuration body.
+func ListingFingerprint(config, key, provider, scan string) string {
+	data, _ := json.Marshal(map[string]string{
+		"configuration": config, "instance_key": key,
+		"provider": provider, "scan": scan,
 	})
-	if i < 0 {
-		i = len(s.Listings)
-		s.Listings = append(s.Listings, Listing{Source: source, Provider: provider, Type: typ, Scopes: []string{}, Complete: true})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Summary) AddListing(l Listing) {
+	if l.Provider != "" {
+		l.Provider = model.ProviderFamily(l.Provider)
 	}
-	l := &s.Listings[i]
-	l.Complete = l.Complete && complete
-	if scope != "" && !slices.Contains(l.Scopes, scope) {
-		l.Scopes = append(l.Scopes, scope)
-		slices.Sort(l.Scopes)
-	}
+	s.Listings = append(s.Listings, l)
 }
 
 func (s *Summary) SortListings() {
@@ -43,7 +43,7 @@ func (s *Summary) SortListings() {
 		if c := strings.Compare(a.Source, b.Source); c != 0 {
 			return c
 		}
-		if c := strings.Compare(a.Provider, b.Provider); c != 0 {
+		if c := strings.Compare(a.Address, b.Address); c != 0 {
 			return c
 		}
 		return strings.Compare(a.Type, b.Type)

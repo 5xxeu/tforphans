@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"slices"
-	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/state"
@@ -66,11 +64,12 @@ type Finding struct {
 	DisplayName    string         `json:"display_name"`
 	ImportID       string         `json:"import_id"`
 	Source         string         `json:"source"`
+	ListAddress    string         `json:"list_address"`
 	Reason         string         `json:"reason,omitempty"`
 }
 
 func finding(r model.Resource, reason string) Finding {
-	return Finding{r.Type, r.Identity, r.ScopeName, r.ProviderSource, r.DisplayName, r.ImportID, r.Source, reason}
+	return Finding{r.Type, r.Identity, r.ScopeName, r.ProviderSource, r.DisplayName, r.ImportID, r.Source, r.ListAddress, reason}
 }
 
 type findingKey struct {
@@ -149,7 +148,7 @@ type Baseline struct {
 
 // Compare marks current orphans and checks missing findings against listings.
 // An object without an identity or import ID can never be matched or resolved.
-func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseline) {
+func Compare(old, current []model.Resource, oldSummary, currentSummary Summary) ([]model.Resource, Baseline) {
 	before, now := indexFindings(old), indexFindings(current)
 	marked := make([]model.Resource, len(current))
 	b := Baseline{ResolvedFindings: []Finding{}, UnverifiedFindings: []Finding{}}
@@ -163,15 +162,8 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 		}
 		marked[i] = r
 	}
-	byType := map[string][]Coverage{}
-	for _, c := range s.Coverage {
-		byType[c.Type] = append(byType[c.Type], c)
-	}
-	bySourceType := map[[2]string][]Listing{}
-	for _, l := range s.Listings {
-		k := [2]string{l.Source, l.Type}
-		bySourceType[k] = append(bySourceType[k], l)
-	}
+	oldListings := indexListings(oldSummary.Listings)
+	newListings := indexListings(currentSummary.Listings)
 	for _, r := range old {
 		if _, ok := keyFinding(r); !ok {
 			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, "identity and import_id missing"))
@@ -180,7 +172,7 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 		if now.contains(r) {
 			continue
 		}
-		reason := missingReason(r, byType[r.Type], bySourceType[[2]string{r.Source, r.Type}], len(s.Listings) > 0)
+		reason := missingReason(r, oldListings, newListings)
 		if reason == "" {
 			b.ResolvedFindings = append(b.ResolvedFindings, finding(r, ""))
 		} else {
@@ -193,60 +185,37 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 
 var pluginSource = regexp.MustCompile(`^plugin[0-9]+$`)
 
-func missingReason(r model.Resource, rows []Coverage, listings []Listing, hasEvidence bool) string {
-	// Plugins are named by position only, so a run cannot show that the
-	// plugin which found the object ran again.
+// Listing addresses include instance keys, so another instance cannot supply
+// evidence for the listing that found an object.
+func indexListings(listings []Listing) map[[2]string]Listing {
+	out := map[[2]string]Listing{}
+	for _, l := range listings {
+		out[[2]string{l.Source, l.Address}] = l
+	}
+	return out
+}
+
+func missingReason(r model.Resource, old, current map[[2]string]Listing) string {
 	if pluginSource.MatchString(r.Source) {
 		return "plugin results cannot be verified"
 	}
-	if !hasEvidence {
+	key := [2]string{r.Source, r.ListAddress}
+	before, ok := old[key]
+	if r.ListAddress == "" || !ok || before.Fingerprint == "" {
 		return "no listing evidence"
 	}
-	if len(listings) == 0 {
-		return "not listed by the same source"
+	now, ok := current[key]
+	if !ok {
+		return "not listed this run"
 	}
-	complete, scoped := false, false
-	for _, l := range listings {
-		if !model.SameProvider(l.Provider, r.ProviderSource) {
-			return "type listed by another provider"
-		}
-		if !l.Complete {
-			continue
-		}
-		complete = true
-		if r.ScopeName == "" || slices.Contains(l.Scopes, r.ScopeName) {
-			scoped = true
-		}
+	if !model.SameProvider(before.Provider, now.Provider) {
+		return "listed by another provider"
 	}
-	if !complete {
+	if !now.Complete {
 		return "listing incomplete"
 	}
-	if !scoped {
-		return "scope not listed"
-	}
-	// Coverage can reveal additional gaps, but rows made from objects
-	// alone cannot establish that this source listed anything.
-	for _, c := range rows {
-		if r.ScopeName == "" || c.Scope == "" || c.Scope == r.ScopeName || c.Scope == "root "+r.Source {
-			if why := rowReason(c); why != "" {
-				return why
-			}
-		}
+	if now.Fingerprint != before.Fingerprint {
+		return "listing configuration changed"
 	}
 	return ""
-}
-
-func rowReason(c Coverage) string {
-	if c.Status == Complete {
-		return ""
-	}
-	for _, why := range c.Reasons {
-		if strings.HasPrefix(why, GapPrefix) {
-			return why
-		}
-	}
-	if c.Status == Skipped && len(c.Reasons) > 0 {
-		return GapPrefix + c.Reasons[0]
-	}
-	return "listing incomplete"
 }

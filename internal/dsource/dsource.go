@@ -25,6 +25,7 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -178,10 +179,11 @@ type Options struct {
 // Result of a scan.
 type Result struct {
 	Resources []model.Resource
-	Listed    []string     // resource types listed
-	Checks    []tf.Check   // listings read, by scope
-	Skipped   []tf.Skip    // resource types without a usable data source
-	Failed    []tf.Failure // resource types whose data source failed
+	Listings  []report.Listing // listing instances with their configuration evidence
+	Listed    []string         // resource types listed
+	Checks    []tf.Check       // listings read, by scope
+	Skipped   []tf.Skip        // resource types without a usable data source
+	Failed    []tf.Failure     // resource types whose data source failed
 }
 
 // maxItems is passed to data sources that take max_items; a variable so
@@ -386,6 +388,8 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 	}
 	res.Listed = slices.Sorted(maps.Keys(listed))
+	// Build evidence after truncation and scope failures have been counted.
+	defer func() { res.Listings = scanListings(a, blocks, all, instances, res.Failed, opt.Scope) }()
 	failures = unsupported(failures, all, a, res)
 	res.Failed = append(res.Failed, reportFailures(failures, all, listed, a)...)
 	defer func() { failureScopes(res.Failed, all, names) }()
@@ -1283,6 +1287,10 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[s
 		}
 		spec := a.spec(b.dsType)
 		for _, in := range r.Instances {
+			address := b.addr()
+			if key, ok := in.IndexKey.(string); ok {
+				address += "[" + strconv.Quote(key) + "]"
+			}
 			scopeVal, _ := in.IndexKey.(string)
 			scopeVal = b.scopeID(scopeVal)
 			for _, item := range listItems(in.Attributes, spec) {
@@ -1313,6 +1321,7 @@ func extract(stateData []byte, blocks []block, a Adapter, s *schema, limit map[s
 					}
 					res := model.Resource{
 						Type:           l.resourceType,
+						ListAddress:    address,
 						ProviderSource: a.Provider,
 						AltTypes:       a.AltTypes[l.resourceType],
 						Identity:       map[string]any{spec.Key: id},

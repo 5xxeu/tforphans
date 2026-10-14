@@ -39,7 +39,7 @@ type Diff struct {
 var diffCounters = []string{"live", "managed", "uncertain", "ignored", "orphans", "states", "queried_types"}
 
 func CompareSnapshots(old, current Snapshot) Diff {
-	marked, b := Compare(old.Orphans, current.Orphans, current.Summary)
+	marked, b := Compare(old.Orphans, current.Orphans, old.Summary, current.Summary)
 	d := Diff{
 		Added: []model.Resource{}, Resolved: b.ResolvedFindings, Unverified: b.UnverifiedFindings,
 		Counters: map[string]CounterChange{}, CoverageChanges: []CoverageChange{},

@@ -21,7 +21,7 @@ format it does not know; new fields do not change it.
   `warnings`, `notes`, `providers_without_list`, `by_type` and `by_scope`
   (counters per type and per scope), `coverage` (`type`, `scope`,
   `status` complete/incomplete/skipped, `reasons`, `live`).
-  `listings` is an optional sorted list of actual type listings, described below.
+  `listings` is an optional sorted list of actual listing instances, described below.
 
 Empty lists and zero counters marked above as optional may be left out.
 
@@ -103,29 +103,27 @@ current findings. The extra object is:
 ```
 
 The arrays contain the old findings' `type`, `identity`, `scope`,
-`provider_source`, `display_name`, `import_id` and `source`;
+`provider_source`, `display_name`, `import_id`, `source` and `list_address`;
 `unverified_findings` also has `reason`. Findings match by type, JSON identity,
 exact scope and compatible provider family, with an unknown provider matching
 any family. An empty identity uses `import_id`. Names and addresses do not
 participate. Without both identity and import ID, a current finding is always
 new and an old finding stays unverified (`identity and import_id missing`).
-A missing finding is resolved only when `summary.listings` records a complete
-listing of its type by the same source and a compatible provider family.
-When that listing has explicit scopes, a finding with a scope must name one
-of them. A listing without explicit scopes covers what its provider
-configuration sees. An incomplete coverage row for that type and scope can
-still prevent resolution; complete rows built from found objects cannot prove
-that a listing ran. Plugin findings whose source matches `plugin` followed
-by digits always stay unverified because plugins are named by position.
-Other roots, including `plugin-infra`, use the normal listing rules.
+A missing finding is resolved only when OLD has listing evidence matching its
+`source` and `list_address`, and NEW has the same listing address and source,
+a compatible provider family, `complete: true` and the same fingerprint.
+Coverage rows and scopes of returned objects do not decide resolution.
+Plugin findings whose source matches `plugin` followed by digits always stay
+unverified (`plugin results cannot be verified`). Other roots, including
+`plugin-infra`, use the normal listing rules.
 
-Missing listing evidence in NEW, including older reports, gives
-`no listing evidence`. No listing for the same source and type gives
-`not listed by the same source`. Any incompatible provider listing that type
-in the same source gives `type listed by another provider`. Otherwise there
-must be a complete compatible listing (`listing incomplete` when absent)
-and, when explicit, the finding's scope (`scope not listed` when absent).
-An empty `provider_source` is compatible with any provider.
+A missing `list_address` or absent matching OLD listing gives `no listing evidence`,
+as does OLD evidence without a fingerprint. No matching NEW listing gives
+`not listed this run`. An incompatible provider family gives
+`listed by another provider`, then an unfinished or failed listing gives
+`listing incomplete`, then a different fingerprint gives
+`listing configuration changed`. An empty provider is compatible with any
+provider family. Older reports without listing evidence cannot prove resolution.
 
 `tforphans diff -format json OLD.json NEW.json` uses the same rules and emits:
 
@@ -152,24 +150,37 @@ the maximum and queried types use the distinct union. With `-no-query` this
 array is omitted.
 
 `summary.listings`, omitted when no listing ran, contains one record per
-source, normalized provider family and resource type:
+listing instance that actually started:
 
 ```json
-{"source": "infra", "provider": "hashicorp/google", "type": "google_compute_instance",
- "scopes": ["project prod"], "complete": true}
+{"source": "infra", "address": "list.google_compute_instance.tfo_google_google_compute_instance[\"project=prod\"]",
+ "provider": "hashicorp/google", "type": "google_compute_instance",
+ "complete": true, "fingerprint": "<64 hex characters>"}
 ```
 
-`source` is exactly the root printed in query results or `-scan NAME` for a
-scan, matching the resource's `source`. `provider` uses the compatible family
-name, so `hashicorp/google-beta` becomes `hashicorp/google`. `scopes` contains
-sorted explicit check scopes from actual listing instances, such as
-`for_each` arguments or scan scopes, and is empty for a listing without an
-explicit scope. Found objects never create listing evidence. `complete` is
-true only when every instance of that source, provider and type finished
-without a failure that makes coverage incomplete. Failures suppressed by
-`-strict-ignore` still make it false. A disabled API follows the coverage
-exception unless `-strict-api` is set. A root whose query did not run has no
-records. Records are sorted by source, provider and type.
+- `source` matches the resource's `source`: its root name or `-scan NAME`.
+- `address` matches the resource's `list_address`, including its `for_each`
+  instance key. Scans use the data source address and scope instance key,
+  such as `data.cloudflare_dns_records.by_zone_id["zone-id"]`.
+- `provider` is the normalized compatible family, so `hashicorp/google-beta`
+  becomes `hashicorp/google`.
+- `type` is the resource type returned by this listing.
+- `complete` means this instance finished without a failure counted against
+  it. Failures suppressed by `-strict-ignore` still make it false. A failure
+  on a whole block counts against its instances.
+- `fingerprint` is the hex SHA-256 of canonical JSON containing the block's
+  configuration as written, instance key and provider configuration reference
+  (local name or alias). User `.tfquery.hcl` blocks use their exact source
+  bytes from HCL ranges; generated blocks use their generated block text.
+  Scan fingerprints also include the scan name, data source block text and
+  scope key, including scan scope restrictions. Any `-arg` value included in
+  generated text is therefore covered.
+
+Fingerprints do not include the evaluated values of variables, locals or
+data sources, or the provider configuration body. Keep these consistent
+between reports. Records are sorted by source, address and type. A root
+whose query did not run and a block with no started instances have no records.
+`summary.coverage` and provider counts retain their existing meaning.
 
 `summary.states_complete` is true when no state was unread.
 `summary.discovery_complete` describes listing coverage, including requested

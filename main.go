@@ -595,19 +595,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		// Checks and failed listings establish evidence and completeness;
-		// returned objects add scopes to those listings.
-		incomplete := map[string]bool{}
-		for _, f := range res.Failed {
-			if o.listingFailure(f) {
-				incomplete[f.Type] = true
-			}
-		}
-		for _, c := range res.Checks {
-			sum.AddListing("-scan "+a.Name, a.Provider, c.Type, c.Scope, !incomplete[c.Type])
-		}
-		for _, f := range res.Failed {
-			sum.AddListing("-scan "+a.Name, a.Provider, f.Type, f.Scope, !incomplete[f.Type])
+		for _, l := range res.Listings {
+			sum.AddListing(l)
 		}
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
@@ -637,7 +626,6 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			// provider block points to.
 			r.ImportNote = "found with the " + a.Name + " provider configured from the environment;\ncheck that this root's provider points to the same " + a.Target
 		}
-		addListingObjectScopes(&sum, res.Resources)
 		live = append(live, res.Resources...)
 	}
 	sum.SortListings()
@@ -788,7 +776,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	shown := orphans
 	if previous != nil {
 		var b report.Baseline
-		orphans, b = report.Compare(previous.Orphans, orphans, sum)
+		orphans, b = report.Compare(previous.Orphans, orphans, previous.Summary, sum)
 		baseline = &b
 		shown = nil
 		for _, r := range orphans {

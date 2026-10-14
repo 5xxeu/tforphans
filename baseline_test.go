@@ -185,14 +185,19 @@ esac
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(doc.Summary.Listings, []report.Listing{{Source: "-scan alpha", Provider: "hashicorp/foo", Type: "foo_thing", Scopes: []string{}, Complete: true}, {Source: "-scan zeta", Provider: "hashicorp/foo", Type: "foo_thing", Scopes: []string{}, Complete: true}}) {
+	if len(doc.Summary.Listings) != 2 || doc.Summary.Listings[0].Source != "-scan alpha" || doc.Summary.Listings[1].Source != "-scan zeta" {
 		t.Fatalf("scans not recorded in sorted order: %s", stdout)
+	}
+	for _, l := range decodeListingReport(t, stdout).Summary.Listings {
+		if l.Provider != "hashicorp/foo" || l.Type != "foo_thing" || l.Address != "data.foo_things.all" || !l.Complete {
+			t.Fatalf("scan listing fields: %+v", l)
+		}
 	}
 	if len(doc.Orphans) != 2 {
 		t.Fatalf("scan results missing: %s", stdout)
 	}
 	for _, r := range doc.Orphans {
-		if r.Source != "-scan "+r.Identity["id"].(string) {
+		if r.Source != "-scan "+r.Identity["id"].(string) || r.ListAddress != "data.foo_things.all" {
 			t.Fatalf("scan source: %+v", r)
 		}
 	}
@@ -246,6 +251,11 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	_, initial, initialErr := runReportTest(t, "-no-config", "-terraform", bin, "-current-workspace", "-format", "json", good)
+	evidence := decodeListingReport(t, initial).Summary.Listings
+	if len(evidence) != 1 {
+		t.Fatalf("initial evidence: %s%s", initial, initialErr)
+	}
 	baselinePath := filepath.Join(dir, "baseline.json")
 	for _, c := range []struct {
 		name, failedRoot string
@@ -264,11 +274,17 @@ esac
 			if c.noQuery {
 				args = append(args, "-no-query", "-plugin", "true")
 			}
-			old := []model.Resource{{Type: "foo_thing", Identity: map[string]any{"id": "gone"}, ProviderSource: "hashicorp/foo", Source: good}}
+			old := []model.Resource{{Type: "foo_thing", Identity: map[string]any{"id": "gone"}, ProviderSource: "hashicorp/foo", Source: good, ListAddress: evidence[0].Address}}
 			if c.failedRoot != "" {
-				old = append(old, model.Resource{Type: "foo_thing", Identity: map[string]any{"id": "unchecked"}, ProviderSource: "hashicorp/foo", Source: filepath.Join(dir, c.failedRoot)})
+				old = append(old, model.Resource{Type: "foo_thing", Identity: map[string]any{"id": "unchecked"}, ProviderSource: "hashicorp/foo", Source: filepath.Join(dir, c.failedRoot), ListAddress: evidence[0].Address})
 			}
-			saveReportTest(t, baselinePath, old, report.Summary{})
+			oldEvidence := append([]report.Listing{}, evidence...)
+			if c.failedRoot != "" {
+				l := evidence[0]
+				l.Source = filepath.Join(dir, c.failedRoot)
+				oldEvidence = append(oldEvidence, l)
+			}
+			saveReportTest(t, baselinePath, old, report.Summary{Listings: oldEvidence})
 			args = append(args, "-baseline", baselinePath)
 			code, stdout, stderr := runReportTest(t, args...)
 			if code != exitOK {
@@ -285,7 +301,7 @@ esac
 			b := doc.Baseline
 			if !c.noQuery {
 				wantUnverified := len(old) - 1
-				if b.Resolved != 1 || b.Unverified != wantUnverified || wantUnverified > 0 && b.UnverifiedFindings[0].Reason != "not listed by the same source" {
+				if b.Resolved != 1 || b.Unverified != wantUnverified || wantUnverified > 0 && b.UnverifiedFindings[0].Reason != "not listed this run" {
 					t.Fatalf("same source evidence: %s", stdout)
 				}
 				// Saved evidence must make the same decision in diff.
@@ -307,7 +323,7 @@ esac
 			if s.StatesComplete != statesComplete || s.DiscoveryComplete != discoveryComplete || s.Complete != statesComplete || (len(s.UnreadStates) == 0) != statesComplete || len(s.UnreadStates) > 1 {
 				t.Fatalf("split completeness: %s", stdout)
 			}
-			if !c.noQuery && (len(s.Providers) != 1 || s.Providers[0].QueriedTypes != 1 || !reflect.DeepEqual(s.Listings, []report.Listing{{Source: good, Provider: "hashicorp/foo", Type: "foo_thing", Scopes: []string{}, Complete: true}}) || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete) {
+			if !c.noQuery && (len(s.Providers) != 1 || s.Providers[0].QueriedTypes != 1 || !reflect.DeepEqual(s.Listings, evidence) || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete) {
 				t.Fatalf("successful root did not list the type: %s", stdout)
 			}
 		})

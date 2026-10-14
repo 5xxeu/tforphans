@@ -113,20 +113,24 @@ even when every orphan is known. `adopt` does not accept `-baseline`.
 An automatic `.tforphans.yaml` may set `baseline: baseline.json`, with the
 same path restrictions as `ignore`.
 
-A previous finding that is absent now is resolved only when the same root
-or scan, with a compatible provider, fully listed its type again this run.
-A finding's scope must appear in the listing's generated or scan scopes, or
-in objects returned by that same source, provider family and type this run.
-Without an explicit scope, when the last object of a scope is deleted, its finding shows as not verified rather than resolved, because nothing proves that scope was listed.
-Running from another directory changes root names, so findings show as not
-verified. It may have been deleted, become managed, been ignored or become
-uncertain. "Not verified" means the current run lacks matching listing
-evidence, did not fully list that type or scope, another provider with the
-same type names listed it in the same source, or it came from a plugin.
-Plugins are named by position, so a run cannot show that the same plugin ran
-again. It is not evidence that the object disappeared. `-v` prints reasons
-for the first eight such findings. Keep discovery options consistent when
-updating the baseline.
+A previous finding that is absent now is resolved only when the same listing,
+unchanged as written, fully ran again and no longer returned the object.
+The listing's source, address including its instance key, compatible provider
+family and configuration fingerprint must match the baseline. Changing list
+blocks, `-arg` values in generated text or scan scopes makes missing findings
+not verified. Running from another directory changes root names, so findings
+show as not verified.
+
+The fingerprint does not detect changes to values of variables, locals or
+data sources, or to the provider configuration body. Keep these consistent
+between the baseline and the current run.
+
+An absent finding may have been deleted, become managed, been ignored or
+become uncertain. "Not verified" means matching listing evidence is missing,
+the listing did not finish, its provider or configuration changed, or the
+finding came from a plugin. Plugins are named by position, so a run cannot
+show that the same plugin ran again. It is not evidence that the object
+disappeared. `-v` prints reasons for the first eight such findings.
 
 Compare saved reports without credentials or Terraform:
 
@@ -139,7 +143,8 @@ tforphans diff -format json baseline.json current.json
 `diff` prints added, resolved and not verified findings, changed counters,
 coverage status changes and old/new completeness. Lists show eight entries;
 `-v` shows all. Exit status is `2` for added findings, `0` otherwise, `1` on
-input errors. NEW's listing evidence decides which missing findings are resolved. Older
+input errors. OLD's and NEW's listing evidence decides which missing findings
+are resolved. Older
 reports without `summary.listings` leave missing findings not verified.
 Both commands read local report paths, reject `-` and require schema version
 `1`, an `orphans` array and a single JSON object, at most 1 GiB per file.

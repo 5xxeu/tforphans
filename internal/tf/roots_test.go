@@ -112,9 +112,20 @@ list "aws_vpc" "dyn" {
 		t.Fatal(err)
 	}
 	want := map[string]UserList{
-		"list.aws_instance.other": {Provider: "aws.other_account", Limit: 5000},
-		"list.aws_s3_bucket.main": {Provider: "aws", Limit: DefaultListLimit},
-		"list.aws_vpc.dyn":        {Provider: "aws", Limit: 0},
+		"list.aws_instance.other": {Provider: "aws.other_account", Limit: 5000, Configuration: `list "aws_instance" "other" {
+  provider = aws.other_account
+  limit    = 5000
+  config {
+    region = "us-east-1"
+  }
+}`},
+		"list.aws_s3_bucket.main": {Provider: "aws", Limit: DefaultListLimit, Configuration: `list "aws_s3_bucket" "main" {
+  provider = aws
+}`},
+		"list.aws_vpc.dyn": {Provider: "aws", Limit: 0, Configuration: `list "aws_vpc" "dyn" {
+  provider = aws
+  limit    = var.n
+}`},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v", got)

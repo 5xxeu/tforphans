@@ -180,24 +180,36 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 		return source
 	}
-	// Failures are counted per source, provider family and type. Ignoring
-	// one for -strict does not prove that the listing was complete.
-	incomplete := map[[2]string]bool{}
-	for _, f := range res.Failed {
-		if o.listingFailure(f) {
-			incomplete[[2]string{listingFamily(providerSource(f.Address, f.Type)), f.Type}] = true
-		}
+	// Only failures of this instance or its block count against it.
+	finished := map[string]bool{}
+	for _, d := range res.Done {
+		finished[d.Address] = true
 	}
 	queried := map[string][]string{}
 	for _, q := range res.Queried {
 		source := providerSource(q.Address, q.Type)
 		queried[source] = append(queried[source], q.Type)
-		scope := ""
-		block, _, _ := strings.Cut(q.Address, "[")
-		if _, generated := byAddress[block]; generated {
-			scope = listingScope(q.Address)
+		block, key, _ := strings.Cut(q.Address, "[")
+		key = strings.TrimSuffix(key, "]")
+		if value, err := strconv.Unquote(key); err == nil {
+			key = value
 		}
-		sum.AddListing(root, source, q.Type, scope, !incomplete[[2]string{listingFamily(source), q.Type}])
+		config, provider := userLists[block].Configuration, userLists[block].Provider
+		if provider == "" {
+			provider = providerOf(q.Address, q.Type)
+		}
+		if generated, ok := byAddress[block]; ok {
+			config = string(generated.HCL(o.limit))
+			provider = generated.Provider
+		}
+		complete := finished[q.Address]
+		for _, f := range res.Failed {
+			if o.listingFailure(f) && (f.Address == q.Address || f.Address == block) {
+				complete = false
+			}
+		}
+		sum.AddListing(report.Listing{Source: root, Address: q.Address, Provider: source, Type: q.Type,
+			Complete: complete, Fingerprint: report.ListingFingerprint(config, key, provider, "")})
 	}
 	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with
@@ -244,26 +256,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			f.Provider = q.Provider
 		}
 	}
-	addListingObjectScopes(sum, res.Found)
 	return res.Found, nil
-}
-
-// Returned objects contribute scopes only to their own source's existing
-// listing for the same provider family and type, without changing completeness.
-func addListingObjectScopes(sum *report.Summary, objects []model.Resource) {
-	for _, r := range objects {
-		for _, l := range sum.Listings {
-			if l.Source != r.Source || l.Provider != listingFamily(r.ProviderSource) || l.Type != r.Type {
-				continue
-			}
-			scope := r.ScopeName
-			if scope == "" {
-				scope = scopeName(r.Identity)
-			}
-			sum.AddListing(l.Source, l.Provider, l.Type, scope, l.Complete)
-			break
-		}
-	}
 }
 
 // wantedAttrs returns the attributes to keep for a type: -include-attrs and
@@ -344,50 +337,4 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 func (o *options) listingFailure(f tf.Failure) bool {
 	f.Classify()
 	return f.Category != tf.FailAPIOff || o.strictAPI
-}
-
-func listingFamily(provider string) string {
-	if provider == "" {
-		return ""
-	}
-	return model.ProviderFamily(provider)
-}
-
-// listingScope reads the check scope from a generated for_each instance.
-// Generated keys use argument=value pairs.
-func listingScope(address string) string {
-	_, key, ok := strings.Cut(address, "[")
-	if !ok {
-		return ""
-	}
-	key = strings.TrimSuffix(key, "]")
-	if value, err := strconv.Unquote(key); err == nil {
-		key = value
-	}
-	args := map[string]string{}
-	for _, part := range strings.Split(key, ",") {
-		name, value, ok := strings.Cut(part, "=")
-		if !ok {
-			return key
-		}
-		args[name] = value
-	}
-	// Keep every explicit argument, including zone or region alongside
-	// project. Dropping one would turn a narrow check into broader evidence.
-	var parts []string
-	for _, name := range scopeKeys {
-		if value, ok := args[name]; ok {
-			parts = append(parts, name+" "+value)
-			delete(args, name)
-		}
-	}
-	var names []string
-	for name := range args {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		parts = append(parts, name+" "+args[name])
-	}
-	return strings.Join(parts, ", ")
 }
