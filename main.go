@@ -50,10 +50,12 @@ states. Each ROOT_DIR (default ".") must be an initialized root module; its
 state is read with "terraform state pull" and its providers are asked to list
 live resources with "terraform query".
 
-Exit status: 0 nothing found, 2 unmanaged resources found, 1 error (also on
-incomplete coverage with -strict, duplicate ownership with -strict-ownership).
+Exit status: 0 nothing new found, 2 unmanaged resources found (only new with
+-baseline), 1 error (also on incomplete coverage with -strict, duplicate
+ownership with -strict-ownership).
 
 Run "tforphans adopt -h" to generate import blocks for what it finds.
+Run "tforphans diff -h" to compare two saved JSON reports.
 
 Flags:
 `
@@ -145,6 +147,7 @@ type options struct {
 	format        string
 	adopt         bool   // "adopt" subcommand: write import blocks
 	out           string // adopt: output file, empty for stdout
+	baselinePath  string
 	ignorePath    string
 	presets       []string
 	includeAttrs  []string
@@ -244,6 +247,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	} else {
 		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
 	}
+	fs.StringVar(&o.baselinePath, "baseline", "", "previous -format json report; show and fail only on new findings (not supported with adopt)")
 	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...] lines (default "+defaultIgnoreFile+" if present)")
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
 	fs.BoolVar(&o.noDefaultPresets, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
@@ -316,6 +320,12 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		o.terraformBin = cwd + string(filepath.Separator) + o.terraformBin
 	}
 
+	if o.adopt && o.baselinePath != "" {
+		return nil, errors.New("-baseline is not supported with adopt")
+	}
+	if o.baselinePath == "-" {
+		return nil, errors.New("-baseline must be a file path, not -")
+	}
 	switch o.format {
 	case "", "text", "json", "summary":
 	default:
@@ -403,6 +413,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 }
 
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
+	if len(argv) > 0 && argv[0] == "diff" {
+		return runDiff(argv[1:], stdout, stderr)
+	}
 	o, err := parseFlags(argv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return exitOK
@@ -467,6 +480,14 @@ func loadIgnore(o *options) (*report.Ignore, error) {
 }
 
 func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
+	var previous *report.Snapshot
+	if o.baselinePath != "" {
+		var err error
+		previous, err = report.ReadSnapshot(o.baselinePath, state.DefaultMaxSize)
+		if err != nil {
+			return fmt.Errorf("baseline: %w", err)
+		}
+	}
 	ignore, err := loadIgnore(o)
 	if err != nil {
 		return err
@@ -574,6 +595,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		for _, l := range res.Listings {
+			sum.AddListing(l)
+		}
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
 		sum.Ran += len(res.Listed)
@@ -591,7 +615,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		for i := range res.Resources {
 			r := &res.Resources[i]
-			r.Source = a.Name
+			r.Source = "-scan " + a.Name
 			if r.Scope != nil && a.Name == "proxmox" {
 				r.Scope.Trusted = o.proxmoxStates
 			}
@@ -604,12 +628,14 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		live = append(live, res.Resources...)
 	}
+	sum.SortListings()
 	for i, p := range o.plugins {
 		found, warns, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
 		if err != nil {
 			return err
 		}
 		for i := range found {
+			found[i].Baseline = ""
 			if found[i].Scope != nil {
 				found[i].Scope.Trusted = o.pluginStates
 			}
@@ -742,8 +768,23 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
-	sum.Complete = !nothingChecked(o, sum) && len(counting) == 0 && len(sum.Warnings) == 0 && len(sum.UnreadStates) == 0 &&
+	sum.StatesComplete = len(sum.UnreadStates) == 0
+	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
+	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
+	var baseline *report.Baseline
+	shown := orphans
+	if previous != nil {
+		var b report.Baseline
+		orphans, b = report.Compare(previous.Orphans, orphans, previous.Summary, sum)
+		baseline = &b
+		shown = nil
+		for _, r := range orphans {
+			if r.Baseline == "new" {
+				shown = append(shown, r)
+			}
+		}
+	}
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)", n, idx.Len()))
 	}
@@ -789,11 +830,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
 	case o.format == "json":
-		err = report.JSON(stdout, orphans, uncertain, sum)
+		err = report.JSON(stdout, orphans, uncertain, sum, baseline)
 	case o.format == "summary":
 		err = report.SummaryTable(stdout, sum)
 	default:
-		err = report.Text(stdout, orphans, uncertain)
+		err = report.Text(stdout, shown, uncertain)
 	}
 	if err != nil {
 		return err
@@ -802,8 +843,17 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	// -strict must see that too.
 	if len(sum.Warnings) > 0 {
 		sum.Complete = false
+		sum.DiscoveryComplete = false
 	}
 	printSummary(stderr, o, sum)
+	if baseline != nil {
+		fmt.Fprintf(stderr, "baseline: %d new, %d known (not shown), %d resolved, %d not verified (their type or scope was not fully listed this run)\n", baseline.New, baseline.Known, baseline.Resolved, baseline.Unverified)
+		if o.verbose {
+			if err := report.PrintFindings(stderr, baseline.UnverifiedFindings, 8); err != nil {
+				return err
+			}
+		}
+	}
 	if o.verbose {
 		printScopes(stderr, scopes)
 	}
@@ -835,7 +885,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		return exitCode(exitError)
 	case o.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)
-	case len(orphans) > 0 && !o.adopt:
+	case len(shown) > 0 && !o.adopt:
 		return exitCode(exitOrphans)
 	}
 	return nil

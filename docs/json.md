@@ -13,13 +13,15 @@ format it does not know; new fields do not change it.
 - `summary`: counters (`live`, `managed`, `managed_by_identity`,
   `uncertain`, `ignored`, `orphans`, `states`, `queried_types`,
   `api_not_enabled`, `strict_ignored`, `duplicate_ownership`,
-  `possible_duplicate_ownership`, `duplicate_in_state`), `complete`, `unread_states`
+  `possible_duplicate_ownership`, `duplicate_in_state`), `complete`,
+  `states_complete`, `discovery_complete`, `unread_states`
   (`[{root, error}]`), `failed_queries` (`address`, `type`, `scope`,
   `root`, `category`, `message`), `skipped_types` (`type`, `reason`,
   `root`, `excluded`: left out on purpose or without any listing),
   `warnings`, `notes`, `providers_without_list`, `by_type` and `by_scope`
   (counters per type and per scope), `coverage` (`type`, `scope`,
   `status` complete/incomplete/skipped, `reasons`, `live`).
+  `listings` is an optional sorted list of actual listing instances, described below.
 
 Empty lists and zero counters marked above as optional may be left out.
 
@@ -85,5 +87,106 @@ old an object is, or who owns it); attributes can hold secrets, so ask only
 for what you need. `-format summary` prints only tables of
 counts per type (with the coverage of each type) and per scope, those with
 unmanaged objects first, and the types not fully listed by cause.
+
+## Baselines and diff
+
+`-baseline FILE` reads a previous JSON report from a local path, with the
+1 GiB limit and the same `schema_version` as the current report. It requires
+one JSON object with an `orphans` array. Each current orphan adds `baseline`:
+`"new"` or `"known"`. Without the flag, neither these annotations nor the
+top-level `baseline` object is emitted. Summary counters still include all
+current findings. The extra object is:
+
+```json
+{"new": 3, "known": 40, "resolved": 2, "unverified": 5,
+ "resolved_findings": [], "unverified_findings": []}
+```
+
+The arrays contain the old findings' `type`, `identity`, `scope`,
+`provider_source`, `display_name`, `import_id`, `source` and `list_address`;
+`unverified_findings` also has `reason`. Findings match by type, JSON identity,
+exact scope and compatible provider family, with an unknown provider matching
+any family. An empty identity uses `import_id`. Names and addresses do not
+participate. Without both identity and import ID, a current finding is always
+new and an old finding stays unverified (`identity and import_id missing`).
+A missing finding is resolved only when OLD has listing evidence matching its
+`source` and `list_address`, and NEW has the same listing address and source,
+a compatible provider family, `complete: true` and the same fingerprint.
+Coverage rows and scopes of returned objects do not decide resolution.
+Plugin findings whose source matches `plugin` followed by digits always stay
+unverified (`plugin results cannot be verified`). Other roots, including
+`plugin-infra`, use the normal listing rules.
+
+A missing `list_address` or absent matching OLD listing gives `no listing evidence`,
+as does OLD evidence without a fingerprint. No matching NEW listing gives
+`not listed this run`. An incompatible provider family gives
+`listed by another provider`, then an unfinished or failed listing gives
+`listing incomplete`, then a different fingerprint gives
+`listing configuration changed`. An empty provider is compatible with any
+provider family. Older reports without listing evidence cannot prove resolution.
+
+`tforphans diff -format json OLD.json NEW.json` uses the same rules and emits:
+
+```json
+{"added": [], "resolved": [], "unverified": [],
+ "counters": {"live": {"old": 1, "new": 2}},
+ "coverage_changes": [{"type": "aws_instance", "scope": "account a",
+                       "old": "complete", "new": "incomplete"}],
+ "complete": {"old": true, "new": false}}
+```
+
+`added` contains NEW's orphan objects. `resolved` and `unverified` use the
+baseline finding fields above. All seven counters are always included:
+`live`, `managed`, `uncertain`, `ignored`, `orphans`, `states`, `queried_types`.
+Coverage changes compare status by type and scope; `"absent"` means the row
+exists only in the other file. No Terraform process runs.
+
+## Provider coverage and completeness
+
+`summary.providers`, omitted when no provider schema was read, contains
+`provider` (the schema's source address), `resource_types`, `list_types` and
+`queried_types`. Rows are sorted by provider. Across roots, schema counts use
+the maximum and queried types use the distinct union. With `-no-query` this
+array is omitted.
+
+`summary.listings`, omitted when no listing ran, contains one record per
+listing instance that actually started:
+
+```json
+{"source": "infra", "address": "list.google_compute_instance.tfo_google_google_compute_instance[\"project=prod\"]",
+ "provider": "hashicorp/google", "type": "google_compute_instance",
+ "complete": true, "fingerprint": "<64 hex characters>"}
+```
+
+- `source` matches the resource's `source`: its root name or `-scan NAME`.
+- `address` matches the resource's `list_address`, including its `for_each`
+  instance key. Scans use the data source address and scope instance key,
+  such as `data.cloudflare_dns_records.by_zone_id["zone-id"]`.
+- `provider` is the normalized compatible family, so `hashicorp/google-beta`
+  becomes `hashicorp/google`.
+- `type` is the resource type returned by this listing.
+- `complete` means this instance finished without a failure counted against
+  it. Failures suppressed by `-strict-ignore` still make it false. A failure
+  on a whole block counts against its instances.
+- `fingerprint` is the hex SHA-256 of canonical JSON containing the block's
+  configuration as written, instance key and provider configuration reference
+  (local name or alias). User `.tfquery.hcl` blocks use their exact source
+  bytes from HCL ranges; generated blocks use their generated block text.
+  Scan fingerprints also include the scan name, data source block text and
+  scope key, including scan scope restrictions. Any `-arg` value included in
+  generated text is therefore covered.
+
+Fingerprints do not include the evaluated values of variables, locals or
+data sources, or the provider configuration body. Keep these consistent
+between reports. Records are sorted by source, address and type. A root
+whose query did not run and a block with no started instances have no records.
+`summary.coverage` and provider counts retain their existing meaning.
+
+`summary.states_complete` is true when no state was unread.
+`summary.discovery_complete` describes listing coverage, including requested
+root queries that could not start. With `-no-query`, an unread state affects
+only `states_complete`. Both are always present. `summary.complete` retains its
+meaning: both state reading and discovery were complete. Uncertain matches
+still fail `-strict` independently.
 
 [Back to the README](../README.md) · [All guides](README.md)

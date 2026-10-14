@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -39,6 +40,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		u := report.NewUnreadState(root, err)
 		u.Error = "not initialized, so not queried either (run terraform init there, or pass -init): " + u.Error
 		sum.UnreadStates = append(sum.UnreadStates, u)
+		if !o.noQuery {
+			sum.UnqueriedRoots = append(sum.UnqueriedRoots, root)
+		}
 		return true
 	}
 	if o.noQuery {
@@ -61,6 +65,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 		return nil, fmt.Errorf("%w\n(is the module initialized? run terraform init)", err)
 	}
+	sum.MergeProviders(schemas, nil)
 	declared, err := tf.LocalNames(root)
 	if err != nil {
 		return nil, err
@@ -161,6 +166,52 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		local, _, _ := strings.Cut(typ, "_")
 		return local
 	}
+	providerSource := func(address, typ string) string {
+		block, _, _ := strings.Cut(address, "[")
+		source := byAddress[block].Source
+		if source == "" {
+			source = userListProvider(userLists[block].Provider, typ, declared, schemas)
+			if source == "" {
+				addr := "registry.terraform.io/hashicorp/" + providerOf(address, typ)
+				if _, ok := schemas.ProviderSchemas[addr]; ok {
+					source = addr
+				}
+			}
+		}
+		return source
+	}
+	// Only failures of this instance or its block count against it.
+	finished := map[string]bool{}
+	for _, d := range res.Done {
+		finished[d.Address] = true
+	}
+	queried := map[string][]string{}
+	for _, q := range res.Queried {
+		source := providerSource(q.Address, q.Type)
+		queried[source] = append(queried[source], q.Type)
+		block, key, _ := strings.Cut(q.Address, "[")
+		key = strings.TrimSuffix(key, "]")
+		if value, err := strconv.Unquote(key); err == nil {
+			key = value
+		}
+		config, provider := userLists[block].Configuration, userLists[block].Provider
+		if provider == "" {
+			provider = providerOf(q.Address, q.Type)
+		}
+		if generated, ok := byAddress[block]; ok {
+			config = string(generated.HCL(o.limit))
+			provider = generated.Provider
+		}
+		complete := finished[q.Address]
+		for _, f := range res.Failed {
+			if o.listingFailure(f) && (f.Address == q.Address || f.Address == block) {
+				complete = false
+			}
+		}
+		sum.AddListing(report.Listing{Source: root, Address: q.Address, Provider: source, Type: q.Type,
+			Complete: complete, Fingerprint: report.ListingFingerprint(config, key, provider, "")})
+	}
+	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with
 	// for_each = {} checks nothing. The objects found give their own rows
 	// (project, account); a root that listed a type and found none of it
@@ -191,14 +242,13 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		f := &res.Found[i]
 		block, _, _ := strings.Cut(f.ListAddress, "[")
 		q, generated := byAddress[block]
+		f.ProviderSource = providerSource(f.ListAddress, f.Type)
 		if !generated {
 			// A block without a provider argument uses the type's default
 			// provider, and so does an import block without one.
 			f.Provider = userLists[block].Provider
-			f.ProviderSource = userListProvider(f.Provider, f.Type, declared, schemas)
 			continue
 		}
-		f.ProviderSource = q.Source
 		switch {
 		case q.Temporary:
 			f.UndeclaredProvider = q.Source
@@ -280,4 +330,11 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 		return addr
 	}
 	return ""
+}
+
+// listingFailure follows coverage's API-disabled exception. -strict-ignore
+// affects exit status, but cannot make a failed listing resolution evidence.
+func (o *options) listingFailure(f tf.Failure) bool {
+	f.Classify()
+	return f.Category != tf.FailAPIOff || o.strictAPI
 }

@@ -63,7 +63,8 @@ type Resource struct {
 	// Proxmox cluster). Nil means no restriction.
 	Scope *Scope `json:"-"`
 	// Source is the root module directory or plugin that reported it.
-	Source string `json:"source"`
+	Source   string `json:"source"`
+	Baseline string `json:"baseline,omitempty"`
 }
 
 // Key identifies a resource for de-duplication across sources.

@@ -361,6 +361,8 @@ func parseWorkspaces(out string) ([]string, error) {
 
 // UserList is one of the user's own list blocks.
 type UserList struct {
+	// Configuration is the exact source bytes of the whole block.
+	Configuration string
 	// Provider is the source text of the provider argument, such as "aws"
 	// or "aws.other_account".
 	Provider string
@@ -392,7 +394,8 @@ func UserLists(dir string) (map[string]UserList, error) {
 		content, _, _ := f.Body.PartialContent(listSchema)
 		for _, b := range content.Blocks {
 			inner, _, _ := b.Body.PartialContent(listAttrs)
-			l := UserList{Limit: DefaultListLimit}
+			body := b.Body.(*hclsyntax.Body)
+			l := UserList{Limit: DefaultListLimit, Configuration: string(f.Bytes[b.DefRange.Start.Byte:body.EndRange.End.Byte])}
 			if attr, ok := inner.Attributes["provider"]; ok {
 				r := attr.Expr.Range()
 				l.Provider = strings.TrimSpace(string(f.Bytes[r.Start.Byte:r.End.Byte]))

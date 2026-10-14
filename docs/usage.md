@@ -94,4 +94,65 @@ progress lines follow (each root's state read, each root queried, each
 `-scan`), so that a long run does not look hung; `-quiet` turns them off,
 and they are not printed when stderr is not a terminal (CI logs).
 
+## Baselines in CI
+
+Commit an initial JSON report, then fail only on new findings:
+
+```sh
+tforphans -format json > baseline.json
+git add baseline.json
+# In CI, using the same roots, states and discovery options:
+tforphans -baseline baseline.json -strict
+```
+
+With `-baseline FILE`, exit `2` means new orphans exist. Known orphans stay
+in JSON, marked `"baseline": "known"`, and are hidden in text output.
+A summary line counts new, known, resolved and not verified findings.
+`-strict` still exits `1` for incomplete coverage or uncertain matches,
+even when every orphan is known. `adopt` does not accept `-baseline`.
+An automatic `.tforphans.yaml` may set `baseline: baseline.json`, with the
+same path restrictions as `ignore`.
+
+A previous finding that is absent now is resolved only when the same listing,
+unchanged as written, fully ran again and no longer returned the object.
+The listing's source, address including its instance key, compatible provider
+family and configuration fingerprint must match the baseline. Changing list
+blocks, `-arg` values in generated text or scan scopes makes missing findings
+not verified. Running from another directory changes root names, so findings
+show as not verified.
+
+The fingerprint does not detect changes to values of variables, locals or
+data sources, or to the provider configuration body. Keep these consistent
+between the baseline and the current run.
+
+An absent finding may have been deleted, become managed, been ignored or
+become uncertain. "Not verified" means matching listing evidence is missing,
+the listing did not finish, its provider or configuration changed, or the
+finding came from a plugin. Plugins are named by position, so a run cannot
+show that the same plugin ran again. It is not evidence that the object
+disappeared. `-v` prints reasons for the first eight such findings.
+
+Compare saved reports without credentials or Terraform:
+
+```sh
+tforphans -format json > current.json
+tforphans diff baseline.json current.json
+tforphans diff -format json baseline.json current.json
+```
+
+`diff` prints added, resolved and not verified findings, changed counters,
+coverage status changes and old/new completeness. Lists show eight entries;
+`-v` shows all. Exit status is `2` for added findings, `0` otherwise, `1` on
+input errors. OLD's and NEW's listing evidence decides which missing findings
+are resolved. Older
+reports without `summary.listings` leave missing findings not verified.
+Both commands read local report paths, reject `-` and require schema version
+`1`, an `orphans` array and a single JSON object, at most 1 GiB per file.
+
+The stderr summary also shows each provider's list support and queried type
+count, for example `hashicorp/aws: 247 of 1500 resource types can be listed,
+240 queried`. JSON separates `summary.states_complete` from
+`summary.discovery_complete`, so unread states can be distinguished from
+listing gaps. `summary.complete` still requires both.
+
 [Back to the README](../README.md) · [All guides](README.md)

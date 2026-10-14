@@ -130,6 +130,9 @@ type QueryResult struct {
 	Complete int // list block instances that finished
 	// Done are the instances that finished.
 	Done []Listing
+	// Queried are the list block instances that started, excluding auto
+	// argument lookups that failed before a listing could run.
+	Queried []Listing
 	// DataErrors are errors of data sources (data.<type>.<name>): the list
 	// blocks that need their values do not start.
 	DataErrors []Failure
@@ -331,7 +334,8 @@ type KeysFunc func(block, resourceType string) (required, attribute []string)
 type queryMessage struct {
 	Type      string `json:"type"`
 	ListStart *struct {
-		Address string `json:"address"`
+		Address      string `json:"address"`
+		ResourceType string `json:"resource_type"`
 	} `json:"list_start"`
 	ListResourceFound *struct {
 		Address        string         `json:"address"`
@@ -381,6 +385,11 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 		case m.ListStart != nil:
 			res.Started++
 			started = append(started, m.ListStart.Address)
+			typ := m.ListStart.ResourceType
+			if typ == "" {
+				typ = listType(m.ListStart.Address)
+			}
+			res.Queried = append(res.Queried, Listing{Address: m.ListStart.Address, Type: typ})
 		case m.ListComplete != nil:
 			res.Complete++
 			c := m.ListComplete
