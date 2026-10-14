@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -165,20 +166,33 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		local, _, _ := strings.Cut(typ, "_")
 		return local
 	}
-	queried := map[string][]string{}
-	for _, q := range res.Queried {
-		block, _, _ := strings.Cut(q.Address, "[")
+	providerSource := func(address, typ string) string {
+		block, _, _ := strings.Cut(address, "[")
 		source := byAddress[block].Source
 		if source == "" {
-			source = userListProvider(userLists[block].Provider, q.Type, declared, schemas)
+			source = userListProvider(userLists[block].Provider, typ, declared, schemas)
 			if source == "" {
-				addr := "registry.terraform.io/hashicorp/" + providerOf(q.Address, q.Type)
+				addr := "registry.terraform.io/hashicorp/" + providerOf(address, typ)
 				if _, ok := schemas.ProviderSchemas[addr]; ok {
 					source = addr
 				}
 			}
 		}
+		return source
+	}
+	// Failures are counted per source, provider family and type. Ignoring
+	// one for -strict does not prove that the listing was complete.
+	incomplete := map[[2]string]bool{}
+	for _, f := range res.Failed {
+		if o.listingFailure(f) {
+			incomplete[[2]string{listingFamily(providerSource(f.Address, f.Type)), f.Type}] = true
+		}
+	}
+	queried := map[string][]string{}
+	for _, q := range res.Queried {
+		source := providerSource(q.Address, q.Type)
 		queried[source] = append(queried[source], q.Type)
+		sum.AddListing(root, source, q.Type, listingScope(q.Address), !incomplete[[2]string{listingFamily(source), q.Type}])
 	}
 	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with
@@ -300,4 +314,57 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 		return addr
 	}
 	return ""
+}
+
+// listingFailure follows coverage's API-disabled exception. -strict-ignore
+// affects exit status, but cannot make a failed listing resolution evidence.
+func (o *options) listingFailure(f tf.Failure) bool {
+	f.Classify()
+	return f.Category != tf.FailAPIOff || o.strictAPI
+}
+
+func listingFamily(provider string) string {
+	if provider == "" {
+		return ""
+	}
+	return model.ProviderFamily(provider)
+}
+
+// listingScope reads the check scope from an actual for_each instance.
+// Generated keys use argument=value pairs. Other keys are kept verbatim.
+func listingScope(address string) string {
+	_, key, ok := strings.Cut(address, "[")
+	if !ok {
+		return ""
+	}
+	key = strings.TrimSuffix(key, "]")
+	if value, err := strconv.Unquote(key); err == nil {
+		key = value
+	}
+	args := map[string]string{}
+	for _, part := range strings.Split(key, ",") {
+		name, value, ok := strings.Cut(part, "=")
+		if !ok {
+			return key
+		}
+		args[name] = value
+	}
+	// Keep every explicit argument, including zone or region alongside
+	// project. Dropping one would turn a narrow check into broader evidence.
+	var parts []string
+	for _, name := range scopeKeys {
+		if value, ok := args[name]; ok {
+			parts = append(parts, name+" "+value)
+			delete(args, name)
+		}
+	}
+	var names []string
+	for name := range args {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		parts = append(parts, name+" "+args[name])
+	}
+	return strings.Join(parts, ", ")
 }

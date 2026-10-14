@@ -22,8 +22,8 @@ func TestDiff(t *testing.T) {
 	current := Snapshot{
 		Orphans: []model.Resource{r("known", "a"), r("added", "a")},
 		Summary: Summary{Live: 5, Managed: 1, Uncertain: 0, Ignored: 4, Orphans: 2, States: 2, Queried: 3,
-			Providers: []ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"thing"}}},
-			Coverage:  []Coverage{{Type: "thing", Scope: "a", Status: Complete}, {Type: "thing", Scope: "b", Status: Incomplete}, {Type: "introduced", Status: Complete}}},
+			Listings: []Listing{{Provider: "hashicorp/foo", Type: "thing", Complete: true}},
+			Coverage: []Coverage{{Type: "thing", Scope: "a", Status: Complete}, {Type: "thing", Scope: "b", Status: Incomplete}, {Type: "introduced", Status: Complete}}},
 	}
 	d := CompareSnapshots(old, current)
 	if len(d.Added) != 1 || d.Added[0].IdentityString() != "id=added" || len(d.Resolved) != 1 || d.Resolved[0].Identity["id"] != "resolved" ||
@@ -66,15 +66,13 @@ func TestDiff(t *testing.T) {
 
 func TestDiffTextLimits(t *testing.T) {
 	var old, current Snapshot
-	p := ProviderCoverage{Provider: "hashicorp/foo"}
 	for i := range 10 {
 		typ := fmt.Sprintf("thing_%02d", i)
-		p.Queried = append(p.Queried, typ)
+		current.Summary.AddListing("", "hashicorp/foo", typ, "", true)
 		old.Orphans = append(old.Orphans, model.Resource{Type: typ, Identity: map[string]any{"id": "old"}})
 		current.Orphans = append(current.Orphans, model.Resource{Type: typ, Identity: map[string]any{"id": "new"}})
 		current.Summary.Coverage = append(current.Summary.Coverage, Coverage{Type: typ, Status: Complete})
 	}
-	current.Summary.Providers = []ProviderCoverage{p}
 	d := CompareSnapshots(old, current)
 	if len(d.Added) != 10 || len(d.Resolved) != 10 || len(d.Unverified) != 0 {
 		t.Fatalf("findings: %+v", d)

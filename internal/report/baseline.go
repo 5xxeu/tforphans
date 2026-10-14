@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -146,7 +147,7 @@ type Baseline struct {
 	UnverifiedFindings []Finding `json:"unverified_findings"`
 }
 
-// Compare marks current orphans and checks missing findings against coverage.
+// Compare marks current orphans and checks missing findings against listings.
 // An object without an identity or import ID can never be matched or resolved.
 func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseline) {
 	before, now := indexFindings(old), indexFindings(current)
@@ -166,6 +167,11 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 	for _, c := range s.Coverage {
 		byType[c.Type] = append(byType[c.Type], c)
 	}
+	bySourceType := map[[2]string][]Listing{}
+	for _, l := range s.Listings {
+		k := [2]string{l.Source, l.Type}
+		bySourceType[k] = append(bySourceType[k], l)
+	}
 	for _, r := range old {
 		if _, ok := keyFinding(r); !ok {
 			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, "identity and import_id missing"))
@@ -174,7 +180,7 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 		if now.contains(r) {
 			continue
 		}
-		reason := missingReason(r, byType[r.Type], s)
+		reason := missingReason(r, byType[r.Type], bySourceType[[2]string{r.Source, r.Type}], len(s.Listings) > 0)
 		if reason == "" {
 			b.ResolvedFindings = append(b.ResolvedFindings, finding(r, ""))
 		} else {
@@ -185,65 +191,47 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 	return marked, b
 }
 
-func missingReason(r model.Resource, rows []Coverage, s Summary) string {
+var pluginSource = regexp.MustCompile(`^plugin[0-9]+$`)
+
+func missingReason(r model.Resource, rows []Coverage, listings []Listing, hasEvidence bool) string {
 	// Plugins are named by position only, so a run cannot show that the
 	// plugin which found the object ran again.
-	if strings.HasPrefix(r.Source, "plugin") {
+	if pluginSource.MatchString(r.Source) {
 		return "plugin results cannot be verified"
 	}
-	scan, isScan := strings.CutPrefix(r.Source, "-scan ")
-	// Older reports used the built-in scan name without the -scan prefix.
-	if r.Source == "cloudflare" || r.Source == "proxmox" {
-		scan, isScan = r.Source, true
+	if !hasEvidence {
+		return "no listing evidence"
 	}
-	if isScan {
-		if !slices.Contains(s.Scans, scan) {
-			return "scan not run"
-		}
-	} else if why := providerReason(r, s.Providers); why != "" {
-		return why
+	if len(listings) == 0 {
+		return "not listed by the same source"
 	}
-	if r.ScopeName != "" {
-		for _, c := range rows {
-			if c.Scope == r.ScopeName {
-				return rowReason(c)
-			}
+	complete, scoped := false, false
+	for _, l := range listings {
+		if !model.SameProvider(l.Provider, r.ProviderSource) {
+			return "type listed by another provider"
 		}
+		if !l.Complete {
+			continue
+		}
+		complete = true
+		if len(l.Scopes) == 0 || r.ScopeName == "" || slices.Contains(l.Scopes, r.ScopeName) {
+			scoped = true
+		}
+	}
+	if !complete {
+		return "listing incomplete"
+	}
+	if !scoped {
 		return "scope not listed"
 	}
-	if len(rows) == 0 {
-		return "type not listed"
-	}
+	// Coverage can reveal additional gaps, but rows made from objects
+	// alone cannot establish that this source listed anything.
 	for _, c := range rows {
-		if why := rowReason(c); why != "" {
-			return why
-		}
-	}
-	return ""
-}
-
-func providerReason(r model.Resource, providers []ProviderCoverage) string {
-	// A complete listing of the type by another provider (a fork with the
-	// same type names) says nothing about this one.
-	queried, compatible, incompatible := false, false, false
-	for _, p := range providers {
-		if slices.Contains(p.Queried, r.Type) {
-			queried = true
-			if model.SameProvider(p.Provider, r.ProviderSource) {
-				compatible = true
-			} else {
-				incompatible = true
+		if r.ScopeName == "" || c.Scope == "" || c.Scope == r.ScopeName || c.Scope == "root "+r.Source {
+			if why := rowReason(c); why != "" {
+				return why
 			}
 		}
-	}
-	if !queried {
-		return "type not queried"
-	}
-	if !compatible {
-		return "provider not queried"
-	}
-	if incompatible {
-		return "type listed by another provider"
 	}
 	return ""
 }

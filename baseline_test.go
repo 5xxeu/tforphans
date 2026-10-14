@@ -138,7 +138,7 @@ func TestBaselinePluginOnlyCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, s := doc.Baseline, doc.Summary
-		if len(doc.Orphans) != 1 || doc.Orphans[0].Baseline != "known" || b.Known != 1 || b.New != 0 || b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Identity["id"] != "A" || b.UnverifiedFindings[0].Reason != "type not queried" {
+		if len(doc.Orphans) != 1 || doc.Orphans[0].Baseline != "known" || b.Known != 1 || b.New != 0 || b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Identity["id"] != "A" || b.UnverifiedFindings[0].Reason != "no listing evidence" {
 			t.Fatalf("plugin-only comparison: %s", stdout)
 		}
 		if len(s.Providers) != 0 || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete || s.Coverage[0].Scope != "account x" {
@@ -147,7 +147,7 @@ func TestBaselinePluginOnlyCoverage(t *testing.T) {
 	}
 }
 
-func TestSummaryScans(t *testing.T) {
+func TestSummaryScanListings(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("TF_PLUGIN_CACHE_DIR", dir)
@@ -185,7 +185,7 @@ esac
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(doc.Summary.Scans, []string{"alpha", "zeta"}) {
+	if !reflect.DeepEqual(doc.Summary.Listings, []report.Listing{{Source: "-scan alpha", Provider: "hashicorp/foo", Type: "foo_thing", Scopes: []string{}, Complete: true}, {Source: "-scan zeta", Provider: "hashicorp/foo", Type: "foo_thing", Scopes: []string{}, Complete: true}}) {
 		t.Fatalf("scans not recorded in sorted order: %s", stdout)
 	}
 	if len(doc.Orphans) != 2 {
@@ -201,7 +201,7 @@ esac
 		t.Fatal(err)
 	}
 	snapshot, err := report.ReadSnapshot(path, 1<<20)
-	if err != nil || !reflect.DeepEqual(snapshot.Summary.Scans, doc.Summary.Scans) {
+	if err != nil || !reflect.DeepEqual(snapshot.Summary.Listings, doc.Summary.Listings) {
 		t.Fatalf("scan snapshot: %+v, %v", snapshot, err)
 	}
 }
@@ -209,6 +209,11 @@ esac
 func TestUnqueriedRootCompleteness(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	var err error
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("TF_DATA_DIR", ".terraform")
 	good := filepath.Join(dir, "good")
 	for _, name := range []string{"good", "schema-failure", "state-failure"} {
@@ -241,6 +246,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	baselinePath := filepath.Join(dir, "baseline.json")
 	for _, c := range []struct {
 		name, failedRoot string
 		noQuery          bool
@@ -258,23 +264,50 @@ esac
 			if c.noQuery {
 				args = append(args, "-no-query", "-plugin", "true")
 			}
+			old := []model.Resource{{Type: "foo_thing", Identity: map[string]any{"id": "gone"}, ProviderSource: "hashicorp/foo", Source: good}}
+			if c.failedRoot != "" {
+				old = append(old, model.Resource{Type: "foo_thing", Identity: map[string]any{"id": "unchecked"}, ProviderSource: "hashicorp/foo", Source: filepath.Join(dir, c.failedRoot)})
+			}
+			saveReportTest(t, baselinePath, old, report.Summary{})
+			args = append(args, "-baseline", baselinePath)
 			code, stdout, stderr := runReportTest(t, args...)
 			if code != exitOK {
 				t.Fatalf("exit %d: %s", code, stderr)
 			}
 			var doc struct {
-				Summary report.Summary `json:"summary"`
+				Summary  report.Summary  `json:"summary"`
+				Baseline report.Baseline `json:"baseline"`
 			}
 			if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 				t.Fatal(err)
 			}
 			s := doc.Summary
+			b := doc.Baseline
+			if !c.noQuery {
+				wantUnverified := len(old) - 1
+				if b.Resolved != 1 || b.Unverified != wantUnverified || wantUnverified > 0 && b.UnverifiedFindings[0].Reason != "not listed by the same source" {
+					t.Fatalf("same source evidence: %s", stdout)
+				}
+				// Saved evidence must make the same decision in diff.
+				currentPath := filepath.Join(t.TempDir(), "current.json")
+				if err := os.WriteFile(currentPath, []byte(stdout), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				code, diffJSON, stderr := runReportTest(t, "diff", "-format", "json", baselinePath, currentPath)
+				var d report.Diff
+				if err := json.Unmarshal([]byte(diffJSON), &d); err != nil {
+					t.Fatal(err)
+				}
+				if code != exitOK || len(d.Resolved) != 1 || len(d.Unverified) != wantUnverified {
+					t.Fatalf("saved same source evidence: %s%s", diffJSON, stderr)
+				}
+			}
 			statesComplete := c.failedRoot == ""
 			discoveryComplete := statesComplete || c.noQuery
 			if s.StatesComplete != statesComplete || s.DiscoveryComplete != discoveryComplete || s.Complete != statesComplete || (len(s.UnreadStates) == 0) != statesComplete || len(s.UnreadStates) > 1 {
 				t.Fatalf("split completeness: %s", stdout)
 			}
-			if !c.noQuery && (len(s.Providers) != 1 || !reflect.DeepEqual(s.Providers[0].Queried, []string{"foo_thing"}) || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete) {
+			if !c.noQuery && (len(s.Providers) != 1 || s.Providers[0].QueriedTypes != 1 || !reflect.DeepEqual(s.Listings, []report.Listing{{Source: good, Provider: "hashicorp/foo", Type: "foo_thing", Scopes: []string{}, Complete: true}}) || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete) {
 				t.Fatalf("successful root did not list the type: %s", stdout)
 			}
 		})
@@ -296,7 +329,7 @@ func TestBaselineVerboseUnverified(t *testing.T) {
 			args = append(args, "-v")
 		}
 		code, _, stderr := runReportTest(t, args...)
-		if code != exitOK || !strings.Contains(stderr, "10 not verified") || strings.Contains(stderr, "and 2 more") != verbose || strings.Contains(stderr, "id=00: type not queried") != verbose || strings.Contains(stderr, "id=09") {
+		if code != exitOK || !strings.Contains(stderr, "10 not verified") || strings.Contains(stderr, "and 2 more") != verbose || strings.Contains(stderr, "id=00: no listing evidence") != verbose || strings.Contains(stderr, "id=09") {
 			t.Fatalf("verbose %t, exit %d: %s", verbose, code, stderr)
 		}
 	}

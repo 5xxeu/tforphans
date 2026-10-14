@@ -269,8 +269,8 @@ type Summary struct {
 	StatesComplete    bool               `json:"states_complete"`
 	DiscoveryComplete bool               `json:"discovery_complete"`
 	Providers         []ProviderCoverage `json:"providers,omitempty"`
-	// Scans names the -scan sources that ran, sorted by name.
-	Scans []string `json:"scans,omitempty"`
+	// Listings tie actual type listings to their source and provider family.
+	Listings []Listing `json:"listings,omitempty"`
 	// UnqueriedRoots are roots whose requested query could not start.
 	UnqueriedRoots []string `json:"-"`
 	// Ran counts list block instances that started and types that scans

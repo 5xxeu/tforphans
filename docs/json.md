@@ -21,7 +21,7 @@ format it does not know; new fields do not change it.
   `warnings`, `notes`, `providers_without_list`, `by_type` and `by_scope`
   (counters per type and per scope), `coverage` (`type`, `scope`,
   `status` complete/incomplete/skipped, `reasons`, `live`).
-  `scans` is an optional sorted list of the `-scan` names that ran.
+  `listings` is an optional sorted list of actual type listings, described below.
 
 Empty lists and zero counters marked above as optional may be left out.
 
@@ -109,17 +109,22 @@ exact scope and compatible provider family, with an unknown provider matching
 any family. An empty identity uses `import_id`. Names and addresses do not
 participate. Without both identity and import ID, a current finding is always
 new and an old finding stays unverified (`identity and import_id missing`).
-A missing finding is resolved only when its scope was completely
-listed, or, without a scope, all rows of its type were complete, and its
-source was checked this run. Plugin findings always stay unverified because
-plugins are named by position. A `-scan NAME` finding requires NAME in
-`summary.scans`; without it, including in older reports, the reason is
-`scan not run`. Older scan sources `cloudflare` and `proxmox` follow the same
-rule. Other sources require a compatible provider in `summary.providers`
-whose `queried` includes the type. Missing providers or a type absent from
-every `queried` list give `type not queried`. Only incompatible providers
-give `provider not queried`; a mix of compatible and incompatible providers
-gives `type listed by another provider`, even across different scopes.
+A missing finding is resolved only when `summary.listings` records a complete
+listing of its type by the same source and a compatible provider family.
+When that listing has explicit scopes, a finding with a scope must name one
+of them. A listing without explicit scopes covers what its provider
+configuration sees. An incomplete coverage row for that type and scope can
+still prevent resolution; complete rows built from found objects cannot prove
+that a listing ran. Plugin findings whose source matches `plugin` followed
+by digits always stay unverified because plugins are named by position.
+Other roots, including `plugin-infra`, use the normal listing rules.
+
+Missing listing evidence in NEW, including older reports, gives
+`no listing evidence`. No listing for the same source and type gives
+`not listed by the same source`. Any incompatible provider listing that type
+in the same source gives `type listed by another provider`. Otherwise there
+must be a complete compatible listing (`listing incomplete` when absent)
+and, when explicit, the finding's scope (`scope not listed` when absent).
 An empty `provider_source` is compatible with any provider.
 
 `tforphans diff -format json OLD.json NEW.json` uses the same rules and emits:
@@ -144,8 +149,27 @@ exists only in the other file. No Terraform process runs.
 `provider` (the schema's source address), `resource_types`, `list_types` and
 `queried_types`. Rows are sorted by provider. Across roots, schema counts use
 the maximum and queried types use the distinct union. With `-no-query` this
-array is omitted. `queried` lists the queried
-type names, so `-baseline` and `diff` can tell which provider listed a type.
+array is omitted.
+
+`summary.listings`, omitted when no listing ran, contains one record per
+source, normalized provider family and resource type:
+
+```json
+{"source": "infra", "provider": "hashicorp/google", "type": "google_compute_instance",
+ "scopes": ["project prod"], "complete": true}
+```
+
+`source` is exactly the root printed in query results or `-scan NAME` for a
+scan, matching the resource's `source`. `provider` uses the compatible family
+name, so `hashicorp/google-beta` becomes `hashicorp/google`. `scopes` contains
+sorted explicit check scopes from actual listing instances, such as
+`for_each` arguments or scan scopes, and is empty for a listing without an
+explicit scope. Found objects never create listing evidence. `complete` is
+true only when every instance of that source, provider and type finished
+without a failure that makes coverage incomplete. Failures suppressed by
+`-strict-ignore` still make it false. A disabled API follows the coverage
+exception unless `-strict-api` is set. A root whose query did not run has no
+records. Records are sorted by source, provider and type.
 
 `summary.states_complete` is true when no state was unread.
 `summary.discovery_complete` describes listing coverage, including requested

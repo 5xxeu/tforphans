@@ -1,7 +1,6 @@
 package report
 
 import (
-	"maps"
 	"slices"
 	"strings"
 
@@ -13,9 +12,7 @@ type ProviderCoverage struct {
 	ResourceTypes int    `json:"resource_types"`
 	ListTypes     int    `json:"list_types"`
 	QueriedTypes  int    `json:"queried_types"`
-	// Queried lets -baseline and diff tell which provider listed a type.
-	Queried []string `json:"queried,omitempty"`
-	queried map[string]bool
+	queried       map[string]bool
 }
 
 // MergeProviders keeps the largest schema and the union of queried types
@@ -37,7 +34,6 @@ func (s *Summary) MergeProviders(schemas *tf.Schemas, queried map[string][]strin
 			p.queried[typ] = true
 		}
 		p.QueriedTypes = len(p.queried)
-		p.Queried = slices.Sorted(maps.Keys(p.queried))
 	}
 	slices.SortFunc(s.Providers, func(a, b ProviderCoverage) int { return strings.Compare(a.Provider, b.Provider) })
 }

@@ -113,15 +113,19 @@ even when every orphan is known. `adopt` does not accept `-baseline`.
 An automatic `.tforphans.yaml` may set `baseline: baseline.json`, with the
 same path restrictions as `ignore`.
 
-A previous finding that is absent now is resolved only if its type and scope
-were fully listed. It may have been deleted, become managed, been ignored or
-become uncertain. "Not verified" means the current run did not confirm that
-the finding's scan ran or its provider queried the type, did not fully list
-that type or scope, another provider with the same type names listed it, or
-it came from a plugin (plugins are named by position, so a run cannot show
-that the same plugin ran again). It is not evidence
-that the object disappeared. `-v` prints reasons for the first eight such
-findings. Keep discovery options consistent when updating the baseline.
+A previous finding that is absent now is resolved only when the same root
+or scan, with a compatible provider, fully listed its type again this run.
+If the listing used explicit scopes, the finding's scope must be among them.
+A listing without explicit scopes covers what the provider configuration sees.
+Running from another directory changes root names, so findings show as not
+verified. It may have been deleted, become managed, been ignored or become
+uncertain. "Not verified" means the current run lacks matching listing
+evidence, did not fully list that type or scope, another provider with the
+same type names listed it in the same source, or it came from a plugin.
+Plugins are named by position, so a run cannot show that the same plugin ran
+again. It is not evidence that the object disappeared. `-v` prints reasons
+for the first eight such findings. Keep discovery options consistent when
+updating the baseline.
 
 Compare saved reports without credentials or Terraform:
 
@@ -134,7 +138,8 @@ tforphans diff -format json baseline.json current.json
 `diff` prints added, resolved and not verified findings, changed counters,
 coverage status changes and old/new completeness. Lists show eight entries;
 `-v` shows all. Exit status is `2` for added findings, `0` otherwise, `1` on
-input errors. NEW's coverage decides which missing findings are resolved.
+input errors. NEW's listing evidence decides which missing findings are resolved. Older
+reports without `summary.listings` leave missing findings not verified.
 Both commands read local report paths, reject `-` and require schema version
 `1`, an `orphans` array and a single JSON object, at most 1 GiB per file.
 
