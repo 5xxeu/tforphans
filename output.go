@@ -143,6 +143,9 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		fmt.Fprint(w, " (-v to list)")
 	}
 	fmt.Fprintln(w)
+	for _, p := range s.Providers {
+		fmt.Fprintf(w, "%s: %d of %d resource types can be listed, %d queried\n", report.Clean(strings.TrimPrefix(p.Provider, "registry.terraform.io/")), p.ListTypes, p.ResourceTypes, p.QueriedTypes)
+	}
 	if s.Managed > 0 {
 		// How certain "managed" is: an identity names the object exactly,
 		// attributes may miss a key that is not an attribute.

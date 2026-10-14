@@ -94,4 +94,51 @@ progress lines follow (each root's state read, each root queried, each
 `-scan`), so that a long run does not look hung; `-quiet` turns them off,
 and they are not printed when stderr is not a terminal (CI logs).
 
+## Baselines in CI
+
+Commit an initial JSON report, then fail only on new findings:
+
+```sh
+tforphans -format json > baseline.json
+git add baseline.json
+# In CI, using the same roots, states and discovery options:
+tforphans -baseline baseline.json -strict
+```
+
+With `-baseline FILE`, exit `2` means new orphans exist. Known orphans stay
+in JSON, marked `"baseline": "known"`, and are hidden in text output.
+A summary line counts new, known, resolved and not verified findings.
+`-strict` still exits `1` for incomplete coverage or uncertain matches,
+even when every orphan is known. `adopt` does not accept `-baseline`.
+An automatic `.tforphans.yaml` may set `baseline: baseline.json`, with the
+same path restrictions as `ignore`.
+
+A previous finding that is absent now is resolved only if its type and scope
+were fully listed. It may have been deleted, become managed, been ignored or
+become uncertain. "Not verified" means the current run did not fully list
+that type or scope, or its plugin failed or did not run. It is not evidence
+that the object disappeared. `-v` prints reasons for the first eight such
+findings. Keep discovery options consistent when updating the baseline.
+
+Compare saved reports without credentials or Terraform:
+
+```sh
+tforphans -format json > current.json
+tforphans diff baseline.json current.json
+tforphans diff -format json baseline.json current.json
+```
+
+`diff` prints added, resolved and not verified findings, changed counters,
+coverage status changes and old/new completeness. Lists show eight entries;
+`-v` shows all. Exit status is `2` for added findings, `0` otherwise, `1` on
+input errors. NEW's coverage decides which missing findings are resolved.
+Both commands read local report paths, reject `-` and require schema version
+`1`, an `orphans` array and a single JSON object, at most 1 GiB per file.
+
+The stderr summary also shows each provider's list support and queried type
+count, for example `hashicorp/aws: 247 of 1500 resource types can be listed,
+240 queried`. JSON separates `summary.states_complete` from
+`summary.discovery_complete`, so unread states can be distinguished from
+listing gaps. `summary.complete` still requires both.
+
 [Back to the README](../README.md) · [All guides](README.md)

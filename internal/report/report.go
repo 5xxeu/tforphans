@@ -265,7 +265,11 @@ type Summary struct {
 	// Complete is false when something was not checked: failed or
 	// truncated listings, unread states, plugin errors, types that needed
 	// a check and were skipped.
-	Complete bool `json:"complete"`
+	Complete          bool               `json:"complete"`
+	StatesComplete    bool               `json:"states_complete"`
+	DiscoveryComplete bool               `json:"discovery_complete"`
+	Plugins           int                `json:"plugins,omitempty"`
+	Providers         []ProviderCoverage `json:"providers,omitempty"`
 	// Ran counts list block instances that started and types that scans
 	// listed: what was actually checked, unlike Queried, which counts
 	// blocks (a block with for_each = {} runs nothing).
@@ -596,7 +600,7 @@ func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 	return tw.Flush()
 }
 
-func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summary) error {
+func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summary, baseline ...*Baseline) error {
 	if orphans == nil {
 		orphans = []model.Resource{}
 	}
@@ -605,6 +609,10 @@ func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summar
 	}
 	if s.Coverage == nil {
 		s.Coverage = []Coverage{}
+	}
+	var b *Baseline
+	if len(baseline) > 0 {
+		b = baseline[0]
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -615,7 +623,8 @@ func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summar
 		Summary            Summary           `json:"summary"`
 		DuplicateOwnership []state.Duplicate `json:"duplicate_ownership,omitempty"`
 		DuplicateInState   []state.Duplicate `json:"duplicate_in_state,omitempty"`
-	}{SchemaVersion, orphans, uncertain, s, s.Ownership, s.InState})
+		Baseline           *Baseline         `json:"baseline,omitempty"`
+	}{SchemaVersion, orphans, uncertain, s, s.Ownership, s.InState, b})
 }
 
 // SchemaVersion of the JSON output. It goes up when a field is removed or

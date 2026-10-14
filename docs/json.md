@@ -13,7 +13,8 @@ format it does not know; new fields do not change it.
 - `summary`: counters (`live`, `managed`, `managed_by_identity`,
   `uncertain`, `ignored`, `orphans`, `states`, `queried_types`,
   `api_not_enabled`, `strict_ignored`, `duplicate_ownership`,
-  `possible_duplicate_ownership`, `duplicate_in_state`), `complete`, `unread_states`
+  `possible_duplicate_ownership`, `duplicate_in_state`), `complete`,
+  `states_complete`, `discovery_complete`, `unread_states`
   (`[{root, error}]`), `failed_queries` (`address`, `type`, `scope`,
   `root`, `category`, `message`), `skipped_types` (`type`, `reason`,
   `root`, `excluded`: left out on purpose or without any listing),
@@ -85,5 +86,62 @@ old an object is, or who owns it); attributes can hold secrets, so ask only
 for what you need. `-format summary` prints only tables of
 counts per type (with the coverage of each type) and per scope, those with
 unmanaged objects first, and the types not fully listed by cause.
+
+## Baselines and diff
+
+`-baseline FILE` reads a previous JSON report from a local path, with the
+1 GiB limit and the same `schema_version` as the current report. It requires
+one JSON object with an `orphans` array. Each current orphan adds `baseline`:
+`"new"` or `"known"`. Without the flag, neither these annotations nor the
+top-level `baseline` object is emitted. Summary counters still include all
+current findings. The extra object is:
+
+```json
+{"new": 3, "known": 40, "resolved": 2, "unverified": 5,
+ "resolved_findings": [], "unverified_findings": []}
+```
+
+The arrays contain the old findings' `type`, `identity`, `scope`,
+`provider_source`, `display_name`, `import_id` and `source`;
+`unverified_findings` also has `reason`. Findings match by type, JSON identity,
+exact scope and compatible provider family, with an unknown provider matching
+any family. An empty identity uses `import_id`. Names and addresses do not
+participate. Without both identity and import ID, a current finding is always
+new and an old finding stays unverified (`identity and import_id missing`).
+A missing finding is resolved only when its scope was completely
+listed, or, without a scope, all rows of its type were complete. Plugin
+findings also need a successful plugin run without plugin warnings.
+
+`tforphans diff -format json OLD.json NEW.json` uses the same rules and emits:
+
+```json
+{"added": [], "resolved": [], "unverified": [],
+ "counters": {"live": {"old": 1, "new": 2}},
+ "coverage_changes": [{"type": "aws_instance", "scope": "account a",
+                       "old": "complete", "new": "incomplete"}],
+ "complete": {"old": true, "new": false}}
+```
+
+`added` contains NEW's orphan objects. `resolved` and `unverified` use the
+baseline finding fields above. All seven counters are always included:
+`live`, `managed`, `uncertain`, `ignored`, `orphans`, `states`, `queried_types`.
+Coverage changes compare status by type and scope; `"absent"` means the row
+exists only in the other file. No Terraform process runs.
+
+## Provider coverage and completeness
+
+`summary.providers`, omitted when no provider schema was read, contains
+`provider` (the schema's source address), `resource_types`, `list_types` and
+`queried_types`. Rows are sorted by provider. Across roots, schema counts use
+the maximum and queried types use the distinct union. With `-no-query` this
+array is omitted. `summary.plugins`, omitted when zero, counts plugins run;
+plugin errors remain in `summary.warnings`. The count lets diff recognize
+plugins that successfully returned no objects.
+
+`summary.states_complete` is true when no state was unread.
+`summary.discovery_complete` describes listing coverage without considering
+unread states. Both are always present. `summary.complete` retains its
+meaning: both state reading and discovery were complete. Uncertain matches
+still fail `-strict` independently.
 
 [Back to the README](../README.md) · [All guides](README.md)

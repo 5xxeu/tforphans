@@ -61,6 +61,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 		return nil, fmt.Errorf("%w\n(is the module initialized? run terraform init)", err)
 	}
+	sum.MergeProviders(schemas, nil)
 	declared, err := tf.LocalNames(root)
 	if err != nil {
 		return nil, err
@@ -161,6 +162,22 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		local, _, _ := strings.Cut(typ, "_")
 		return local
 	}
+	queried := map[string][]string{}
+	for _, q := range res.Queried {
+		block, _, _ := strings.Cut(q.Address, "[")
+		source := byAddress[block].Source
+		if source == "" {
+			source = userListProvider(userLists[block].Provider, q.Type, declared, schemas)
+			if source == "" {
+				addr := "registry.terraform.io/hashicorp/" + providerOf(q.Address, q.Type)
+				if _, ok := schemas.ProviderSchemas[addr]; ok {
+					source = addr
+				}
+			}
+		}
+		queried[source] = append(queried[source], q.Type)
+	}
+	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with
 	// for_each = {} checks nothing. The objects found give their own rows
 	// (project, account); a root that listed a type and found none of it
