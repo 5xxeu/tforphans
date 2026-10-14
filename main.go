@@ -630,7 +630,6 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		sum.Plugins++
 		for i := range found {
 			found[i].Baseline = ""
 			if found[i].Scope != nil {

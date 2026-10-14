@@ -3,11 +3,13 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/state"
@@ -86,8 +88,7 @@ func TestBaselineMissingCoverage(t *testing.T) {
 	for _, c := range []struct {
 		name, scope, source string
 		rows                []Coverage
-		plugins             int
-		warnings            []string
+		providers           []ProviderCoverage
 		reason              string
 	}{
 		{name: "scope complete", scope: "a", rows: []Coverage{{Type: "thing", Scope: "a", Status: Complete}}},
@@ -99,15 +100,14 @@ func TestBaselineMissingCoverage(t *testing.T) {
 		{name: "type absent", rows: []Coverage{{Type: "other", Status: Complete}}, reason: "type not listed"},
 		{name: "skipped row", rows: []Coverage{{Type: "thing", Status: Skipped, Reasons: []string{"excluded"}}}, reason: "skipped: excluded"},
 		{name: "skipped gap", rows: []Coverage{{Type: "thing", Status: Incomplete, Reasons: []string{"skipped: list config requires zone"}}}, reason: "skipped: list config requires zone"},
-		{name: "plugin failed", source: "plugin1", plugins: 2, rows: []Coverage{{Type: "thing", Status: Complete}}, warnings: []string{"plugin2: permission denied"}, reason: "plugin failed or not run"},
-		{name: "plugin not run", source: "plugin1", rows: []Coverage{{Type: "thing", Status: Complete}}, reason: "plugin failed or not run"},
-		{name: "plugin succeeded", source: "plugin1", plugins: 1, rows: []Coverage{{Type: "thing", Status: Complete}}},
-		{name: "plugin coverage missing", source: "plugin1", plugins: 1, reason: "type not listed"},
-		{name: "unrelated warning", source: "plugin1", plugins: 1, warnings: []string{"other warning"}, rows: []Coverage{{Type: "thing", Status: Complete}}},
+		{name: "plugin", source: "plugin1", rows: []Coverage{{Type: "thing", Status: Complete}}, reason: "plugin results cannot be verified"},
+		{name: "other provider listed the type", rows: []Coverage{{Type: "thing", Status: Complete}}, providers: []ProviderCoverage{{Provider: "registry.terraform.io/acme/aws", Queried: []string{"thing"}}}, reason: "provider not queried"},
+		{name: "same provider listed the type", rows: []Coverage{{Type: "thing", Status: Complete}}, providers: []ProviderCoverage{{Provider: "registry.terraform.io/acme/aws", Queried: []string{"thing"}}, {Provider: "registry.terraform.io/hashicorp/aws", Queried: []string{"thing"}}}},
+		{name: "no provider listed the type", rows: []Coverage{{Type: "thing", Status: Complete}}, providers: []ProviderCoverage{{Provider: "registry.terraform.io/acme/aws", Queried: []string{"other"}}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := model.Resource{Type: "thing", Identity: map[string]any{"id": "old"}, ScopeName: c.scope, Source: c.source, DisplayName: "old name", ImportID: "import", ProviderSource: "aws"}
-			_, b := Compare([]model.Resource{r}, nil, Summary{Coverage: c.rows, Plugins: c.plugins, Warnings: c.warnings})
+			_, b := Compare([]model.Resource{r}, nil, Summary{Coverage: c.rows, Providers: c.providers})
 			if c.reason == "" {
 				if b.Resolved != 1 || b.Unverified != 0 || !reflect.DeepEqual(b.ResolvedFindings[0], finding(r, "")) {
 					t.Fatalf("resolved: %+v", b)
@@ -157,7 +157,7 @@ func TestSnapshotResourceRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := JSON(&buf, rs, nil, Summary{Plugins: 1}); err != nil {
+	if err := JSON(&buf, rs, nil, Summary{}); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "baseline.json")
@@ -182,5 +182,23 @@ func TestBaselineUnkeyableNeverResolved(t *testing.T) {
 	marked, b := Compare([]model.Resource{r}, []model.Resource{r}, Summary{Coverage: []Coverage{{Type: "thing", Scope: "a", Status: Complete}}})
 	if marked[0].Baseline != "new" || b.New != 1 || b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Reason != "identity and import_id missing" {
 		t.Fatalf("unkeyable findings: %+v", b)
+	}
+}
+
+func TestBaselineRepeatedKeysScale(t *testing.T) {
+	const n = 20000
+	old := make([]model.Resource, n)
+	current := make([]model.Resource, n)
+	for i := range n {
+		old[i] = model.Resource{Type: "thing", Identity: map[string]any{"id": "x"}, ProviderSource: fmt.Sprintf("acme%d/thing", i)}
+		current[i] = model.Resource{Type: "thing", Identity: map[string]any{"id": "x"}, ProviderSource: fmt.Sprintf("other%d/thing", i)}
+	}
+	start := time.Now()
+	_, b := Compare(old, current, Summary{})
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("%d repeated keys took %s", n, d)
+	}
+	if b.New != n || b.Known != 0 {
+		t.Fatalf("new %d, known %d", b.New, b.Known)
 	}
 }

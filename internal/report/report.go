@@ -268,7 +268,6 @@ type Summary struct {
 	Complete          bool               `json:"complete"`
 	StatesComplete    bool               `json:"states_complete"`
 	DiscoveryComplete bool               `json:"discovery_complete"`
-	Plugins           int                `json:"plugins,omitempty"`
 	Providers         []ProviderCoverage `json:"providers,omitempty"`
 	// Ran counts list block instances that started and types that scans
 	// listed: what was actually checked, unlike Queried, which counts

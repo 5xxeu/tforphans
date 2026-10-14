@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -93,29 +94,47 @@ func keyFinding(r model.Resource) (findingKey, bool) {
 	return findingKey{r.Type, identity, r.ScopeName}, true
 }
 
-type findingIndex map[findingKey][]string
+// findingProviders holds the provider families seen for one key; repeated
+// keys from a crafted report must not make each lookup scan a long list.
+type findingProviders struct {
+	unknown  bool
+	families map[string]bool
+}
+
+type findingIndex map[findingKey]*findingProviders
 
 func indexFindings(rs []model.Resource) findingIndex {
 	idx := findingIndex{}
 	for _, r := range rs {
-		if k, ok := keyFinding(r); ok {
-			idx[k] = append(idx[k], r.ProviderSource)
+		k, ok := keyFinding(r)
+		if !ok {
+			continue
+		}
+		p := idx[k]
+		if p == nil {
+			p = &findingProviders{families: map[string]bool{}}
+			idx[k] = p
+		}
+		if r.ProviderSource == "" {
+			p.unknown = true
+		} else {
+			p.families[model.ProviderFamily(r.ProviderSource)] = true
 		}
 	}
 	return idx
 }
 
+// contains follows model.SameProvider: an unknown provider matches any.
 func (idx findingIndex) contains(r model.Resource) bool {
 	k, ok := keyFinding(r)
 	if !ok {
 		return false
 	}
-	for _, p := range idx[k] {
-		if model.SameProvider(p, r.ProviderSource) {
-			return true
-		}
+	p := idx[k]
+	if p == nil {
+		return false
 	}
-	return false
+	return r.ProviderSource == "" || p.unknown || p.families[model.ProviderFamily(r.ProviderSource)]
 }
 
 type Baseline struct {
@@ -167,8 +186,24 @@ func Compare(old, current []model.Resource, s Summary) ([]model.Resource, Baseli
 }
 
 func missingReason(r model.Resource, rows []Coverage, s Summary) string {
-	if strings.HasPrefix(r.Source, "plugin") && (s.Plugins == 0 || hasPluginFailure(s.Warnings)) {
-		return "plugin failed or not run"
+	// Plugins are named by position only, so a run cannot show that the
+	// plugin which found the object ran again.
+	if strings.HasPrefix(r.Source, "plugin") {
+		return "plugin results cannot be verified"
+	}
+	// A complete listing of the type by another provider (a fork with the
+	// same type names) says nothing about this one.
+	if r.ProviderSource != "" {
+		queried, compatible := false, false
+		for _, p := range s.Providers {
+			if slices.Contains(p.Queried, r.Type) {
+				queried = true
+				compatible = compatible || model.SameProvider(p.Provider, r.ProviderSource)
+			}
+		}
+		if queried && !compatible {
+			return "provider not queried"
+		}
 	}
 	if r.ScopeName != "" {
 		for _, c := range rows {
@@ -202,13 +237,4 @@ func rowReason(c Coverage) string {
 		return GapPrefix + c.Reasons[0]
 	}
 	return "listing incomplete"
-}
-
-func hasPluginFailure(warnings []string) bool {
-	for _, w := range warnings {
-		if strings.HasPrefix(w, "plugin") {
-			return true
-		}
-	}
-	return false
 }

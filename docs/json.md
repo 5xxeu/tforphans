@@ -134,9 +134,8 @@ exists only in the other file. No Terraform process runs.
 `provider` (the schema's source address), `resource_types`, `list_types` and
 `queried_types`. Rows are sorted by provider. Across roots, schema counts use
 the maximum and queried types use the distinct union. With `-no-query` this
-array is omitted. `summary.plugins`, omitted when zero, counts plugins run;
-plugin errors remain in `summary.warnings`. The count lets diff recognize
-plugins that successfully returned no objects.
+array is omitted. `queried` lists the queried
+type names, so `-baseline` and `diff` can tell which provider listed a type.
 
 `summary.states_complete` is true when no state was unread.
 `summary.discovery_complete` describes listing coverage without considering
