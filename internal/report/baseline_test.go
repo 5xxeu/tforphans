@@ -13,6 +13,7 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/state"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 func TestBaselineKeys(t *testing.T) {
@@ -88,7 +89,6 @@ func TestBaselineMissingCoverage(t *testing.T) {
 	for _, c := range []struct {
 		name, scope, source string
 		rows                []Coverage
-		providers           []ProviderCoverage
 		reason              string
 	}{
 		{name: "scope complete", scope: "a", rows: []Coverage{{Type: "thing", Scope: "a", Status: Complete}}},
@@ -101,13 +101,10 @@ func TestBaselineMissingCoverage(t *testing.T) {
 		{name: "skipped row", rows: []Coverage{{Type: "thing", Status: Skipped, Reasons: []string{"excluded"}}}, reason: "skipped: excluded"},
 		{name: "skipped gap", rows: []Coverage{{Type: "thing", Status: Incomplete, Reasons: []string{"skipped: list config requires zone"}}}, reason: "skipped: list config requires zone"},
 		{name: "plugin", source: "plugin1", rows: []Coverage{{Type: "thing", Status: Complete}}, reason: "plugin results cannot be verified"},
-		{name: "other provider listed the type", rows: []Coverage{{Type: "thing", Status: Complete}}, providers: []ProviderCoverage{{Provider: "registry.terraform.io/acme/aws", Queried: []string{"thing"}}}, reason: "provider not queried"},
-		{name: "same provider listed the type", rows: []Coverage{{Type: "thing", Status: Complete}}, providers: []ProviderCoverage{{Provider: "registry.terraform.io/acme/aws", Queried: []string{"thing"}}, {Provider: "registry.terraform.io/hashicorp/aws", Queried: []string{"thing"}}}},
-		{name: "no provider listed the type", rows: []Coverage{{Type: "thing", Status: Complete}}, providers: []ProviderCoverage{{Provider: "registry.terraform.io/acme/aws", Queried: []string{"other"}}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := model.Resource{Type: "thing", Identity: map[string]any{"id": "old"}, ScopeName: c.scope, Source: c.source, DisplayName: "old name", ImportID: "import", ProviderSource: "aws"}
-			_, b := Compare([]model.Resource{r}, nil, Summary{Coverage: c.rows, Providers: c.providers})
+			_, b := Compare([]model.Resource{r}, nil, Summary{Coverage: c.rows, Providers: []ProviderCoverage{{Provider: "hashicorp/aws", Queried: []string{"thing"}}}})
 			if c.reason == "" {
 				if b.Resolved != 1 || b.Unverified != 0 || !reflect.DeepEqual(b.ResolvedFindings[0], finding(r, "")) {
 					t.Fatalf("resolved: %+v", b)
@@ -116,6 +113,71 @@ func TestBaselineMissingCoverage(t *testing.T) {
 				t.Fatalf("want reason %q: %+v", c.reason, b)
 			}
 		})
+	}
+}
+
+func TestBaselineMissingSource(t *testing.T) {
+	for _, c := range []struct {
+		name, source, provider string
+		providers              []ProviderCoverage
+		scans                  []string
+		status, reason         string
+	}{
+		{name: "missing providers", provider: "hashicorp/foo", reason: "type not queried"},
+		{name: "old report unknown provider", reason: "type not queried"},
+		{name: "no provider listed the type", provider: "hashicorp/foo", providers: []ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"other"}}}, reason: "type not queried"},
+		{name: "queried count is not evidence", providers: []ProviderCoverage{{Provider: "hashicorp/foo", QueriedTypes: 1}}, reason: "type not queried"},
+		{name: "compatible provider", provider: "foo", providers: []ProviderCoverage{{Provider: "registry.terraform.io/hashicorp/foo", Queried: []string{"thing"}}}},
+		{name: "compatible family", provider: "hashicorp/google-beta", providers: []ProviderCoverage{{Provider: "hashicorp/google", Queried: []string{"thing"}}}},
+		{name: "incompatible provider", provider: "hashicorp/foo", providers: []ProviderCoverage{{Provider: "acme/foo", Queried: []string{"thing"}}}, reason: "provider not queried"},
+		{name: "mixed providers", provider: "hashicorp/foo", providers: []ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"thing"}}, {Provider: "acme/foo", Queried: []string{"thing"}}}, reason: "type listed by another provider"},
+		{name: "unrelated incompatible query", provider: "hashicorp/foo", providers: []ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"thing"}}, {Provider: "acme/foo", Queried: []string{"other"}}}},
+		{name: "empty provider source", providers: []ProviderCoverage{{Provider: "acme/foo", Queried: []string{"thing"}}}},
+		{name: "empty provider source mixed listings", providers: []ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"thing"}}, {Provider: "acme/foo", Queried: []string{"thing"}}}},
+		{name: "empty queried provider", provider: "hashicorp/foo", providers: []ProviderCoverage{{Queried: []string{"thing"}}}},
+		{name: "scan ran", source: "-scan cloudflare", scans: []string{"cloudflare"}},
+		{name: "scan not run", source: "-scan cloudflare", reason: "scan not run"},
+		{name: "another scan ran", source: "-scan cloudflare", scans: []string{"proxmox"}, reason: "scan not run"},
+		{name: "scan needs complete coverage", source: "-scan cloudflare", scans: []string{"cloudflare"}, status: Incomplete, reason: "listing incomplete"},
+		{name: "provider query cannot replace scan", source: "-scan cloudflare", providers: []ProviderCoverage{{Queried: []string{"thing"}}}, reason: "scan not run"},
+		{name: "legacy cloudflare scan ran", source: "cloudflare", scans: []string{"cloudflare"}},
+		{name: "legacy cloudflare scan not run", source: "cloudflare", reason: "scan not run"},
+		{name: "legacy proxmox scan ran", source: "proxmox", scans: []string{"proxmox"}},
+		{name: "legacy proxmox scan not run", source: "proxmox", reason: "scan not run"},
+		{name: "custom scan ran", source: "-scan custom", scans: []string{"custom"}},
+		{name: "root name matches scan", source: "custom", scans: []string{"custom"}, reason: "type not queried"},
+		{name: "plugin still unverified", source: "plugin1", providers: []ProviderCoverage{{Queried: []string{"thing"}}}, scans: []string{"plugin1"}, reason: "plugin results cannot be verified"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status := c.status
+			if status == "" {
+				status = Complete
+			}
+			r := model.Resource{Type: "thing", Identity: map[string]any{"id": "old"}, Source: c.source, ProviderSource: c.provider}
+			_, b := Compare([]model.Resource{r}, nil, Summary{Coverage: []Coverage{{Type: "thing", Status: status}}, Providers: c.providers, Scans: c.scans})
+			if c.reason == "" {
+				if b.Resolved != 1 || b.Unverified != 0 || !reflect.DeepEqual(b.ResolvedFindings[0], finding(r, "")) {
+					t.Fatalf("resolved: %+v", b)
+				}
+			} else if b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Reason != c.reason {
+				t.Fatalf("want reason %q: %+v", c.reason, b)
+			}
+		})
+	}
+}
+
+func TestBaselineProviderScopeMixing(t *testing.T) {
+	r := model.Resource{Type: "foo_thing", Identity: map[string]any{"id": "old"}, ScopeName: "B", ProviderSource: "hashicorp/foo", Source: "root-b"}
+	s := Summary{
+		Providers: []ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"foo_thing"}}, {Provider: "acme/foo", Queried: []string{"foo_thing"}}},
+		Coverage: BuildCoverage(nil, []tf.Check{
+			{Type: "foo_thing", Scope: "A", Root: "root-a", Provider: "hashicorp/foo"},
+			{Type: "foo_thing", Scope: "B", Root: "root-b", Provider: "acme/foo"},
+		}, nil, nil),
+	}
+	_, b := Compare([]model.Resource{r}, nil, s)
+	if b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Reason != "type listed by another provider" {
+		t.Fatalf("provider listing from another scope resolved finding: %+v", b)
 	}
 }
 

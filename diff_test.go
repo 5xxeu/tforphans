@@ -19,7 +19,7 @@ func TestDiffRun(t *testing.T) {
 		return model.Resource{Type: "thing", Identity: map[string]any{"id": id}, ScopeName: scope}
 	}
 	saveReportTest(t, old, []model.Resource{r("resolved", "a"), r("missing", "b")}, report.Summary{Live: 2, Orphans: 2, Complete: true, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}, {Type: "thing", Scope: "b", Status: report.Complete}}})
-	saveReportTest(t, current, []model.Resource{r("added", "a")}, report.Summary{Live: 1, Orphans: 1, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}}})
+	saveReportTest(t, current, []model.Resource{r("added", "a")}, report.Summary{Live: 1, Orphans: 1, Providers: []report.ProviderCoverage{{Provider: "hashicorp/foo", Queried: []string{"thing"}}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}}})
 	// A config that could run a command must not be read by diff.
 	if err := os.WriteFile(defaultConfigFile, []byte("plugin: exit 99\n"), 0o600); err != nil {
 		t.Fatal(err)

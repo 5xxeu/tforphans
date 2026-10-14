@@ -191,19 +191,17 @@ func missingReason(r model.Resource, rows []Coverage, s Summary) string {
 	if strings.HasPrefix(r.Source, "plugin") {
 		return "plugin results cannot be verified"
 	}
-	// A complete listing of the type by another provider (a fork with the
-	// same type names) says nothing about this one.
-	if r.ProviderSource != "" {
-		queried, compatible := false, false
-		for _, p := range s.Providers {
-			if slices.Contains(p.Queried, r.Type) {
-				queried = true
-				compatible = compatible || model.SameProvider(p.Provider, r.ProviderSource)
-			}
+	scan, isScan := strings.CutPrefix(r.Source, "-scan ")
+	// Older reports used the built-in scan name without the -scan prefix.
+	if r.Source == "cloudflare" || r.Source == "proxmox" {
+		scan, isScan = r.Source, true
+	}
+	if isScan {
+		if !slices.Contains(s.Scans, scan) {
+			return "scan not run"
 		}
-		if queried && !compatible {
-			return "provider not queried"
-		}
+	} else if why := providerReason(r, s.Providers); why != "" {
+		return why
 	}
 	if r.ScopeName != "" {
 		for _, c := range rows {
@@ -220,6 +218,32 @@ func missingReason(r model.Resource, rows []Coverage, s Summary) string {
 		if why := rowReason(c); why != "" {
 			return why
 		}
+	}
+	return ""
+}
+
+func providerReason(r model.Resource, providers []ProviderCoverage) string {
+	// A complete listing of the type by another provider (a fork with the
+	// same type names) says nothing about this one.
+	queried, compatible, incompatible := false, false, false
+	for _, p := range providers {
+		if slices.Contains(p.Queried, r.Type) {
+			queried = true
+			if model.SameProvider(p.Provider, r.ProviderSource) {
+				compatible = true
+			} else {
+				incompatible = true
+			}
+		}
+	}
+	if !queried {
+		return "type not queried"
+	}
+	if !compatible {
+		return "provider not queried"
+	}
+	if incompatible {
+		return "type listed by another provider"
 	}
 	return ""
 }

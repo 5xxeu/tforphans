@@ -115,7 +115,8 @@ same path restrictions as `ignore`.
 
 A previous finding that is absent now is resolved only if its type and scope
 were fully listed. It may have been deleted, become managed, been ignored or
-become uncertain. "Not verified" means the current run did not fully list
+become uncertain. "Not verified" means the current run did not confirm that
+the finding's scan ran or its provider queried the type, did not fully list
 that type or scope, another provider with the same type names listed it, or
 it came from a plugin (plugins are named by position, so a run cannot show
 that the same plugin ran again). It is not evidence

@@ -39,6 +39,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		u := report.NewUnreadState(root, err)
 		u.Error = "not initialized, so not queried either (run terraform init there, or pass -init): " + u.Error
 		sum.UnreadStates = append(sum.UnreadStates, u)
+		if !o.noQuery {
+			sum.UnqueriedRoots = append(sum.UnqueriedRoots, root)
+		}
 		return true
 	}
 	if o.noQuery {

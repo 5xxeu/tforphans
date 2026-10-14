@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
 )
@@ -49,7 +50,7 @@ func TestBaselineRun(t *testing.T) {
 	if code != exitOrphans {
 		t.Fatalf("plain run exit %d: %s", code, stderr)
 	}
-	if strings.Contains(plain, `"baseline"`) || strings.Contains(plain, `"providers"`) {
+	if strings.Contains(plain, `"baseline"`) || strings.Contains(plain, `"providers"`) || strings.Contains(plain, `"scans"`) {
 		t.Fatalf("plain run has optional fields: %s", plain)
 	}
 	code, marked, stderr := runReportTest(t, append(base, "-format", "json", "-baseline", baselinePath)...)
@@ -110,6 +111,176 @@ func TestBaselineRun(t *testing.T) {
 	}
 }
 
+func TestBaselinePluginOnlyCoverage(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "baseline.json")
+	old := []model.Resource{
+		{Type: "foo_thing", Identity: map[string]any{"id": "A"}, ScopeName: "account x", ProviderSource: "hashicorp/foo", Source: "infra"},
+		{Type: "foo_thing", Identity: map[string]any{"id": "B"}, ScopeName: "account x", ProviderSource: "hashicorp/foo", Source: "infra"},
+	}
+	saveReportTest(t, path, old, report.Summary{})
+	for _, strict := range []bool{false, true} {
+		args := []string{"-no-config", "-no-query", "-plugin", `printf '%s\n' '{"type":"foo_thing","identity":{"id":"B"},"scope":"account x"}'`, "-baseline", path, "-format", "json"}
+		if strict {
+			args = append(args, "-strict")
+		}
+		code, stdout, stderr := runReportTest(t, args...)
+		if code != exitOK {
+			t.Fatalf("strict %t, exit %d: %s", strict, code, stderr)
+		}
+		var doc struct {
+			Orphans  []model.Resource `json:"orphans"`
+			Summary  report.Summary   `json:"summary"`
+			Baseline report.Baseline  `json:"baseline"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+			t.Fatal(err)
+		}
+		b, s := doc.Baseline, doc.Summary
+		if len(doc.Orphans) != 1 || doc.Orphans[0].Baseline != "known" || b.Known != 1 || b.New != 0 || b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Identity["id"] != "A" || b.UnverifiedFindings[0].Reason != "type not queried" {
+			t.Fatalf("plugin-only comparison: %s", stdout)
+		}
+		if len(s.Providers) != 0 || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete || s.Coverage[0].Scope != "account x" {
+			t.Fatalf("plugin-only coverage: %+v", s)
+		}
+	}
+}
+
+func TestSummaryScans(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TF_PLUGIN_CACHE_DIR", dir)
+	bin := filepath.Join(dir, "terraform")
+	script := `#!/bin/sh
+case "$1" in
+  init) exit 0 ;;
+  providers) printf '%s\n' '{"provider_schemas":{"hashicorp/foo":{"resource_schemas":{"foo_thing":{}},"data_source_schemas":{"foo_things":{"block":{"attributes":{"result":{"type":["list",["object",{"id":"string"}]]}}}}}}}}' ;;
+  apply)
+    case "$PWD" in
+      */tforphans-alpha-*) scan_id=alpha ;;
+      */tforphans-zeta-*) scan_id=zeta ;;
+      *) exit 1 ;;
+    esac
+    printf '{"version":4,"resources":[{"mode":"data","type":"foo_things","name":"all","instances":[{"attributes":{"result":[{"id":"%s"}]}}]}]}\n' "$scan_id" > terraform.tfstate
+    ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "zeta"} {
+		sources[name] = dsource.Adapter{Name: name, Provider: "hashicorp/foo", Target: "account"}
+		t.Cleanup(func() { delete(sources, name) })
+	}
+	code, stdout, stderr := runReportTest(t, "-no-config", "-no-query", "-terraform", bin, "-scan", "zeta,alpha", "-allow-unpinned", "-format", "json")
+	if code != exitOrphans {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	var doc struct {
+		Orphans []model.Resource `json:"orphans"`
+		Summary report.Summary   `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(doc.Summary.Scans, []string{"alpha", "zeta"}) {
+		t.Fatalf("scans not recorded in sorted order: %s", stdout)
+	}
+	if len(doc.Orphans) != 2 {
+		t.Fatalf("scan results missing: %s", stdout)
+	}
+	for _, r := range doc.Orphans {
+		if r.Source != "-scan "+r.Identity["id"].(string) {
+			t.Fatalf("scan source: %+v", r)
+		}
+	}
+	path := filepath.Join(dir, "report.json")
+	if err := os.WriteFile(path, []byte(stdout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := report.ReadSnapshot(path, 1<<20)
+	if err != nil || !reflect.DeepEqual(snapshot.Summary.Scans, doc.Summary.Scans) {
+		t.Fatalf("scan snapshot: %+v, %v", snapshot, err)
+	}
+}
+
+func TestUnqueriedRootCompleteness(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TF_DATA_DIR", ".terraform")
+	good := filepath.Join(dir, "good")
+	for _, name := range []string{"good", "schema-failure", "state-failure"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin := filepath.Join(dir, "terraform")
+	script := `#!/bin/sh
+case "$1" in
+  version) printf '%s\n' '{"terraform_version":"1.14.0"}' ;;
+  providers)
+    case "$PWD" in
+      */schema-failure) echo 'Error: Required plugins are not installed' >&2; exit 1 ;;
+    esac
+    printf '%s\n' '{"provider_schemas":{"registry.terraform.io/hashicorp/foo":{"list_resource_schemas":{"foo_thing":{}}}}}'
+    ;;
+  state)
+    case "$PWD" in
+      */schema-failure|*/state-failure) echo 'Error: Backend initialization required' >&2; exit 1 ;;
+    esac
+    printf '%s\n' '{"version":4,"resources":[]}'
+    ;;
+  query)
+    printf '%s\n' '{"list_start":{"address":"list.foo_thing.tfo_foo_foo_thing","resource_type":"foo_thing"}}' '{"list_complete":{"address":"list.foo_thing.tfo_foo_foo_thing","resource_type":"foo_thing","total":0}}'
+    ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, failedRoot string
+		noQuery          bool
+	}{
+		{name: "all queries ran"},
+		{name: "schema failure", failedRoot: "schema-failure"},
+		{name: "state failure before query", failedRoot: "state-failure"},
+		{name: "no query state failure", failedRoot: "state-failure", noQuery: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := []string{"-no-config", "-terraform", bin, "-current-workspace", "-format", "json", good}
+			if c.failedRoot != "" {
+				args = append(args, filepath.Join(dir, c.failedRoot))
+			}
+			if c.noQuery {
+				args = append(args, "-no-query", "-plugin", "true")
+			}
+			code, stdout, stderr := runReportTest(t, args...)
+			if code != exitOK {
+				t.Fatalf("exit %d: %s", code, stderr)
+			}
+			var doc struct {
+				Summary report.Summary `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+				t.Fatal(err)
+			}
+			s := doc.Summary
+			statesComplete := c.failedRoot == ""
+			discoveryComplete := statesComplete || c.noQuery
+			if s.StatesComplete != statesComplete || s.DiscoveryComplete != discoveryComplete || s.Complete != statesComplete || (len(s.UnreadStates) == 0) != statesComplete || len(s.UnreadStates) > 1 {
+				t.Fatalf("split completeness: %s", stdout)
+			}
+			if !c.noQuery && (len(s.Providers) != 1 || !reflect.DeepEqual(s.Providers[0].Queried, []string{"foo_thing"}) || len(s.Coverage) != 1 || s.Coverage[0].Status != report.Complete) {
+				t.Fatalf("successful root did not list the type: %s", stdout)
+			}
+		})
+	}
+}
+
 func TestBaselineVerboseUnverified(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -125,7 +296,7 @@ func TestBaselineVerboseUnverified(t *testing.T) {
 			args = append(args, "-v")
 		}
 		code, _, stderr := runReportTest(t, args...)
-		if code != exitOK || !strings.Contains(stderr, "10 not verified") || strings.Contains(stderr, "and 2 more") != verbose || strings.Contains(stderr, "id=00: type not listed") != verbose || strings.Contains(stderr, "id=09") {
+		if code != exitOK || !strings.Contains(stderr, "10 not verified") || strings.Contains(stderr, "and 2 more") != verbose || strings.Contains(stderr, "id=00: type not queried") != verbose || strings.Contains(stderr, "id=09") {
 			t.Fatalf("verbose %t, exit %d: %s", verbose, code, stderr)
 		}
 	}

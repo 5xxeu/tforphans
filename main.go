@@ -595,6 +595,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		sum.Scans = append(sum.Scans, name)
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
 		sum.Ran += len(res.Listed)
@@ -612,7 +613,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		for i := range res.Resources {
 			r := &res.Resources[i]
-			r.Source = a.Name
+			r.Source = "-scan " + a.Name
 			if r.Scope != nil && a.Name == "proxmox" {
 				r.Scope.Trusted = o.proxmoxStates
 			}
@@ -625,6 +626,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		live = append(live, res.Resources...)
 	}
+	slices.Sort(sum.Scans)
+	sum.Scans = slices.Compact(sum.Scans)
 	for i, p := range o.plugins {
 		found, warns, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
 		if err != nil {
@@ -765,7 +768,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
 	sum.StatesComplete = len(sum.UnreadStates) == 0
-	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(counting) == 0 && len(sum.Warnings) == 0 &&
+	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
 	var baseline *report.Baseline

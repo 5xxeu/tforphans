@@ -21,6 +21,7 @@ format it does not know; new fields do not change it.
   `warnings`, `notes`, `providers_without_list`, `by_type` and `by_scope`
   (counters per type and per scope), `coverage` (`type`, `scope`,
   `status` complete/incomplete/skipped, `reasons`, `live`).
+  `scans` is an optional sorted list of the `-scan` names that ran.
 
 Empty lists and zero counters marked above as optional may be left out.
 
@@ -109,8 +110,17 @@ any family. An empty identity uses `import_id`. Names and addresses do not
 participate. Without both identity and import ID, a current finding is always
 new and an old finding stays unverified (`identity and import_id missing`).
 A missing finding is resolved only when its scope was completely
-listed, or, without a scope, all rows of its type were complete. Plugin
-findings also need a successful plugin run without plugin warnings.
+listed, or, without a scope, all rows of its type were complete, and its
+source was checked this run. Plugin findings always stay unverified because
+plugins are named by position. A `-scan NAME` finding requires NAME in
+`summary.scans`; without it, including in older reports, the reason is
+`scan not run`. Older scan sources `cloudflare` and `proxmox` follow the same
+rule. Other sources require a compatible provider in `summary.providers`
+whose `queried` includes the type. Missing providers or a type absent from
+every `queried` list give `type not queried`. Only incompatible providers
+give `provider not queried`; a mix of compatible and incompatible providers
+gives `type listed by another provider`, even across different scopes.
+An empty `provider_source` is compatible with any provider.
 
 `tforphans diff -format json OLD.json NEW.json` uses the same rules and emits:
 
@@ -138,8 +148,9 @@ array is omitted. `queried` lists the queried
 type names, so `-baseline` and `diff` can tell which provider listed a type.
 
 `summary.states_complete` is true when no state was unread.
-`summary.discovery_complete` describes listing coverage without considering
-unread states. Both are always present. `summary.complete` retains its
+`summary.discovery_complete` describes listing coverage, including requested
+root queries that could not start. With `-no-query`, an unread state affects
+only `states_complete`. Both are always present. `summary.complete` retains its
 meaning: both state reading and discovery were complete. Uncertain matches
 still fail `-strict` independently.
 
