@@ -926,35 +926,73 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 // dropped copies are kept: one copy may come from a list block that did
 // not ask for them.
 func dedupe(rs []model.Resource) []model.Resource {
-	seen := map[string][]int{} // key -> indexes in out
-	out := rs[:0]
-	for _, r := range rs {
+	// One slot per key and provider family; "" collects the results
+	// without a provider. The order of the results must not matter, so
+	// those join a known family only when it is the only one: an object of
+	// unknown provider could be either of two, and swallowing both would
+	// hide one.
+	type slot struct {
+		r     model.Resource
+		first int // position of the first result in the slot
+	}
+	slots := map[string]map[string]*slot{}
+	var keys []string
+	for i, r := range rs {
 		k := r.Key()
 		if state.UnknownLocation(r.Identity) {
 			k += "\x00" + r.Source + "\x00" + r.ListAddress
 		}
-		i := slices.IndexFunc(seen[k], func(j int) bool { return model.SameProvider(out[j].ProviderSource, r.ProviderSource) })
-		if i < 0 {
-			seen[k] = append(seen[k], len(out))
-			out = append(out, r)
+		family := ""
+		if r.ProviderSource != "" {
+			family = model.ProviderFamily(r.ProviderSource)
+		}
+		if slots[k] == nil {
+			slots[k] = map[string]*slot{}
+			keys = append(keys, k)
+		}
+		if s := slots[k][family]; s != nil {
+			mergeResult(&s.r, r)
 			continue
 		}
-		kept := &out[seen[k][i]]
-		// A user block without include_resource may answer first: the
-		// copy with the object keeps its Name tag for the address.
-		if kept.TagName == "" {
-			kept.TagName = r.TagName
+		slots[k][family] = &slot{r, i}
+	}
+	var out []*slot
+	for _, k := range keys {
+		group := slots[k]
+		if unknown := group[""]; unknown != nil && len(group) == 2 {
+			delete(group, "")
+			for _, known := range group {
+				mergeResult(&known.r, unknown.r)
+				known.first = min(known.first, unknown.first)
+			}
 		}
-		for a, v := range r.Attributes {
-			if kept.Attributes == nil {
-				kept.Attributes = map[string]any{}
-			}
-			if _, ok := kept.Attributes[a]; !ok {
-				kept.Attributes[a] = v
-			}
+		for _, s := range group {
+			out = append(out, s)
 		}
 	}
-	return out
+	slices.SortFunc(out, func(a, b *slot) int { return a.first - b.first })
+	res := make([]model.Resource, len(out))
+	for i, s := range out {
+		res[i] = s.r
+	}
+	return res
+}
+
+// mergeResult adds what a duplicate result knows to the kept one.
+func mergeResult(kept *model.Resource, r model.Resource) {
+	// A user block without include_resource may answer first: the copy
+	// with the object keeps its Name tag for the address.
+	if kept.TagName == "" {
+		kept.TagName = r.TagName
+	}
+	for a, v := range r.Attributes {
+		if kept.Attributes == nil {
+			kept.Attributes = map[string]any{}
+		}
+		if _, ok := kept.Attributes[a]; !ok {
+			kept.Attributes[a] = v
+		}
+	}
 }
 
 // scopeKeys are identity keys that tell which account a result came from.

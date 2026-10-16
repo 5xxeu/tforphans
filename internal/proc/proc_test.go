@@ -147,11 +147,14 @@ func TestStreamHelperProcess(t *testing.T) {
 		os.Stderr.Write(chunk)
 		fmt.Fprintln(os.Stdout, "ready")
 		os.Stdout.Close()
+		// Slow enough that the 1 MiB tail keeps the parent's lines for the
+		// seconds a loaded CI runner (-race) may need: 1 KiB a millisecond
+		// filled it within a second and pushed them out.
 		for {
 			if _, err := os.Stderr.Write(chunk); err != nil {
 				os.Exit(0)
 			}
-			time.Sleep(time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }

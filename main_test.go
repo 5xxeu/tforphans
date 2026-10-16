@@ -154,8 +154,49 @@ func TestDedupe(t *testing.T) {
 		{Type: "foo_thing", Identity: id, ProviderSource: "registry.terraform.io/other/foo", Source: "a"},
 		{Type: "foo_thing", Identity: id, Source: "plugin1"},
 	})
-	if len(got) != 2 || got[0].Source != "a" || got[1].ProviderSource != "registry.terraform.io/other/foo" {
+	// The result without a provider could be either object: it stays apart
+	// rather than hide one of them.
+	if len(got) != 3 || got[0].Source != "a" || got[1].ProviderSource != "registry.terraform.io/other/foo" || got[2].Source != "plugin1" {
 		t.Errorf("got %+v", got)
+	}
+}
+
+// TestDedupeProviderPermutations: the result does not depend on which
+// source answered first.
+func TestDedupeProviderPermutations(t *testing.T) {
+	id := map[string]any{"id": "42"}
+	acme := model.Resource{Type: "foo_thing", Identity: id, ProviderSource: "registry.terraform.io/acme/foo", Source: "a"}
+	other := model.Resource{Type: "foo_thing", Identity: id, ProviderSource: "registry.terraform.io/other/foo", Source: "b"}
+	unknown := model.Resource{Type: "foo_thing", Identity: id, Source: "plugin1", Attributes: map[string]any{"labels": "x"}}
+	families := func(rs []model.Resource) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.ProviderSource)
+		}
+		slices.Sort(out)
+		return out
+	}
+	perms := [][]model.Resource{
+		{acme, other, unknown}, {acme, unknown, other}, {other, acme, unknown},
+		{other, unknown, acme}, {unknown, acme, other}, {unknown, other, acme},
+	}
+	for _, p := range perms {
+		got := families(dedupe(slices.Clone(p)))
+		if want := []string{"", "registry.terraform.io/acme/foo", "registry.terraform.io/other/foo"}; !slices.Equal(got, want) {
+			t.Errorf("%v: %v", families(p), got)
+		}
+	}
+	// With one known provider the unknown result is the same object, in
+	// either order, and the known copy is kept with what the other knew.
+	for _, p := range [][]model.Resource{{acme, unknown}, {unknown, acme}} {
+		got := dedupe(slices.Clone(p))
+		if len(got) != 1 || got[0].ProviderSource != acme.ProviderSource || got[0].Attributes["labels"] != "x" {
+			t.Errorf("one known provider: %+v", got)
+		}
+	}
+	// Results without a provider merge with each other.
+	if got := dedupe([]model.Resource{unknown, {Type: "foo_thing", Identity: id, Source: "plugin2"}}); len(got) != 1 {
+		t.Errorf("two unknown: %+v", got)
 	}
 }
 

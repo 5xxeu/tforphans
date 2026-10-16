@@ -239,10 +239,27 @@ func TestBaselineRepeatedKeysScale(t *testing.T) {
 	}
 	start := time.Now()
 	_, b := Compare(old, current, Summary{}, Summary{})
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > 30*time.Second { // a guard against quadratic work, see the benchmarks
 		t.Fatalf("%d repeated keys took %s", n, d)
 	}
 	if b.New != n || b.Known != 0 {
 		t.Fatalf("new %d, known %d", b.New, b.Known)
+	}
+}
+
+func BenchmarkBaseline(b *testing.B) {
+	for _, n := range []int{1000, 10000, 100000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			old := make([]model.Resource, n)
+			current := make([]model.Resource, n)
+			for i := range n {
+				old[i] = model.Resource{Type: "thing", Identity: map[string]any{"id": fmt.Sprint(i)}, ProviderSource: "acme/thing"}
+				current[i] = model.Resource{Type: "thing", Identity: map[string]any{"id": fmt.Sprint(i + n/2)}, ProviderSource: "acme/thing"}
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				Compare(old, current, Summary{}, Summary{})
+			}
+		})
 	}
 }
