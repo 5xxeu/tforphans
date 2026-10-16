@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,13 +67,8 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		return nil, fmt.Errorf("%w\n(is the module initialized? run terraform init)", err)
 	}
 	sum.MergeProviders(schemas, nil)
-	for _, ps := range schemas.ProviderSchemas {
-		for typ := range ps.ListResourceSchemas {
-			if sum.ListableTypes == nil {
-				sum.ListableTypes = map[string]bool{}
-			}
-			sum.ListableTypes[typ] = true
-		}
+	for addr, ps := range schemas.ProviderSchemas {
+		sum.AddListable(addr, slices.Collect(maps.Keys(ps.ListResourceSchemas))...)
 	}
 	declared, err := tf.LocalNames(root)
 	if err != nil {

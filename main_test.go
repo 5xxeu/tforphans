@@ -548,24 +548,32 @@ func TestUnlistedTypes(t *testing.T) {
 	counts := map[state.TypeKey]int{
 		{Type: "aws_instance", Provider: "hashicorp/aws"}:                   3,
 		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws"}: 12,
-		{Type: "aws_route53_record", Provider: "hashicorp/aws"}:             5,
 		{Type: "aws_excluded_thing", Provider: "hashicorp/aws"}:             9,
 		{Type: "google_project", Provider: "hashicorp/google"}:              1,
-		{Type: "cloudflare_dns_record", Provider: "cloudflare/cloudflare"}:  4,
+		{Type: "cloudflare_record", Provider: "cloudflare/cloudflare"}:      4,
 		{Type: "cloudflare_page_rule", Provider: "cloudflare/cloudflare"}:   2,
+		{Type: "acme_thing", Provider: "acme/acme"}:                         6,
+		{Type: "acme_thing", Provider: "other/acme"}:                        7,
+		{Type: "vault_policy", Provider: "hashicorp/vault"}:                 5,
+		{Type: "vault_mount", Provider: "hashicorp/vault"}:                  1,
 	}
-	sum := report.Summary{
-		Providers:     []report.ProviderCoverage{{Provider: "registry.terraform.io/hashicorp/aws"}},
-		ListableTypes: map[string]bool{"aws_instance": true},
-		Coverage: []report.Coverage{{Type: "aws_route53_record", Status: report.Incomplete}, {Type: "cloudflare_dns_record", Status: report.Complete},
-			{Type: "cloudflare_page_rule", Status: report.Skipped, Reasons: []string{"cannot be listed"}}},
-	}
-	live := []model.Resource{{Type: "cloudflare_dns_record", ProviderSource: "cloudflare/cloudflare"}}
+	var sum report.Summary
+	sum.AddListable("registry.terraform.io/hashicorp/aws", "aws_instance")
+	// A scan that found nothing still asked its provider; the old name
+	// cloudflare_record is covered through AltTypes.
+	sum.AddListable("cloudflare/cloudflare", "cloudflare_dns_record", "cloudflare_record")
+	// The same type name: only acme/acme can list it.
+	sum.AddListable("registry.terraform.io/acme/acme", "acme_thing")
+	sum.AddListable("registry.terraform.io/other/acme")
+	// A plugin returned vault_policy objects.
+	live := []model.Resource{{Type: "vault_policy", ProviderSource: "hashicorp/vault"}}
 	o := &options{exclude: glob.CompileList([]string{"aws_excluded_*"})}
 	got := unlistedTypes(o, counts, sum, live)
 	want := []report.UnlistedType{
 		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws", Instances: 12},
+		{Type: "acme_thing", Provider: "other/acme", Instances: 7},
 		{Type: "cloudflare_page_rule", Provider: "cloudflare/cloudflare", Instances: 2},
+		{Type: "vault_mount", Provider: "hashicorp/vault", Instances: 1},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v", got)

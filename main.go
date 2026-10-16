@@ -598,6 +598,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, l := range res.Listings {
 			sum.AddListing(l)
 		}
+		// Asked even when nothing came back.
+		sum.AddListable(a.Provider, res.Covered...)
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
 		sum.Ran += len(res.Listed)
@@ -933,34 +935,20 @@ func dedupe(rs []model.Resource) []model.Resource {
 // scopeKeys are identity keys that tell which account a result came from.
 var scopeKeys = []string{"project", "account_id", "subscription_id"}
 
-// unlistedTypes are the types in the states whose provider was queried
-// (its schema read, or results came from it) but which nothing listed:
-// tforphans never checks objects of them. Types left out with -types or
-// -exclude-types are the user's choice and not reported.
+// unlistedTypes are the types in the states whose provider was asked (its
+// schema read, a scan of it run, or results from a plugin) but which that
+// provider cannot list: tforphans never checks objects of them. Types left
+// out with -types or -exclude-types are the user's choice and not reported.
 func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary, live []model.Resource) []report.UnlistedType {
-	queried := map[string]bool{}
-	for _, p := range sum.Providers {
-		queried[model.ProviderFamily(p.Provider)] = true
-	}
+	// Plugins declare nothing up front: what they returned is what they list.
 	for _, r := range live {
 		if r.ProviderSource != "" {
-			queried[model.ProviderFamily(r.ProviderSource)] = true
-		}
-	}
-	listed := maps.Clone(sum.ListableTypes)
-	if listed == nil {
-		listed = map[string]bool{}
-	}
-	// A skipped row is a type left out (-types) or one that cannot be
-	// listed; a type that needed an argument is an incomplete row.
-	for _, c := range sum.Coverage {
-		if c.Status != report.Skipped {
-			listed[c.Type] = true
+			sum.AddListable(r.ProviderSource, r.Type)
 		}
 	}
 	var out []report.UnlistedType
 	for k, n := range counts {
-		if !queried[k.Provider] || listed[k.Type] || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
+		if !sum.QueriedFamilies[k.Provider] || sum.Listable[[2]string{k.Type, k.Provider}] || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
 			continue
 		}
 		out = append(out, report.UnlistedType{Type: k.Type, Provider: k.Provider, Instances: n})

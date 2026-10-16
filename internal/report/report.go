@@ -272,8 +272,11 @@ type Summary struct {
 	// UnlistedTypes are types in the states that their provider cannot
 	// list: objects of them are never checked.
 	UnlistedTypes []UnlistedType `json:"unlisted_types,omitempty"`
-	// ListableTypes are the types some provider schema read can list.
-	ListableTypes map[string]bool `json:"-"`
+	// Listable holds the types, with their provider family, that a provider
+	// schema read, a scan or a plugin can list; QueriedFamilies the provider
+	// families asked at all. See AddListable.
+	Listable        map[[2]string]bool `json:"-"`
+	QueriedFamilies map[string]bool    `json:"-"`
 	// Listings tie actual type listings to their source and provider family.
 	Listings []Listing `json:"listings,omitempty"`
 	// UnqueriedRoots are roots whose requested query could not start.
@@ -803,4 +806,17 @@ type UnlistedType struct {
 	Type      string `json:"type"`
 	Provider  string `json:"provider"`
 	Instances int    `json:"instances"`
+}
+
+// AddListable records that the provider (any address form) was asked and
+// can list the types.
+func (s *Summary) AddListable(provider string, types ...string) {
+	family := model.ProviderFamily(provider)
+	if s.Listable == nil {
+		s.Listable, s.QueriedFamilies = map[[2]string]bool{}, map[string]bool{}
+	}
+	s.QueriedFamilies[family] = true
+	for _, t := range types {
+		s.Listable[[2]string{t, family}] = true
+	}
 }

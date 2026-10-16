@@ -181,6 +181,7 @@ type Result struct {
 	Resources []model.Resource
 	Listings  []report.Listing // listing instances with their configuration evidence
 	Listed    []string         // resource types listed
+	Covered   []string         // Listed plus their alternative type names
 	Checks    []tf.Check       // listings read, by scope
 	Skipped   []tf.Skip        // resource types without a usable data source
 	Failed    []tf.Failure     // resource types whose data source failed
@@ -388,6 +389,13 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 	}
 	res.Listed = slices.Sorted(maps.Keys(listed))
+	covered := maps.Clone(listed)
+	for t := range listed {
+		for _, alt := range a.AltTypes[t] {
+			covered[alt] = true
+		}
+	}
+	res.Covered = slices.Sorted(maps.Keys(covered))
 	// Build evidence after truncation and scope failures have been counted.
 	defer func() { res.Listings = scanListings(a, blocks, all, instances, res.Failed, opt.Scope) }()
 	failures = unsupported(failures, all, a, res)
