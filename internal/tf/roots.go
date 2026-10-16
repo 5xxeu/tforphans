@@ -784,6 +784,7 @@ func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string, maxSize in
 		"TG_NON_INTERACTIVE=true", "TERRAGRUNT_NON_INTERACTIVE=true",
 		"TG_TF_PATH=" + tfBin, "TERRAGRUNT_TFPATH=" + tfBin,
 		"TG_LOG_LEVEL=error", "TERRAGRUNT_LOG_LEVEL=error",
+		"TG_NO_COLOR=true", "TERRAGRUNT_NO_COLOR=true",
 	}, MaxStateSize: maxSize}
 	// "run --" needs Terragrunt 0.73 or newer.
 	args := []string{"run", "--", "state", "pull"}

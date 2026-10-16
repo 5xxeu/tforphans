@@ -408,6 +408,26 @@ func TestNewUnreadState(t *testing.T) {
 	if got := NewUnreadState("r", err).Error; got != "workspace a: Error: Backend initialization required; workspace b: decode state: unexpected end of JSON input; workspace c: read: permission denied" {
 		t.Errorf("%q", got)
 	}
+	// The advice tforphans adds after terraform's output stays.
+	err = errors.New("terraform state pull: exit status 1\nError: Unsupported Terraform Core version\n\n  on main.tf line 2\n(a required_version rejects this terraform: use a version it allows)")
+	if got := NewUnreadState("r", err).Error; got != "Error: Unsupported Terraform Core version; (a required_version rejects this terraform: use a version it allows)" {
+		t.Errorf("%q", got)
+	}
+	// Terragrunt log lines: time, level, unit, colours.
+	for _, line := range []string{
+		"14:02:01.123 ERROR  [units/app] Unable to determine underlying exit code",
+		"\x1b[31mERROR\x1b[0m  Unable to determine underlying exit code",
+		"ERROR  Unable to determine underlying exit code",
+	} {
+		err = errors.New("(terragrunt) run -- state pull: exit status 1\n" + line)
+		if got := NewUnreadState("r", err).Error; got != "Error: Unable to determine underlying exit code" {
+			t.Errorf("%q: %q", line, got)
+		}
+	}
+	err = errors.New("(terragrunt) run -- state pull: exit status 1\n14:02:01.123 STDERR [units/app] terraform: Error: Backend initialization required")
+	if got := NewUnreadState("r", err).Error; got != "Error: Backend initialization required" {
+		t.Errorf("%q", got)
+	}
 }
 
 // TestIgnoreBaseName: a name rule matches the object's own name when the
@@ -437,5 +457,23 @@ func TestJSONSchemaVersion(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(b.String()), &out); err != nil || out.SchemaVersion != SchemaVersion || SchemaVersion < 1 {
 		t.Errorf("schema_version %d, %v", out.SchemaVersion, err)
+	}
+}
+
+func TestTypeStatusMixedRows(t *testing.T) {
+	for _, rows := range [][]Coverage{
+		{{Type: "t", Scope: "root a", Status: Skipped}, {Type: "t", Scope: "zone b", Status: Complete}},
+		{{Type: "t", Scope: "zone b", Status: Complete}, {Type: "t", Scope: "root a", Status: Skipped}},
+	} {
+		if got := typeStatus(rows)["t"]; got != Complete {
+			t.Errorf("%v: %s", rows, got)
+		}
+		rows = append(rows, Coverage{Type: "t", Scope: "zone c", Status: Incomplete})
+		if got := typeStatus(rows)["t"]; got != Incomplete {
+			t.Errorf("%v: %s", rows, got)
+		}
+	}
+	if got := typeStatus([]Coverage{{Type: "t", Status: Skipped}})["t"]; got != Skipped {
+		t.Errorf("only skipped: %s", got)
 	}
 }
