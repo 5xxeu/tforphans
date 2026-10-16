@@ -598,8 +598,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, l := range res.Listings {
 			sum.AddListing(l)
 		}
-		// Asked even when nothing came back.
+		// Asked even when nothing came back. Alternative names match state
+		// of another provider too (telmate for Proxmox).
 		sum.AddListable(a.Provider, res.Covered...)
+		sum.AddListable("", res.AltNames...)
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
 		sum.Ran += len(res.Listed)

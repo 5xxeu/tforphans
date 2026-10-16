@@ -560,8 +560,12 @@ func TestUnlistedTypes(t *testing.T) {
 	var sum report.Summary
 	sum.AddListable("registry.terraform.io/hashicorp/aws", "aws_instance")
 	// A scan that found nothing still asked its provider; the old name
-	// cloudflare_record is covered through AltTypes.
-	sum.AddListable("cloudflare/cloudflare", "cloudflare_dns_record", "cloudflare_record")
+	// cloudflare_record is covered through AltTypes, as is telmate's
+	// proxmox_vm_qemu by the bpg scan while telmate's schema was read.
+	sum.AddListable("cloudflare/cloudflare", "cloudflare_dns_record")
+	sum.AddListable("bpg/proxmox", "proxmox_virtual_environment_vm")
+	sum.AddListable("", "cloudflare_record", "proxmox_vm_qemu")
+	sum.AddListable("registry.terraform.io/telmate/proxmox")
 	// The same type name: only acme/acme can list it.
 	sum.AddListable("registry.terraform.io/acme/acme", "acme_thing")
 	sum.AddListable("registry.terraform.io/other/acme")
