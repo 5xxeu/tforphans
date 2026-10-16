@@ -269,6 +269,11 @@ type Summary struct {
 	StatesComplete    bool               `json:"states_complete"`
 	DiscoveryComplete bool               `json:"discovery_complete"`
 	Providers         []ProviderCoverage `json:"providers,omitempty"`
+	// UnlistedTypes are types in the states that their provider cannot
+	// list: objects of them are never checked.
+	UnlistedTypes []UnlistedType `json:"unlisted_types,omitempty"`
+	// ListableTypes are the types some provider schema read can list.
+	ListableTypes map[string]bool `json:"-"`
 	// Listings tie actual type listings to their source and provider family.
 	Listings []Listing `json:"listings,omitempty"`
 	// UnqueriedRoots are roots whose requested query could not start.
@@ -790,4 +795,12 @@ func hclValue(v any) string {
 
 func identName(s string) string {
 	return strings.Trim(nonIdent.ReplaceAllString(strings.ToLower(s), "_"), "_")
+}
+
+// UnlistedType is a resource type found in the states that no listing
+// covers, though its provider was queried.
+type UnlistedType struct {
+	Type      string `json:"type"`
+	Provider  string `json:"provider"`
+	Instances int    `json:"instances"`
 }

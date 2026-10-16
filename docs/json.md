@@ -141,6 +141,17 @@ baseline finding fields above. All seven counters are always included:
 Coverage changes compare status by type and scope; `"absent"` means the row
 exists only in the other file. No Terraform process runs.
 
+## Types nothing lists
+
+`summary.unlisted_types`, omitted when empty, lists resource types found in
+the states whose provider was queried (its schema read, or results came
+from it) but which no listing covered: `type`, `provider` (family) and
+`instances`, most instances first. tforphans never checks objects of these
+types, so an unmanaged one would not show up. Types left out with `-types`
+or `-exclude-types`, and those of providers that create no remote object
+(random, null, local, ...), are not listed. A note on stderr names the
+first eight; it does not make coverage incomplete.
+
 ## Provider coverage and completeness
 
 `summary.providers`, omitted when no provider schema was read, contains

@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/state"
@@ -539,5 +541,45 @@ func TestLoadIgnoreDefaults(t *testing.T) {
 		if ig.Match(sg) != c.sg || ig.Match(tmpl) != c.tmplHid {
 			t.Errorf("%v: default SG hidden %v, template hidden %v", c.args, ig.Match(sg), ig.Match(tmpl))
 		}
+	}
+}
+
+func TestUnlistedTypes(t *testing.T) {
+	counts := map[state.TypeKey]int{
+		{Type: "aws_instance", Provider: "hashicorp/aws"}:                   3,
+		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws"}: 12,
+		{Type: "aws_route53_record", Provider: "hashicorp/aws"}:             5,
+		{Type: "aws_excluded_thing", Provider: "hashicorp/aws"}:             9,
+		{Type: "google_project", Provider: "hashicorp/google"}:              1,
+		{Type: "cloudflare_dns_record", Provider: "cloudflare/cloudflare"}:  4,
+		{Type: "cloudflare_page_rule", Provider: "cloudflare/cloudflare"}:   2,
+	}
+	sum := report.Summary{
+		Providers:     []report.ProviderCoverage{{Provider: "registry.terraform.io/hashicorp/aws"}},
+		ListableTypes: map[string]bool{"aws_instance": true},
+		Coverage: []report.Coverage{{Type: "aws_route53_record", Status: report.Incomplete}, {Type: "cloudflare_dns_record", Status: report.Complete},
+			{Type: "cloudflare_page_rule", Status: report.Skipped, Reasons: []string{"cannot be listed"}}},
+	}
+	live := []model.Resource{{Type: "cloudflare_dns_record", ProviderSource: "cloudflare/cloudflare"}}
+	o := &options{exclude: glob.CompileList([]string{"aws_excluded_*"})}
+	got := unlistedTypes(o, counts, sum, live)
+	want := []report.UnlistedType{
+		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws", Instances: 12},
+		{Type: "cloudflare_page_rule", Provider: "cloudflare/cloudflare", Instances: 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v", got)
+	}
+	// -types narrows the run: other types are the user's choice.
+	o = &options{include: glob.CompileList([]string{"cloudflare_*"})}
+	if got := unlistedTypes(o, counts, sum, live); len(got) != 1 || got[0].Type != "cloudflare_page_rule" {
+		t.Errorf("with -types: %+v", got)
+	}
+	var many []report.UnlistedType
+	for i := range 10 {
+		many = append(many, report.UnlistedType{Type: fmt.Sprintf("t%d", i), Instances: 1})
+	}
+	if note := unlistedNote(many); !strings.Contains(note, "10 resource types") || !strings.Contains(note, "and 2 more") {
+		t.Errorf("%s", note)
 	}
 }

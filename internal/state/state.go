@@ -397,6 +397,7 @@ type Index struct {
 	owned        map[string][]ownedBy // type \x00 owned-object key
 	snapshots    []Snapshot
 	snapshotKeys map[string]int
+	typeCounts   map[TypeKey]int
 	root         map[string]bool // resource addresses in root modules
 }
 
@@ -433,6 +434,12 @@ func (ix *Index) Add(instances []Instance) {
 	for i := range instances {
 		in := &instances[i]
 		ix.count++
+		if in.Provider != "" && !excludedOwnership(*in) {
+			if ix.typeCounts == nil {
+				ix.typeCounts = map[TypeKey]int{}
+			}
+			ix.typeCounts[TypeKey{in.Type, model.ProviderFamily(in.Provider)}]++
+		}
 		if len(in.Identity) == 0 {
 			ix.noIdentity++
 		}
@@ -791,3 +798,13 @@ func scopeCheck(sc *model.Scope, typ string, in *Instance) (inScope, known bool)
 	}
 	return true, sc.Trusted
 }
+
+// TypeKey is a resource type with the provider family that manages it.
+type TypeKey struct {
+	Type, Provider string
+}
+
+// TypeCounts counts the managed instances per type and provider family.
+// Instances without a provider address and those of providers that create
+// no remote object (random, null, local, ...) are left out.
+func (ix *Index) TypeCounts() map[TypeKey]int { return ix.typeCounts }

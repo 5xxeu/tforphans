@@ -768,6 +768,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
+	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum, live)
+	if n := len(sum.UnlistedTypes); n > 0 {
+		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
+	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
 	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
@@ -928,3 +932,56 @@ func dedupe(rs []model.Resource) []model.Resource {
 
 // scopeKeys are identity keys that tell which account a result came from.
 var scopeKeys = []string{"project", "account_id", "subscription_id"}
+
+// unlistedTypes are the types in the states whose provider was queried
+// (its schema read, or results came from it) but which nothing listed:
+// tforphans never checks objects of them. Types left out with -types or
+// -exclude-types are the user's choice and not reported.
+func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary, live []model.Resource) []report.UnlistedType {
+	queried := map[string]bool{}
+	for _, p := range sum.Providers {
+		queried[model.ProviderFamily(p.Provider)] = true
+	}
+	for _, r := range live {
+		if r.ProviderSource != "" {
+			queried[model.ProviderFamily(r.ProviderSource)] = true
+		}
+	}
+	listed := maps.Clone(sum.ListableTypes)
+	if listed == nil {
+		listed = map[string]bool{}
+	}
+	// A skipped row is a type left out (-types) or one that cannot be
+	// listed; a type that needed an argument is an incomplete row.
+	for _, c := range sum.Coverage {
+		if c.Status != report.Skipped {
+			listed[c.Type] = true
+		}
+	}
+	var out []report.UnlistedType
+	for k, n := range counts {
+		if !queried[k.Provider] || listed[k.Type] || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
+			continue
+		}
+		out = append(out, report.UnlistedType{Type: k.Type, Provider: k.Provider, Instances: n})
+	}
+	slices.SortFunc(out, func(a, b report.UnlistedType) int {
+		if a.Instances != b.Instances {
+			return b.Instances - a.Instances
+		}
+		return strings.Compare(a.Type+"\x00"+a.Provider, b.Type+"\x00"+b.Provider)
+	})
+	return out
+}
+
+func unlistedNote(types []report.UnlistedType) string {
+	var names []string
+	for i, t := range types {
+		if i == 8 {
+			names = append(names, fmt.Sprintf("and %d more (-format json lists all)", len(types)-i))
+			break
+		}
+		names = append(names, fmt.Sprintf("%s (%d)", t.Type, t.Instances))
+	}
+	return fmt.Sprintf("%d resource types in the states cannot be listed by their provider, so objects of them are never checked: %s", len(types), strings.Join(names, ", "))
+}
