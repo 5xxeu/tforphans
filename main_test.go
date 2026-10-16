@@ -193,11 +193,11 @@ func TestPluginKeysAllRequired(t *testing.T) {
 
 func TestDedupeKeepsAttributes(t *testing.T) {
 	id := map[string]any{"id": "1"}
-	withAttrs := model.Resource{Type: "t", Identity: id, Attributes: map[string]any{"labels": map[string]any{"a": "b"}}}
+	withAttrs := model.Resource{Type: "t", Identity: id, Attributes: map[string]any{"labels": map[string]any{"a": "b"}}, TagName: "web"}
 	plain := model.Resource{Type: "t", Identity: id}
 	for _, order := range [][]model.Resource{{plain, withAttrs}, {withAttrs, plain}} {
 		got := dedupe(slices.Clone(order))
-		if len(got) != 1 || got[0].Attributes["labels"] == nil {
+		if len(got) != 1 || got[0].Attributes["labels"] == nil || got[0].TagName != "web" {
 			t.Errorf("got %+v", got)
 		}
 	}
@@ -630,5 +630,49 @@ func TestUnlistedTypesThroughPlugin(t *testing.T) {
 		if c.want == "" && strings.Contains(got, "cannot be listed") || c.want != "" && !strings.Contains(got, "1 resource types in the states cannot be listed by their provider, so objects of them are never checked: "+c.want) {
 			t.Errorf("%v:\n%s", c.args, got)
 		}
+	}
+}
+
+func TestNameTag(t *testing.T) {
+	for _, c := range []struct {
+		attrs map[string]any
+		want  string
+	}{
+		{map[string]any{"tags": map[string]any{"Name": " web-1 "}}, "web-1"},
+		{map[string]any{"tags": map[string]any{"name": "lower"}}, ""},
+		{map[string]any{"tags": map[string]any{"Name": 5}}, ""},
+		{map[string]any{"tags": nil}, ""},
+		{nil, ""},
+	} {
+		if got := nameTag(c.attrs); got != c.want {
+			t.Errorf("%v: %q", c.attrs, got)
+		}
+	}
+}
+
+func TestHasTags(t *testing.T) {
+	var s tf.Schemas
+	if err := json.Unmarshal([]byte(`{"provider_schemas":{"registry.terraform.io/hashicorp/aws":{"resource_schemas":{
+		"aws_instance":{"block":{"attributes":{"tags":{"type":["map","string"]}}}},
+		"aws_iam_role_policy":{"block":{"attributes":{"name":{"type":"string"}}}}}}}}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if !hasTags(&s, "aws_instance") || hasTags(&s, "aws_iam_role_policy") || hasTags(&s, "aws_missing") {
+		t.Error("tags attribute not recognised")
+	}
+}
+
+func TestStateParallelismBounds(t *testing.T) {
+	for _, v := range []string{"0", "65"} {
+		if _, err := parseFlags([]string{"-no-config", "-state-parallelism", v}, io.Discard); err == nil {
+			t.Errorf("-state-parallelism %s accepted", v)
+		}
+	}
+	o, err := parseFlags([]string{"-no-config", "-state-parallelism", "16"}, io.Discard)
+	if err != nil || o.stateParallelism != 16 {
+		t.Fatalf("%v %+v", err, o)
+	}
+	if _, err := parseFlags([]string{"-no-config", "-names-from-tags"}, io.Discard); err == nil {
+		t.Error("-names-from-tags accepted without adopt")
 	}
 }

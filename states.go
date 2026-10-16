@@ -163,7 +163,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, o.stateParallelism)
 	done := 0
 	for _, d := range dirs {
 		sem <- struct{}{}

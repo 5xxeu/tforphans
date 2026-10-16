@@ -83,7 +83,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		return nil, err
 	}
 	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly,
-		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 }, ProviderConfigs: configs})
+		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 || o.namesFromTags && hasTags(schemas, t) }, ProviderConfigs: configs})
 	for _, sk := range plan.Skipped {
 		sk.Root = root
 		sum.Skipped = append(sum.Skipped, sk)
@@ -149,11 +149,15 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		f := &res.Found[i]
 		if f.Attributes == nil {
 			block, _, _ := strings.Cut(f.ListAddress, "[")
-			if _, generated := byAddress[block]; !generated && len(o.wantedAttrs(f.Type)) > 0 && !noAttrs[block] {
+			tags := o.namesFromTags && hasTags(schemas, f.Type)
+			if _, generated := byAddress[block]; !generated && (len(o.wantedAttrs(f.Type)) > 0 || tags) && !noAttrs[block] {
 				noAttrs[block] = true
-				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs or attr. ignore rules", root, block))
+				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs, attr. ignore rules or -names-from-tags", root, block))
 			}
 			continue
+		}
+		if o.namesFromTags {
+			f.TagName = nameTag(f.Attributes)
 		}
 		f.Attributes = keepAttrs(f.Attributes, o.wantedAttrs(f.Type))
 	}
@@ -357,4 +361,25 @@ func printQueryFiles(w io.Writer, root string, plan tf.Plan, limit int) {
 			fmt.Fprintf(w, "\n# file %s\n%s", f.name, f.text)
 		}
 	}
+}
+
+// hasTags reports whether some provider's schema of the type has a tags
+// attribute (AWS, Azure): only those types are fetched whole for
+// -names-from-tags.
+func hasTags(s *tf.Schemas, typ string) bool {
+	for _, ps := range s.ProviderSchemas {
+		if rs, ok := ps.ResourceSchemas[typ]; ok {
+			if _, ok := rs.Block.Attributes["tags"]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nameTag is the Name tag of a listed object, "" when it has none.
+func nameTag(attrs map[string]any) string {
+	tags, _ := attrs["tags"].(map[string]any)
+	name, _ := tags["Name"].(string)
+	return strings.TrimSpace(name)
 }

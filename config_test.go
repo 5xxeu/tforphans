@@ -28,6 +28,8 @@ exclude-types: [cloudflare_api_token, cloudflare_account_member]
 strict: true
 format: summary
 limit: 5
+names-from-tags: true
+state-parallelism: 4
 `
 	if err := os.WriteFile(defaultConfigFile, []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
@@ -51,8 +53,12 @@ limit: 5
 	if o.format != "json" || o.strict || !slices.Equal(o.roots, []string{"other"}) || o.exclude.Match("cloudflare_api_token") || !o.exclude.Match("x_y") {
 		t.Errorf("command line over the file: %+v", o)
 	}
-	// adopt has no -format: the shared file still works.
-	if o, err := parseFlags([]string{"adopt"}, io.Discard); err != nil || !o.adopt || !o.strict {
+	// adopt has no -format, and only adopt has -names-from-tags: the
+	// shared file still works for both.
+	if o.namesFromTags || o.stateParallelism != 4 {
+		t.Errorf("mode keys: %+v", o)
+	}
+	if o, err := parseFlags([]string{"adopt"}, io.Discard); err != nil || !o.adopt || !o.strict || !o.namesFromTags {
 		t.Errorf("adopt with the file: %+v, %v", o, err)
 	}
 	if o, err := parseFlags([]string{"-no-config"}, io.Discard); err != nil || o.strict || len(o.scans) > 0 || o.configFile != "" {

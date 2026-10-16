@@ -763,6 +763,9 @@ func resourceName(r model.Resource) string {
 	if r.BaseName != "" {
 		base = r.BaseName
 	}
+	if r.TagName != "" {
+		base = r.TagName
+	}
 	n := identName(base)
 	if n == "" {
 		// A name in another script (Cyrillic VM names) leaves nothing.

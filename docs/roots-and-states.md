@@ -34,7 +34,8 @@ tforphans infra/aws/prod -state-roots ~/work/infra -state-roots ~/work/platform
 and hidden, `vendor` and `testdata` directories are skipped) and reads the state of each of its
 workspaces with `terraform state pull`. Terraform does the reading, so any
 backend works: S3, GCS, azurerm, GitLab/http, HCP Terraform. Up to 8 roots
-are read in parallel. A root that is not initialized, or whose state cannot
+are read in parallel; `-state-parallelism N` (1 to 64) changes that, for
+example to stay under a backend's request rate limit. A root that is not initialized, or whose state cannot
 be read, is reported as a warning (an error with `-strict`), because its
 resources may then show up as unmanaged; the last line names each unread
 root with the line of the error that says why, and so does

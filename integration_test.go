@@ -64,6 +64,10 @@ resource "fake_thing" "a" {
 	if left, _ := filepath.Glob("*.tfquery.hcl"); len(left) > 0 {
 		t.Errorf("query file left behind: %v", left)
 	}
+	// The fake provider tags each object "Tagged <name>".
+	if code, stdout, stderr := runTool("adopt", "-exclude-types", "fake_broken", "-names-from-tags"); code != exitOK || !strings.Contains(stdout, "to = fake_thing.tagged_orphan_1\n") || strings.Contains(stdout, "Tagged") {
+		t.Errorf("-names-from-tags: exit %d\n%s\n%s", code, stdout, stderr)
+	}
 
 	// -o writes a new file and never overwrites one.
 	write(t, "notes.txt", "keep")
@@ -522,6 +526,10 @@ list "fake_thing" "tfo_aliased" {
 	code, stdout, stderr := runTool("adopt")
 	if code != exitOK || !strings.Contains(stdout, "to = fake_thing.via_alias\n  provider = fake.second\n") {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	// The user's block returns no objects, so no Name tag: a note says why.
+	if _, _, tagErr := runTool("adopt", "-names-from-tags"); !strings.Contains(tagErr, "list.fake_thing.tfo_aliased has no include_resource = true") || !strings.Contains(tagErr, "-names-from-tags") {
+		t.Errorf("-names-from-tags with a user block:\n%s", tagErr)
 	}
 	write(t, "imports.tf", stdout)
 	terraform(t, root, "plan", "-generate-config-out=generated.tf", "-no-color")
