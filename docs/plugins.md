@@ -63,9 +63,10 @@ tforphans -no-query -state-roots junos/fw1 \
   -plugin 'python3 examples/plugins/junos.py --ssh admin@fw1' -plugin-cluster-states
 # or from a saved configuration: it holds secrets, so use a new private
 # file (mktemp creates it with mode 0600) and remove it on exit
-cfg=$(mktemp) && trap 'rm -f "$cfg"' EXIT
+# (the plugin command runs through sh -c, so pass the path in the environment)
+export cfg=$(mktemp) && trap 'rm -f "$cfg"' EXIT
 ssh admin@fw1 'show configuration | display json | no-more' > "$cfg"
-tforphans -no-query -state-roots junos/fw1 -plugin "python3 examples/plugins/junos.py $cfg"
+tforphans -no-query -state-roots junos/fw1 -plugin 'python3 examples/plugins/junos.py "$cfg"'
 ```
 
 Junos state does not record the device, so every object is `unverified`:
