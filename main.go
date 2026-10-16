@@ -940,6 +940,11 @@ func dedupe(rs []model.Resource) []model.Resource {
 			continue
 		}
 		kept := &out[seen[k][i]]
+		// A user block without include_resource may answer first: the
+		// copy with the object keeps its Name tag for the address.
+		if kept.TagName == "" {
+			kept.TagName = r.TagName
+		}
 		for a, v := range r.Attributes {
 			if kept.Attributes == nil {
 				kept.Attributes = map[string]any{}

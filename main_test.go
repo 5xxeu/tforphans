@@ -193,11 +193,11 @@ func TestPluginKeysAllRequired(t *testing.T) {
 
 func TestDedupeKeepsAttributes(t *testing.T) {
 	id := map[string]any{"id": "1"}
-	withAttrs := model.Resource{Type: "t", Identity: id, Attributes: map[string]any{"labels": map[string]any{"a": "b"}}}
+	withAttrs := model.Resource{Type: "t", Identity: id, Attributes: map[string]any{"labels": map[string]any{"a": "b"}}, TagName: "web"}
 	plain := model.Resource{Type: "t", Identity: id}
 	for _, order := range [][]model.Resource{{plain, withAttrs}, {withAttrs, plain}} {
 		got := dedupe(slices.Clone(order))
-		if len(got) != 1 || got[0].Attributes["labels"] == nil {
+		if len(got) != 1 || got[0].Attributes["labels"] == nil || got[0].TagName != "web" {
 			t.Errorf("got %+v", got)
 		}
 	}
