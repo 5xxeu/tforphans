@@ -477,3 +477,14 @@ func TestTypeStatusMixedRows(t *testing.T) {
 		t.Errorf("only skipped: %s", got)
 	}
 }
+
+func TestResourceNameTag(t *testing.T) {
+	r := model.Resource{Type: "aws_instance", DisplayName: "i-0abc", BaseName: "base", TagName: "Web Server 1", Identity: map[string]any{"id": "i-0abc"}}
+	if got := resourceName(r); got != "web_server_1" {
+		t.Errorf("%q", got)
+	}
+	r.TagName = ""
+	if got := resourceName(r); got != "base" {
+		t.Errorf("without tag: %q", got)
+	}
+}

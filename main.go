@@ -174,6 +174,10 @@ type options struct {
 	impliedNoQuery bool
 	// noDefaultPresets: report.DefaultPresets are not applied.
 	noDefaultPresets bool
+	// namesFromTags: adopt names resources after their Name tag.
+	namesFromTags bool
+	// stateParallelism is how many -state-roots are read at once.
+	stateParallelism int
 	strictOwnership  bool
 	strictAPI        bool
 	strictIgnore     glob.List // -strict-ignore
@@ -219,6 +223,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
+	fs.IntVar(&o.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
 	fs.Var((*sizeFlag)(&o.maxStateSize), "max-state-size", "maximum bytes per state, including state pull and refresh output; accepts K, M or G suffixes (powers of 1024)")
 	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
 	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are uncertain, since state does not record the cluster")
@@ -244,6 +249,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	if o.adopt {
 		fs.StringVar(&o.out, "o", "", "write the import blocks to this new file instead of stdout")
 		fs.BoolVar(&o.allowIncomplete, "allow-incomplete", false, "write import blocks even when a state could not be read (its objects would be imported a second time)")
+		fs.BoolVar(&o.namesFromTags, "names-from-tags", false, "name the resources after their Name tag where the type has tags (slower: terraform query returns whole objects for those types)")
 	} else {
 		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
 	}
@@ -320,6 +326,11 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		o.terraformBin = cwd + string(filepath.Separator) + o.terraformBin
 	}
 
+	// An upper bound too: a config file from the repository must not start
+	// thousands of terraform processes at once.
+	if o.stateParallelism < 1 || o.stateParallelism > 64 {
+		return nil, errors.New("-state-parallelism must be between 1 and 64")
+	}
 	if o.adopt && o.baselinePath != "" {
 		return nil, errors.New("-baseline is not supported with adopt")
 	}

@@ -85,6 +85,7 @@ type thing struct{ kind string }
 type thingModel struct {
 	ID   types.String `tfsdk:"id"`
 	Name types.String `tfsdk:"name"`
+	Tags types.Map    `tfsdk:"tags"`
 }
 
 type thingIdentity struct {
@@ -101,6 +102,7 @@ func (t *thing) Schema(_ context.Context, _ resource.SchemaRequest, resp *resour
 	resp.Schema = schema.Schema{Attributes: map[string]schema.Attribute{
 		"id":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 		"name": schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+		"tags": schema.MapAttribute{ElementType: types.StringType, Optional: true},
 	}}
 }
 
@@ -206,7 +208,10 @@ func (t *thing) List(ctx context.Context, req list.ListRequest, stream *list.Lis
 			r.DisplayName = n
 			r.Diagnostics.Append(r.Identity.Set(ctx, thingIdentity{ID: types.StringValue(n)})...)
 			if req.IncludeResource {
-				r.Diagnostics.Append(r.Resource.Set(ctx, thingModel{ID: types.StringValue(n), Name: types.StringValue(n)})...)
+				// A Name tag that differs from the display name, for
+				// adopt -names-from-tags.
+				tags := types.MapValueMust(types.StringType, map[string]attr.Value{"Name": types.StringValue("Tagged " + n)})
+				r.Diagnostics.Append(r.Resource.Set(ctx, thingModel{ID: types.StringValue(n), Name: types.StringValue(n), Tags: tags})...)
 			}
 			if !push(r) {
 				return

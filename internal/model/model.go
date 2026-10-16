@@ -27,6 +27,9 @@ type Resource struct {
 	// to it ("web" for "web (pve1)"): import addresses and ignore rules by
 	// name use it.
 	BaseName string `json:"-"`
+	// TagName is the object's Name tag, read for adopt -names-from-tags:
+	// it names the import address before BaseName and DisplayName.
+	TagName string `json:"-"`
 	// ScopeName says for people where the object lives: "zone example.com",
 	// "project my-project".
 	ScopeName string `json:"scope,omitempty"`

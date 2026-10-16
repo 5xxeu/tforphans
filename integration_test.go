@@ -64,6 +64,10 @@ resource "fake_thing" "a" {
 	if left, _ := filepath.Glob("*.tfquery.hcl"); len(left) > 0 {
 		t.Errorf("query file left behind: %v", left)
 	}
+	// The fake provider tags each object "Tagged <name>".
+	if code, stdout, stderr := runTool("adopt", "-exclude-types", "fake_broken", "-names-from-tags"); code != exitOK || !strings.Contains(stdout, "to = fake_thing.tagged_orphan_1\n") || strings.Contains(stdout, "Tagged") {
+		t.Errorf("-names-from-tags: exit %d\n%s\n%s", code, stdout, stderr)
+	}
 
 	// -o writes a new file and never overwrites one.
 	write(t, "notes.txt", "keep")
