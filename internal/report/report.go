@@ -203,7 +203,7 @@ type UnreadState struct {
 // Errors of several workspaces ("workspace NAME: ...") are shortened one by
 // one and keep their names.
 func NewUnreadState(root string, err error) UnreadState {
-	var parts []string
+	var parts, hints []string
 	ws, first, found := "", "", false
 	flush := func() {
 		if !found && first != "" && !slices.Contains(parts, first) {
@@ -211,7 +211,15 @@ func NewUnreadState(root string, err error) UnreadState {
 		}
 	}
 	for _, l := range strings.Split(err.Error(), "\n") {
-		l = strings.TrimSpace(l)
+		l = errorLine(strings.TrimSpace(l))
+		// tforphans' own advice ("(a required_version rejects this
+		// terraform: ...)") comes after the error and is kept.
+		if strings.HasPrefix(l, "(") && strings.HasSuffix(l, ")") {
+			if !slices.Contains(hints, l) {
+				hints = append(hints, l)
+			}
+			continue
+		}
 		if name, ok := strings.CutPrefix(l, "workspace "); ok {
 			if n, _, ok := strings.Cut(name, ": "); ok {
 				flush()
@@ -228,7 +236,29 @@ func NewUnreadState(root string, err error) UnreadState {
 		}
 	}
 	flush()
-	return UnreadState{Root: root, Error: strings.Join(parts, "; ")}
+	return UnreadState{Root: root, Error: strings.Join(slices.Concat(parts, hints), "; ")}
+}
+
+var (
+	ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	// Terragrunt prefixes its log lines with a time and a level, and the
+	// lines it passes on from terraform with STDERR and the program name.
+	terragruntPrefix = regexp.MustCompile(`^(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?(ERROR|STDERR)\s+(?:\[[^\]]*\]\s+)?(?:(?:terraform|tofu):\s+)?`)
+)
+
+// errorLine turns a Terragrunt log line into the form terraform prints, so
+// that "ERROR  [unit] ..." counts as an error and not as noise.
+func errorLine(l string) string {
+	l = ansiEscape.ReplaceAllString(l, "")
+	m := terragruntPrefix.FindStringSubmatch(l)
+	if m == nil {
+		return l
+	}
+	rest := strings.TrimSpace(l[len(m[0]):])
+	if m[1] == "ERROR" && !strings.HasPrefix(rest, "Error: ") {
+		return "Error: " + rest
+	}
+	return rest
 }
 
 // Summary describes how complete the scan was.
@@ -458,9 +488,12 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 // typeStatus folds the coverage of each type over its scopes: incomplete
 // when one scope is.
 func typeStatus(cov []Coverage) map[string]string {
+	// A scope that was listed outweighs one skipped elsewhere; a gap
+	// outweighs both.
+	rank := map[string]int{Skipped: 1, Complete: 2, Incomplete: 3}
 	out := map[string]string{}
 	for _, c := range cov {
-		if out[c.Type] == "" || c.Status == Incomplete {
+		if rank[c.Status] > rank[out[c.Type]] {
 			out[c.Type] = c.Status
 		}
 	}

@@ -203,8 +203,9 @@ resource "fake_thing" "x" {
 	// A run killed with SIGKILL left its provider override behind: the next
 	// run removes it before reading the configuration and still works.
 	_, printed, _ := runTool("-print-query", "-types", "fake_thing")
-	override, _, _ := strings.Cut(strings.SplitN(printed, "\n", 2)[1], "list ")
-	if !strings.Contains(override, "required_providers") {
+	_, override, _ := strings.Cut(printed, "# file zz_tforphans_<pid>_override.tf\n")
+	override, _, _ = strings.Cut(override, "\n# file ")
+	if !strings.Contains(override, "required_providers") || !strings.Contains(printed, "# file zz_tforphans_<pid>.tfquery.hcl\n") {
 		t.Fatalf("no provider declaration in -print-query:\n%s", printed)
 	}
 	write(t, "zz_tforphans_99999999_override.tf", "# tforphans temporary file, run 99999999-test\n"+override)

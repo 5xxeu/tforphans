@@ -73,7 +73,7 @@ leaves them out on purpose. A provider with no provider block at all is queried
 ```sh
 tforphans -types 'aws_s3_*,aws_iam_*'
 tforphans -exclude-types 'aws_cloudwatch_log_*'
-tforphans -print-query      # show the generated .tfquery.hcl and exit
+tforphans -print-query      # show the temporary files (list blocks and helpers) and exit
 ```
 
 [Back to the README](../README.md) · [All guides](README.md)

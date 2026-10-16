@@ -256,7 +256,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
 	fs.BoolVar(&o.quiet, "quiet", false, "print no progress lines (by default printed on a terminal: roots read, roots queried, data source scans, -refresh)")
-	fs.BoolVar(&o.printQuery, "print-query", false, "print the generated .tfquery.hcl for each root and exit")
+	fs.BoolVar(&o.printQuery, "print-query", false, "print the temporary files a run would write into each root (provider override, auto data sources, list blocks), each under a \"# file\" header, and exit")
 	fs.BoolVar(&o.noQuery, "no-query", false, "do not run terraform query: read the roots' states and run plugins only")
 	fs.StringVar(&o.terraformBin, "terraform", "terraform", "terraform binary")
 	fs.StringVar(&o.configFile, "config", "", "read flags from this YAML file (keys are flag names, lists repeat a flag, roots lists root modules; the command line wins); default "+defaultConfigFile+" in the current directory, if present")
