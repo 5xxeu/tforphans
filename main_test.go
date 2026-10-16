@@ -606,15 +606,20 @@ func TestUnlistedTypesThroughPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"admin"},"provider_source":"hashicorp/vault"}'`
+	// Without provider_source (vault.sh) the plugin's types count for any
+	// provider, and so do alternative names.
+	anon := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"admin"},"alt_types":["vault_mount"]}' '{"type":"other_thing","identity":{"id":"x"},"provider_source":"hashicorp/vault"}'`
 	for _, c := range []struct {
-		args []string
-		want string
+		plugin string
+		args   []string
+		want   string
 	}{
-		{nil, "vault_mount (1)"},
-		{[]string{"-types", "vault_mount"}, "vault_mount (1)"},
-		{[]string{"-types", "vault_policy"}, ""},
+		{plugin, nil, "vault_mount (1)"},
+		{plugin, []string{"-types", "vault_mount"}, "vault_mount (1)"},
+		{plugin, []string{"-types", "vault_policy"}, ""},
+		{anon, nil, ""},
 	} {
-		args := append([]string{"-no-config", "-no-query", "-state", statePath, "-plugin", plugin}, c.args...)
+		args := append([]string{"-no-config", "-no-query", "-state", statePath, "-plugin", c.plugin}, c.args...)
 		var stdout, stderr bytes.Buffer
 		run(context.Background(), args, &stdout, &stderr)
 		got := stderr.String()

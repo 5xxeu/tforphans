@@ -809,14 +809,24 @@ type UnlistedType struct {
 }
 
 // AddListable records that the provider (any address form) was asked and
-// can list the types.
+// can list the types. An empty provider (a plugin result without
+// provider_source) lists the types for every provider family, as matching
+// treats it.
 func (s *Summary) AddListable(provider string, types ...string) {
-	family := model.ProviderFamily(provider)
 	if s.Listable == nil {
 		s.Listable, s.QueriedFamilies = map[[2]string]bool{}, map[string]bool{}
 	}
-	s.QueriedFamilies[family] = true
+	family := ""
+	if provider != "" {
+		family = model.ProviderFamily(provider)
+		s.QueriedFamilies[family] = true
+	}
 	for _, t := range types {
 		s.Listable[[2]string{t, family}] = true
 	}
+}
+
+// CanList reports whether the type was listable for the provider family.
+func (s *Summary) CanList(typ, family string) bool {
+	return s.Listable[[2]string{typ, family}] || s.Listable[[2]string{typ, ""}]
 }

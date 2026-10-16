@@ -639,9 +639,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		// Before -types and dedupe: the plugin was asked about its
 		// provider even if none of its results is kept.
 		for _, r := range found {
-			if r.ProviderSource != "" {
-				sum.AddListable(r.ProviderSource, r.Type)
-			}
+			sum.AddListable(r.ProviderSource, r.Type)
+			// Alternative names match state of another provider too.
+			sum.AddListable("", r.AltTypes...)
 		}
 		for i := range found {
 			found[i].Baseline = ""
@@ -950,7 +950,7 @@ var scopeKeys = []string{"project", "account_id", "subscription_id"}
 func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
 	var out []report.UnlistedType
 	for k, n := range counts {
-		if !sum.QueriedFamilies[k.Provider] || sum.Listable[[2]string{k.Type, k.Provider}] || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
+		if !sum.QueriedFamilies[k.Provider] || sum.CanList(k.Type, k.Provider) || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
 			continue
 		}
 		out = append(out, report.UnlistedType{Type: k.Type, Provider: k.Provider, Instances: n})
