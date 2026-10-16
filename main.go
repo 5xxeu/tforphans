@@ -598,6 +598,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, l := range res.Listings {
 			sum.AddListing(l)
 		}
+		// Asked even when nothing came back. Alternative names match state
+		// of another provider too (telmate for Proxmox).
+		sum.AddListable(a.Provider, res.Covered...)
+		sum.AddListable("", res.AltNames...)
 		sum.Failed = append(sum.Failed, res.Failed...)
 		sum.Queried += len(res.Listed)
 		sum.Ran += len(res.Listed)
@@ -633,6 +637,13 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		found, warns, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
 		if err != nil {
 			return err
+		}
+		// Before -types and dedupe: the plugin was asked about its
+		// provider even if none of its results is kept.
+		for _, r := range found {
+			sum.AddListable(r.ProviderSource, r.Type)
+			// Alternative names match state of another provider too.
+			sum.AddListable("", r.AltTypes...)
 		}
 		for i := range found {
 			found[i].Baseline = ""
@@ -768,6 +779,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
+	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum)
+	if n := len(sum.UnlistedTypes); n > 0 {
+		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
+	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
 	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
@@ -928,3 +943,37 @@ func dedupe(rs []model.Resource) []model.Resource {
 
 // scopeKeys are identity keys that tell which account a result came from.
 var scopeKeys = []string{"project", "account_id", "subscription_id"}
+
+// unlistedTypes are the types in the states whose provider was asked (its
+// schema read, a scan of it run, or results from a plugin, which declares
+// nothing up front: what it returned is what it lists) but which that
+// provider cannot list: tforphans never checks objects of them. Types left
+// out with -types or -exclude-types are the user's choice and not reported.
+func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
+	var out []report.UnlistedType
+	for k, n := range counts {
+		if !sum.QueriedFamilies[k.Provider] || sum.CanList(k.Type, k.Provider) || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
+			continue
+		}
+		out = append(out, report.UnlistedType{Type: k.Type, Provider: k.Provider, Instances: n})
+	}
+	slices.SortFunc(out, func(a, b report.UnlistedType) int {
+		if a.Instances != b.Instances {
+			return b.Instances - a.Instances
+		}
+		return strings.Compare(a.Type+"\x00"+a.Provider, b.Type+"\x00"+b.Provider)
+	})
+	return out
+}
+
+func unlistedNote(types []report.UnlistedType) string {
+	var names []string
+	for i, t := range types {
+		if i == 8 {
+			names = append(names, fmt.Sprintf("and %d more (-format json lists all)", len(types)-i))
+			break
+		}
+		names = append(names, fmt.Sprintf("%s (%d)", t.Type, t.Instances))
+	}
+	return fmt.Sprintf("%d resource types in the states cannot be listed by their provider, so objects of them are never checked: %s", len(types), strings.Join(names, ", "))
+}

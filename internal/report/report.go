@@ -299,6 +299,14 @@ type Summary struct {
 	StatesComplete    bool               `json:"states_complete"`
 	DiscoveryComplete bool               `json:"discovery_complete"`
 	Providers         []ProviderCoverage `json:"providers,omitempty"`
+	// UnlistedTypes are types in the states that their provider cannot
+	// list: objects of them are never checked.
+	UnlistedTypes []UnlistedType `json:"unlisted_types,omitempty"`
+	// Listable holds the types, with their provider family, that a provider
+	// schema read, a scan or a plugin can list; QueriedFamilies the provider
+	// families asked at all. See AddListable.
+	Listable        map[[2]string]bool `json:"-"`
+	QueriedFamilies map[string]bool    `json:"-"`
 	// Listings tie actual type listings to their source and provider family.
 	Listings []Listing `json:"listings,omitempty"`
 	// UnqueriedRoots are roots whose requested query could not start.
@@ -823,4 +831,35 @@ func hclValue(v any) string {
 
 func identName(s string) string {
 	return strings.Trim(nonIdent.ReplaceAllString(strings.ToLower(s), "_"), "_")
+}
+
+// UnlistedType is a resource type found in the states that no listing
+// covers, though its provider was queried.
+type UnlistedType struct {
+	Type      string `json:"type"`
+	Provider  string `json:"provider"`
+	Instances int    `json:"instances"`
+}
+
+// AddListable records that the provider (any address form) was asked and
+// can list the types. An empty provider (a plugin result without
+// provider_source) lists the types for every provider family, as matching
+// treats it.
+func (s *Summary) AddListable(provider string, types ...string) {
+	if s.Listable == nil {
+		s.Listable, s.QueriedFamilies = map[[2]string]bool{}, map[string]bool{}
+	}
+	family := ""
+	if provider != "" {
+		family = model.ProviderFamily(provider)
+		s.QueriedFamilies[family] = true
+	}
+	for _, t := range types {
+		s.Listable[[2]string{t, family}] = true
+	}
+}
+
+// CanList reports whether the type was listable for the provider family.
+func (s *Summary) CanList(typ, family string) bool {
+	return s.Listable[[2]string{typ, family}] || s.Listable[[2]string{typ, ""}]
 }

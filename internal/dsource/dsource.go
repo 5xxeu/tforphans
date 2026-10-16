@@ -181,6 +181,8 @@ type Result struct {
 	Resources []model.Resource
 	Listings  []report.Listing // listing instances with their configuration evidence
 	Listed    []string         // resource types listed
+	Covered   []string         // types the provider can list (planned, before scope and failures)
+	AltNames  []string         // alternative names of Covered types, which may belong to another provider (telmate for Proxmox)
 	Checks    []tf.Check       // listings read, by scope
 	Skipped   []tf.Skip        // resource types without a usable data source
 	Failed    []tf.Failure     // resource types whose data source failed
@@ -223,6 +225,16 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	splits := a.splits(sch)
 	p := buildPlan(sch, a, opt)
 	res := &Result{Skipped: p.skipped}
+	// What the provider can list, whatever the scope or the requests
+	// make of it: failures belong to coverage, not to this.
+	covered, alts := map[string]bool{}, map[string]bool{}
+	for _, l := range p.listings {
+		covered[l.resourceType] = true
+		for _, alt := range a.AltTypes[l.resourceType] {
+			alts[alt] = true
+		}
+	}
+	res.Covered, res.AltNames = slices.Sorted(maps.Keys(covered)), slices.Sorted(maps.Keys(alts))
 	if len(p.listings) == 0 {
 		return res, nil
 	}

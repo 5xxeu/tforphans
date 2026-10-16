@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/state"
@@ -538,6 +540,95 @@ func TestLoadIgnoreDefaults(t *testing.T) {
 		}
 		if ig.Match(sg) != c.sg || ig.Match(tmpl) != c.tmplHid {
 			t.Errorf("%v: default SG hidden %v, template hidden %v", c.args, ig.Match(sg), ig.Match(tmpl))
+		}
+	}
+}
+
+func TestUnlistedTypes(t *testing.T) {
+	counts := map[state.TypeKey]int{
+		{Type: "aws_instance", Provider: "hashicorp/aws"}:                   3,
+		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws"}: 12,
+		{Type: "aws_excluded_thing", Provider: "hashicorp/aws"}:             9,
+		{Type: "google_project", Provider: "hashicorp/google"}:              1,
+		{Type: "cloudflare_record", Provider: "cloudflare/cloudflare"}:      4,
+		{Type: "cloudflare_page_rule", Provider: "cloudflare/cloudflare"}:   2,
+		{Type: "acme_thing", Provider: "acme/acme"}:                         6,
+		{Type: "acme_thing", Provider: "other/acme"}:                        7,
+		{Type: "vault_policy", Provider: "hashicorp/vault"}:                 5,
+		{Type: "vault_mount", Provider: "hashicorp/vault"}:                  1,
+	}
+	var sum report.Summary
+	sum.AddListable("registry.terraform.io/hashicorp/aws", "aws_instance")
+	// A scan that found nothing still asked its provider; the old name
+	// cloudflare_record is covered through AltTypes, as is telmate's
+	// proxmox_vm_qemu by the bpg scan while telmate's schema was read.
+	sum.AddListable("cloudflare/cloudflare", "cloudflare_dns_record")
+	sum.AddListable("bpg/proxmox", "proxmox_virtual_environment_vm")
+	sum.AddListable("", "cloudflare_record", "proxmox_vm_qemu")
+	sum.AddListable("registry.terraform.io/telmate/proxmox")
+	// The same type name: only acme/acme can list it.
+	sum.AddListable("registry.terraform.io/acme/acme", "acme_thing")
+	sum.AddListable("registry.terraform.io/other/acme")
+	// A plugin returned vault_policy objects.
+	sum.AddListable("hashicorp/vault", "vault_policy")
+	o := &options{exclude: glob.CompileList([]string{"aws_excluded_*"})}
+	got := unlistedTypes(o, counts, sum)
+	want := []report.UnlistedType{
+		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws", Instances: 12},
+		{Type: "acme_thing", Provider: "other/acme", Instances: 7},
+		{Type: "cloudflare_page_rule", Provider: "cloudflare/cloudflare", Instances: 2},
+		{Type: "vault_mount", Provider: "hashicorp/vault", Instances: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v", got)
+	}
+	// -types narrows the run: other types are the user's choice.
+	o = &options{include: glob.CompileList([]string{"cloudflare_*"})}
+	if got := unlistedTypes(o, counts, sum); len(got) != 1 || got[0].Type != "cloudflare_page_rule" {
+		t.Errorf("with -types: %+v", got)
+	}
+	var many []report.UnlistedType
+	for i := range 10 {
+		many = append(many, report.UnlistedType{Type: fmt.Sprintf("t%d", i), Instances: 1})
+	}
+	if note := unlistedNote(many); !strings.Contains(note, "10 resource types") || !strings.Contains(note, "and 2 more") {
+		t.Errorf("%s", note)
+	}
+}
+
+// TestUnlistedTypesThroughPlugin: a plugin's provider counts as asked even
+// when -types drops all of its results.
+func TestUnlistedTypesThroughPlugin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	statePath := filepath.Join(t.TempDir(), "s.tfstate")
+	st := `{"version":4,"lineage":"l","serial":1,"resources":[
+		{"mode":"managed","type":"vault_mount","name":"m","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"attributes":{"id":"kv"}}]},
+		{"mode":"managed","type":"vault_policy","name":"p","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"attributes":{"id":"admin"}}]}]}`
+	if err := os.WriteFile(statePath, []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"admin"},"provider_source":"hashicorp/vault"}'`
+	// Without provider_source (vault.sh) the plugin's types count for any
+	// provider, and so do alternative names.
+	anon := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"admin"},"alt_types":["vault_mount"]}' '{"type":"other_thing","identity":{"id":"x"},"provider_source":"hashicorp/vault"}'`
+	for _, c := range []struct {
+		plugin string
+		args   []string
+		want   string
+	}{
+		{plugin, nil, "vault_mount (1)"},
+		{plugin, []string{"-types", "vault_mount"}, "vault_mount (1)"},
+		{plugin, []string{"-types", "vault_policy"}, ""},
+		{anon, nil, ""},
+	} {
+		args := append([]string{"-no-config", "-no-query", "-state", statePath, "-plugin", c.plugin}, c.args...)
+		var stdout, stderr bytes.Buffer
+		run(context.Background(), args, &stdout, &stderr)
+		got := stderr.String()
+		if c.want == "" && strings.Contains(got, "cannot be listed") || c.want != "" && !strings.Contains(got, "1 resource types in the states cannot be listed by their provider, so objects of them are never checked: "+c.want) {
+			t.Errorf("%v:\n%s", c.args, got)
 		}
 	}
 }
