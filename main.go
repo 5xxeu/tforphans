@@ -636,6 +636,13 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		// Before -types and dedupe: the plugin was asked about its
+		// provider even if none of its results is kept.
+		for _, r := range found {
+			if r.ProviderSource != "" {
+				sum.AddListable(r.ProviderSource, r.Type)
+			}
+		}
 		for i := range found {
 			found[i].Baseline = ""
 			if found[i].Scope != nil {
@@ -770,7 +777,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
-	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum, live)
+	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum)
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
 	}
@@ -936,16 +943,11 @@ func dedupe(rs []model.Resource) []model.Resource {
 var scopeKeys = []string{"project", "account_id", "subscription_id"}
 
 // unlistedTypes are the types in the states whose provider was asked (its
-// schema read, a scan of it run, or results from a plugin) but which that
+// schema read, a scan of it run, or results from a plugin, which declares
+// nothing up front: what it returned is what it lists) but which that
 // provider cannot list: tforphans never checks objects of them. Types left
 // out with -types or -exclude-types are the user's choice and not reported.
-func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary, live []model.Resource) []report.UnlistedType {
-	// Plugins declare nothing up front: what they returned is what they list.
-	for _, r := range live {
-		if r.ProviderSource != "" {
-			sum.AddListable(r.ProviderSource, r.Type)
-		}
-	}
+func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
 	var out []report.UnlistedType
 	for k, n := range counts {
 		if !sum.QueriedFamilies[k.Provider] || sum.Listable[[2]string{k.Type, k.Provider}] || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {

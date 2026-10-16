@@ -566,9 +566,9 @@ func TestUnlistedTypes(t *testing.T) {
 	sum.AddListable("registry.terraform.io/acme/acme", "acme_thing")
 	sum.AddListable("registry.terraform.io/other/acme")
 	// A plugin returned vault_policy objects.
-	live := []model.Resource{{Type: "vault_policy", ProviderSource: "hashicorp/vault"}}
+	sum.AddListable("hashicorp/vault", "vault_policy")
 	o := &options{exclude: glob.CompileList([]string{"aws_excluded_*"})}
-	got := unlistedTypes(o, counts, sum, live)
+	got := unlistedTypes(o, counts, sum)
 	want := []report.UnlistedType{
 		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws", Instances: 12},
 		{Type: "acme_thing", Provider: "other/acme", Instances: 7},
@@ -580,7 +580,7 @@ func TestUnlistedTypes(t *testing.T) {
 	}
 	// -types narrows the run: other types are the user's choice.
 	o = &options{include: glob.CompileList([]string{"cloudflare_*"})}
-	if got := unlistedTypes(o, counts, sum, live); len(got) != 1 || got[0].Type != "cloudflare_page_rule" {
+	if got := unlistedTypes(o, counts, sum); len(got) != 1 || got[0].Type != "cloudflare_page_rule" {
 		t.Errorf("with -types: %+v", got)
 	}
 	var many []report.UnlistedType
@@ -589,5 +589,37 @@ func TestUnlistedTypes(t *testing.T) {
 	}
 	if note := unlistedNote(many); !strings.Contains(note, "10 resource types") || !strings.Contains(note, "and 2 more") {
 		t.Errorf("%s", note)
+	}
+}
+
+// TestUnlistedTypesThroughPlugin: a plugin's provider counts as asked even
+// when -types drops all of its results.
+func TestUnlistedTypesThroughPlugin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	statePath := filepath.Join(t.TempDir(), "s.tfstate")
+	st := `{"version":4,"lineage":"l","serial":1,"resources":[
+		{"mode":"managed","type":"vault_mount","name":"m","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"attributes":{"id":"kv"}}]},
+		{"mode":"managed","type":"vault_policy","name":"p","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"attributes":{"id":"admin"}}]}]}`
+	if err := os.WriteFile(statePath, []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"admin"},"provider_source":"hashicorp/vault"}'`
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "vault_mount (1)"},
+		{[]string{"-types", "vault_mount"}, "vault_mount (1)"},
+		{[]string{"-types", "vault_policy"}, ""},
+	} {
+		args := append([]string{"-no-config", "-no-query", "-state", statePath, "-plugin", plugin}, c.args...)
+		var stdout, stderr bytes.Buffer
+		run(context.Background(), args, &stdout, &stderr)
+		got := stderr.String()
+		if c.want == "" && strings.Contains(got, "cannot be listed") || c.want != "" && !strings.Contains(got, "1 resource types in the states cannot be listed by their provider, so objects of them are never checked: "+c.want) {
+			t.Errorf("%v:\n%s", c.args, got)
+		}
 	}
 }
