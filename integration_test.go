@@ -527,6 +527,10 @@ list "fake_thing" "tfo_aliased" {
 	if code != exitOK || !strings.Contains(stdout, "to = fake_thing.via_alias\n  provider = fake.second\n") {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
+	// The user's block returns no objects, so no Name tag: a note says why.
+	if _, _, tagErr := runTool("adopt", "-names-from-tags"); !strings.Contains(tagErr, "list.fake_thing.tfo_aliased has no include_resource = true") || !strings.Contains(tagErr, "-names-from-tags") {
+		t.Errorf("-names-from-tags with a user block:\n%s", tagErr)
+	}
 	write(t, "imports.tf", stdout)
 	terraform(t, root, "plan", "-generate-config-out=generated.tf", "-no-color")
 

@@ -149,9 +149,10 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		f := &res.Found[i]
 		if f.Attributes == nil {
 			block, _, _ := strings.Cut(f.ListAddress, "[")
-			if _, generated := byAddress[block]; !generated && len(o.wantedAttrs(f.Type)) > 0 && !noAttrs[block] {
+			tags := o.namesFromTags && hasTags(schemas, f.Type)
+			if _, generated := byAddress[block]; !generated && (len(o.wantedAttrs(f.Type)) > 0 || tags) && !noAttrs[block] {
 				noAttrs[block] = true
-				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs or attr. ignore rules", root, block))
+				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs, attr. ignore rules or -names-from-tags", root, block))
 			}
 			continue
 		}
