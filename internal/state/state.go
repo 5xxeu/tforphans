@@ -538,6 +538,9 @@ type Match struct {
 	// or account (Proxmox, plugins marked unverified).
 	Unconfirmed  []string
 	ScopeUnknown bool
+	// Unknown are the live object's keys that discovery left empty
+	// (project ""), so they cannot confirm anything either.
+	Unknown []string
 }
 
 // Rejection is a state instance that shares a key with a live object but
@@ -586,6 +589,9 @@ func (ix *Index) nearby(r model.Resource, limit int) []Rejection {
 		}
 		for _, k := range model.SortedKeys(as.Identity) {
 			v, ok := model.Scalar(as.Identity[k])
+			if !ok {
+				v, ok = model.Canonical(as.Identity[k])
+			}
 			if !ok || v == "" {
 				continue
 			}
@@ -672,6 +678,9 @@ func (ix *Index) match(r model.Resource, rejected func(in *Instance, why string)
 			}
 			m := Match{Address: in.Address, Managed: true, Verified: verified, ByIdentity: len(in.Identity) > 0,
 				Via: "attributes", Source: in.Source, Unconfirmed: missing, ScopeUnknown: scopeUnknown}
+			if !verified {
+				m.Unknown = unknownKeys(as)
+			}
 			if m.ByIdentity {
 				m.Via = "identity"
 			}
@@ -880,6 +889,19 @@ func compare(r model.Resource, in *Instance) (ok, verified bool, why string, mis
 	}
 	slices.Sort(missing)
 	return true, absent == 0, "", missing
+}
+
+// unknownKeys are the keys of r whose value discovery left empty where
+// empty means unknown (see emptyIsUnknown).
+func unknownKeys(r model.Resource) []string {
+	var out []string
+	for k, v := range r.Identity {
+		if s, ok := model.Canonical(v); ok && s == "" && emptyIsUnknown[k] {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // short bounds a value quoted in an explanation.

@@ -1194,6 +1194,8 @@ func explain(r model.Resource, m state.Match, rejected []state.Rejection, ofType
 		switch {
 		case m.ScopeUnknown:
 			e.Reason += "the state does not record the cluster or account (trust it with -proxmox-cluster-states or -plugin-cluster-states)"
+		case len(m.Unknown) > 0:
+			e.Reason += "the listing left " + strings.Join(m.Unknown, ", ") + " empty, so where the object lives is not known"
 		case len(m.Unconfirmed) > 0:
 			e.Reason += "the state does not hold " + strings.Join(m.Unconfirmed, ", ") + " to confirm where the object lives"
 		default:

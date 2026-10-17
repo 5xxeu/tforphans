@@ -709,8 +709,14 @@ func TestExplain(t *testing.T) {
 		{Type: "vault_policy", Address: "vault_policy.legacy", Provider: vault, Attributes: map[string]any{"id": "legacy", "name": "legacy"}},
 		{Type: "aws_instance", Address: "aws_instance.x", Identity: map[string]any{"id": "i-1"}},
 		{Type: "aws_instance", Address: "aws_instance.y", Identity: map[string]any{"id": "i-2", "zone": "z9"}},
+		{Type: "google_thing", Address: "google_thing.l", Identity: map[string]any{"ids": []any{"a"}, "region": "eu"}},
+		{Type: "google_thing", Address: "google_thing.p", Identity: map[string]any{"name": "n", "project": "p1"}},
 		{Type: "vault_policy", Address: "vault_policy.c", Provider: vault, Identity: map[string]any{"id": "c", "name": "n"}},
 	}}})
+	// discovery left the project empty: matched, but not where.
+	if m, _, _ := ix.Explain(model.Resource{Type: "google_thing", RequiredKeys: []string{"name"}, Identity: map[string]any{"name": "n", "project": ""}}, 3); !m.Managed || m.Verified || !slices.Equal(m.Unknown, []string{"project"}) {
+		t.Errorf("empty project: %+v", m)
+	}
 	for _, c := range []struct {
 		name     string
 		r        model.Resource
@@ -729,6 +735,7 @@ func TestExplain(t *testing.T) {
 		{"nothing close", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "zzz"}}, "", "", false, nil, 3},
 		{"alternative type", model.Resource{Type: "vault_mount", AltTypes: []string{"aws_instance"}, AltIdentity: map[string]map[string]any{"aws_instance": {"id": "i-1", "zone": "z"}}, Identity: map[string]any{"path": "kv"}}, "", "as aws_instance: its identity has no zone", false, nil, 2},
 		{"alternative type, no candidate", model.Resource{Type: "vault_mount", AltTypes: []string{"aws_instance"}, AltIdentity: map[string]map[string]any{"aws_instance": {"id": "i-new", "zone": "z9"}}, Identity: map[string]any{"path": "kv"}}, "", "as aws_instance: id is i-2 there, i-new here", false, nil, 2},
+		{"shared list value", model.Resource{Type: "google_thing", Identity: map[string]any{"ids": []any{"a"}, "region": "us"}}, "", "region is eu there, us here", false, nil, 2},
 		{"no instance of the type", model.Resource{Type: "vault_mount", Identity: map[string]any{"path": "kv"}}, "", "", false, nil, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
