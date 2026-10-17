@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
@@ -715,5 +716,57 @@ func TestStateParallelismBounds(t *testing.T) {
 	}
 	if _, err := parseFlags([]string{"-no-config", "-names-from-tags"}, io.Discard); err == nil {
 		t.Error("-names-from-tags accepted without adopt")
+	}
+}
+
+// TestFailedSourceKeepsReport: a plugin that fails or runs out of time does
+// not take the results of the others with it; the run exits 1 after the
+// report.
+func TestFailedSourceKeepsReport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	good := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"kept"}}'`
+	for _, c := range []struct {
+		name, bad string
+		args      []string
+		want      string
+	}{
+		{"fails", "exit 3", nil, "plugin2 failed"},
+		{"times out", "exec sleep 30", []string{"-source-timeout", "300ms"}, "gave up after 300ms (-source-timeout)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := append([]string{"-no-config", "-no-query", "-format", "json", "-plugin", good, "-plugin", c.bad}, c.args...)
+			var stdout, stderr bytes.Buffer
+			start := time.Now()
+			if code := run(context.Background(), args, &stdout, &stderr); code != exitError {
+				t.Fatalf("exit %d: %s", code, &stderr)
+			}
+			if time.Since(start) > 10*time.Second {
+				t.Errorf("took %s", time.Since(start))
+			}
+			var out struct {
+				Orphans []model.Resource `json:"orphans"`
+				Summary struct {
+					Complete      bool                  `json:"complete"`
+					FailedSources []report.FailedSource `json:"failed_sources"`
+				} `json:"summary"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+				t.Fatalf("%v: %s", err, &stdout)
+			}
+			if len(out.Orphans) != 1 || out.Orphans[0].Identity["id"] != "kept" || out.Summary.Complete ||
+				len(out.Summary.FailedSources) != 1 || out.Summary.FailedSources[0].Source != "plugin2" {
+				t.Errorf("report: %s", &stdout)
+			}
+			if !strings.Contains(stderr.String(), c.want) {
+				t.Errorf("stderr: %s", &stderr)
+			}
+		})
+	}
+	// -timeout stops the whole run.
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "exec sleep 30", "-timeout", "300ms"}, &stdout, &stderr); code != exitError || !strings.Contains(stderr.String(), "stopped after 300ms (-timeout)") {
+		t.Errorf("-timeout: exit %d: %s", code, &stderr)
 	}
 }

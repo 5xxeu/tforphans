@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/glob"
@@ -126,37 +127,40 @@ func (l listFlag) csv() []string {
 }
 
 type options struct {
-	roots         []string
-	stateRoots    listFlag
-	init          bool
-	currentWS     bool // read only the selected workspace of each root
-	anyVersion    bool // lift the roots' required_version
-	states        listFlag
-	maxStateSize  int64
-	plugins       listFlag
-	scans         []string
-	scanScope     map[string][]string // -scan-scope ARG=values
-	scopeState    bool                // -scan-scope state
-	refresh       bool
-	mu            sync.Mutex
-	stateNotes    []string // notes of state reading, from several goroutines
-	args          []tf.Arg
-	include       glob.List
-	exclude       glob.List
-	limit         int
-	format        string
-	adopt         bool   // "adopt" subcommand: write import blocks
-	out           string // adopt: output file, empty for stdout
-	baselinePath  string
-	ignorePath    string
-	presets       []string
-	includeAttrs  []string
-	ignore        *report.Ignore // loaded in execute
-	strict        bool
-	verbose       bool
-	printQuery    bool
-	noQuery       bool
-	allowUnpinned bool
+	roots        []string
+	stateRoots   listFlag
+	init         bool
+	currentWS    bool // read only the selected workspace of each root
+	anyVersion   bool // lift the roots' required_version
+	states       listFlag
+	maxStateSize int64
+	maxQuerySize int64
+	// timeout bounds the whole run, sourceTimeout each root, scan and plugin.
+	timeout, sourceTimeout time.Duration
+	plugins                listFlag
+	scans                  []string
+	scanScope              map[string][]string // -scan-scope ARG=values
+	scopeState             bool                // -scan-scope state
+	refresh                bool
+	mu                     sync.Mutex
+	stateNotes             []string // notes of state reading, from several goroutines
+	args                   []tf.Arg
+	include                glob.List
+	exclude                glob.List
+	limit                  int
+	format                 string
+	adopt                  bool   // "adopt" subcommand: write import blocks
+	out                    string // adopt: output file, empty for stdout
+	baselinePath           string
+	ignorePath             string
+	presets                []string
+	includeAttrs           []string
+	ignore                 *report.Ignore // loaded in execute
+	strict                 bool
+	verbose                bool
+	printQuery             bool
+	noQuery                bool
+	allowUnpinned          bool
 	// adopt: write import blocks although a state could not be read.
 	allowIncomplete bool
 	allowHTTP       bool
@@ -208,7 +212,7 @@ func main() {
 }
 
 func parseFlags(argv []string, stderr io.Writer) (*options, error) {
-	o := &options{maxStateSize: state.DefaultMaxSize}
+	o := &options{maxStateSize: state.DefaultMaxSize, maxQuerySize: tf.DefaultMaxQuerySize}
 	name, help := "tforphans", usage
 	// A root module directory named "adopt" can be passed as ./adopt.
 	if len(argv) > 0 && argv[0] == "adopt" {
@@ -224,6 +228,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.IntVar(&o.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
+	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
+	fs.DurationVar(&o.sourceTimeout, "source-timeout", 0, "give up on one root, -scan or plugin after this long and go on with the others, e.g. 10m (0: no limit)")
+	fs.Var((*sizeFlag)(&o.maxQuerySize), "max-query-size", "maximum bytes of one terraform query's output, read as it comes; accepts K, M or G suffixes")
 	fs.Var((*sizeFlag)(&o.maxStateSize), "max-state-size", "maximum bytes per state, including state pull and refresh output; accepts K, M or G suffixes (powers of 1024)")
 	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
 	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are uncertain, since state does not record the cluster")
@@ -441,7 +448,15 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 			o.steps = stderr
 		}
 	}
+	if o.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.timeout)
+		defer cancel()
+	}
 	if err := execute(ctx, o, stdout, stderr); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil {
+			err = fmt.Errorf("stopped after %s (-timeout)", o.timeout)
+		}
 		var code exitCode
 		if errors.As(err, &code) {
 			return int(code)
@@ -541,9 +556,23 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if !o.noQuery && !o.printQuery {
 			o.stepf("querying %s (%d/%d)", root, i+1, len(o.roots))
 		}
-		found, err := scanRoot(ctx, o, root, idx, &sum, stdout)
+		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
+			return scanRoot(ctx, o, root, idx, &sum, stdout)
+		})
 		if err != nil {
-			return fmt.Errorf("%s: %w", root, err)
+			if ctx.Err() != nil || o.printQuery {
+				return fmt.Errorf("%s: %w", root, err)
+			}
+			// The others still run. When the failure came before the state
+			// was read, its objects would show as unmanaged (and adopt
+			// would import them again): the state counts as unread.
+			sum.FailSource(root, err)
+			var qe queryError
+			if !errors.As(err, &qe) {
+				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
+			}
+			sum.UnqueriedRoots = append(sum.UnqueriedRoots, root)
+			continue
 		}
 		live = append(live, found...)
 	}
@@ -594,17 +623,23 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			}
 		}
 		o.stepf("-scan %s: reading its data sources", name)
-		res, err := dsource.Run(ctx, a, dsource.Options{
-			TerraformBin:  o.terraformBin,
-			VersionRoot:   versionRoot,
-			Include:       o.include,
-			Exclude:       o.exclude,
-			AllowUnpinned: o.allowUnpinned,
-			Progress:      progress,
-			Scope:         scope,
+		res, err := withSource(ctx, o, func(ctx context.Context) (*dsource.Result, error) {
+			return dsource.Run(ctx, a, dsource.Options{
+				TerraformBin:  o.terraformBin,
+				VersionRoot:   versionRoot,
+				Include:       o.include,
+				Exclude:       o.exclude,
+				AllowUnpinned: o.allowUnpinned,
+				Progress:      progress,
+				Scope:         scope,
+			})
 		})
 		if err != nil {
-			return err
+			if ctx.Err() != nil {
+				return err
+			}
+			sum.FailSource("-scan "+name, err)
+			continue
 		}
 		for _, l := range res.Listings {
 			sum.AddListing(l)
@@ -645,9 +680,18 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	sum.SortListings()
 	for i, p := range o.plugins {
-		found, warns, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
+		var warns []error
+		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
+			found, w, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
+			warns = w
+			return found, err
+		})
 		if err != nil {
-			return err
+			if ctx.Err() != nil {
+				return err
+			}
+			sum.FailSource(fmt.Sprintf("plugin%d", i+1), err)
+			continue
 		}
 		// Before -types and dedupe: the plugin was asked about its
 		// provider even if none of its results is kept.
@@ -907,6 +951,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 
 	switch {
+	case len(sum.FailedSources) > 0:
+		return exitCode(exitError)
 	case o.strictOwnership && (sum.DuplicateOwnership > 0 || sum.DuplicateInState > 0):
 		return exitCode(exitError)
 	case o.strict && (!sum.Complete || sum.Uncertain > 0):
@@ -1030,4 +1076,19 @@ func unlistedNote(types []report.UnlistedType) string {
 		names = append(names, fmt.Sprintf("%s (%d)", t.Type, t.Instances))
 	}
 	return fmt.Sprintf("%d resource types in the states cannot be listed by their provider, so objects of them are never checked: %s", len(types), strings.Join(names, ", "))
+}
+
+// withSource runs one root, scan or plugin under -source-timeout and says
+// so when that ran out.
+func withSource[T any](ctx context.Context, o *options, f func(context.Context) (T, error)) (T, error) {
+	if o.sourceTimeout <= 0 {
+		return f(ctx)
+	}
+	srcCtx, cancel := context.WithTimeout(ctx, o.sourceTimeout)
+	defer cancel()
+	v, err := f(srcCtx)
+	if err != nil && ctx.Err() == nil && srcCtx.Err() != nil {
+		err = fmt.Errorf("gave up after %s (-source-timeout)", o.sourceTimeout)
+	}
+	return v, err
 }

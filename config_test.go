@@ -275,3 +275,23 @@ func TestConfigTerragruntUnit(t *testing.T) {
 		t.Error("a path outside the current directory was accepted")
 	}
 }
+
+func TestConfigMaxQuerySize(t *testing.T) {
+	t.Chdir(t.TempDir())
+	write := func(v string) {
+		if err := os.WriteFile(defaultConfigFile, []byte("max-query-size: "+v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("256M")
+	if o, err := parseFlags(nil, io.Discard); err != nil || o.maxQuerySize != 256<<20 {
+		t.Errorf("lower in an automatic file: %+v, %v", o, err)
+	}
+	write("2G")
+	if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "max-query-size") {
+		t.Errorf("higher in an automatic file: %v", err)
+	}
+	if o, err := parseFlags([]string{"-config", defaultConfigFile}, io.Discard); err != nil || o.maxQuerySize != 2<<30 {
+		t.Errorf("higher with -config: %+v, %v", o, err)
+	}
+}

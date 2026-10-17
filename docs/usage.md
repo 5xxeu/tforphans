@@ -28,6 +28,21 @@ case-insensitive), for example `-max-state-size 512M` or
 a larger value is an error even when overridden on the command line. To
 raise the limit, pass it on the command line or via `-config FILE`.
 
+`terraform query` output is read as it comes, and attributes not asked for
+are dropped from each object right away. `-max-query-size` (1 GiB by
+default, same rules for config files) bounds the output of one query, and
+one query may return at most 1,000,000 objects. `-timeout 30m` stops the
+whole run; `-source-timeout 10m` gives up on one root, `-scan` or plugin
+and goes on with the others.
+
+When one root, `-scan` or plugin fails as a whole (a query over the limit,
+a plugin that exits with an error or runs out of time), the run goes on with
+the others and prints its report with the failure in
+`summary.failed_sources` (and as a warning); coverage is incomplete and the
+exit status is `1`. A root that failed before its state was read is also an
+unread state, so `adopt` refuses to write import blocks unless
+`-allow-incomplete` is given. Cancelling with Ctrl-C still stops at once.
+
 Exit status: `0` nothing found, `2` unmanaged resources found, `1` error.
 Without `-strict` the status speaks of findings only: a run with incomplete
 coverage and nothing found exits `0`, so check `coverage:` (or

@@ -40,6 +40,8 @@ type Runner struct {
 	AnyVersion bool
 	// MaxStateSize bounds state pull and refresh output; zero uses the default.
 	MaxStateSize int64
+	// MaxQuerySize bounds terraform query output; zero uses the default.
+	MaxQuerySize int64
 }
 
 // versionOverride relaxes required_version; override files replace the
@@ -67,21 +69,69 @@ func (r Runner) stateSize() int64 {
 }
 
 func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) ([]byte, []byte, error) {
+	if maxSize == 0 {
+		cmd, stderr, cleanup, err := r.command(ctx, args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer cleanup()
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		err = cmd.Run()
+		return stdout.Bytes(), stderr.Bytes(), err
+	}
+	var out []byte
+	stderr, err := r.stream(ctx, func(pipe io.Reader) error {
+		data, readErr := state.ReadLimited(pipe, maxSize)
+		if readErr == nil {
+			out = data
+		}
+		return readErr
+	}, args...)
+	return out, stderr, err
+}
+
+// stream runs terraform and hands its stdout to consume while it runs
+// (proc.Stream: the process is stopped when consume fails).
+func (r Runner) stream(ctx context.Context, consume func(io.Reader) error, args ...string) ([]byte, error) {
+	cmd, stderr, cleanup, err := r.command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	err = proc.Stream(ctx, cmd, consume)
+	if ctx.Err() != nil {
+		return stderr.Bytes(), ctx.Err()
+	}
+	return stderr.Bytes(), err
+}
+
+// command prepares terraform with args: environment, process group, the
+// required_version override; cleanup removes what it wrote.
+func (r Runner) command(ctx context.Context, args ...string) (*exec.Cmd, *proc.StderrBuffer, func(), error) {
+	var files []string
+	runCtx, cancel := context.WithCancel(ctx)
+	cleanup := func() {
+		cancel()
+		for _, f := range files {
+			os.Remove(f)
+		}
+	}
 	if r.AnyVersion {
 		name := tempName(tempVersionSuffix)
 		// Override files apply in name order; one after ours could set
 		// required_version again.
 		if later := laterOverrides(r.Dir, name); len(later) > 0 {
-			return nil, nil, fmt.Errorf("-ignore-required-version: %s applies after tforphans' override file and may set required_version again; rename it or relax the constraint", strings.Join(later, ", "))
+			cancel()
+			return nil, nil, nil, fmt.Errorf("-ignore-required-version: %s applies after tforphans' override file and may set required_version again; rename it or relax the constraint", strings.Join(later, ", "))
 		}
 		path := filepath.Join(r.Dir, name)
 		if err := writeTemp(path, []byte(versionOverride)); err != nil {
-			return nil, nil, err
+			cancel()
+			return nil, nil, nil, err
 		}
-		defer os.Remove(path)
+		files = append(files, path)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	cmd := exec.CommandContext(runCtx, r.Bin, args...)
 	// A wrapper given with -terraform may run terraform as its child.
 	proc.Group(cmd)
@@ -91,26 +141,9 @@ func (r Runner) runLimited(ctx context.Context, maxSize int64, args ...string) (
 		cmd.Env = append(cmd.Env, "TF_WORKSPACE="+r.Workspace)
 	}
 	cmd.Env = append(cmd.Env, r.Env...)
-	var stdout bytes.Buffer
-	var stderr proc.StderrBuffer
-	cmd.Stderr = &stderr
-	if maxSize == 0 {
-		cmd.Stdout = &stdout
-		err := cmd.Run()
-		return stdout.Bytes(), stderr.Bytes(), err
-	}
-	var out []byte
-	err := proc.Stream(ctx, cmd, func(pipe io.Reader) error {
-		data, readErr := state.ReadLimited(pipe, maxSize)
-		if readErr == nil {
-			out = data
-		}
-		return readErr
-	})
-	if ctx.Err() != nil {
-		return nil, stderr.Bytes(), ctx.Err()
-	}
-	return out, stderr.Bytes(), err
+	stderr := &proc.StderrBuffer{}
+	cmd.Stderr = stderr
+	return cmd, stderr, cleanup, nil
 }
 
 // laterOverrides returns the override files of dir whose names sort after
