@@ -740,10 +740,18 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	scopes := slices.Clone(live) // every source's results, for -v
 	// Every listing that returned an object, also those whose copy dedupe
 	// drops: -baseline looks a finding up under its own listing.
+	// Keyed as dedupe's slots: with an unknown location, only the same
+	// listing is the same object.
+	originKey := func(r model.Resource) string {
+		if state.UnknownLocation(r.Identity) {
+			return r.Key() + "\x00" + r.Source + "\x00" + r.ListAddress
+		}
+		return r.Key()
+	}
 	origins := map[string][]model.Resource{}
 	if previous != nil {
 		for _, r := range scopes {
-			origins[r.Key()] = append(origins[r.Key()], r)
+			origins[originKey(r)] = append(origins[originKey(r)], r)
 		}
 	}
 	live = dedupe(live)
@@ -751,9 +759,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	var uncertain []report.Uncertain
 	var seen []report.Seen // live objects that are no orphans, for -baseline
 	addSeen := func(r model.Resource, status, address, rule string) {
-		for _, o := range origins[r.Key()] {
-			if !model.SameProvider(o.ProviderSource, r.ProviderSource) ||
-				state.UnknownLocation(r.Identity) && (o.Source != r.Source || o.ListAddress != r.ListAddress) {
+		for _, o := range origins[originKey(r)] {
+			if !model.SameProvider(o.ProviderSource, r.ProviderSource) {
 				continue
 			}
 			c := r
