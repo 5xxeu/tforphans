@@ -14,6 +14,7 @@ func FuzzParse(f *testing.F) {
 		`{"version":4,"resources":[{"mode":"managed","type":"x","name":"a","provider":"provider.x","instances":[{"index_key":"k","attributes":{"id":"1","list":[1,{"a":null}]},"sensitive_attributes":[[{"type":"get_attr","value":"id"}]]}]}]}`,
 		`{"version":4,"resources":[{"mode":"data","type":"x","name":"a","instances":[{}]},{"module":"module.m[0]","mode":"managed","type":"y","name":"b","instances":[{"identity":{"project":"","name":"n"}}]}]}`,
 		`{"prior_state":{"values":{"root_module":{"resources":[{"address":"x.a","mode":"managed","type":"x","provider_name":"registry.terraform.io/hashicorp/x","identity":{"id":"i"},"values":{"id":"i"},"sensitive_values":{"id":true}}],"child_modules":[{"address":"module.c","resources":[]}]}}}}`,
+		`{"version":4,"resources":[{"mode":"managed","type":"x","name":"a","instances":[{"attributes":{"id":"x"}}]},{"mode":"managed","type":"x","name":"b","instances":[{"identity":{"id":"x"},"attributes":{"id":"x"}}]}]}`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -35,8 +36,13 @@ func FuzzParse(f *testing.F) {
 				if !selfMatchable(in.Identity) {
 					continue
 				}
+				// On its own: in the shared index another instance (one
+				// without identity, matched by attributes) may come first.
+				own := NewIndex()
+				own.Add([]Instance{in})
 				r := model.Resource{Type: in.Type, ProviderSource: in.Provider, Identity: in.Identity}
-				if m := ix.Match(r); !m.Managed || !m.ByIdentity {
+				ix.Match(r)
+				if m := own.Match(r); !m.Managed || !m.ByIdentity {
 					t.Fatalf("%s does not manage its own identity %v: %+v", in.Address, in.Identity, m)
 				}
 			}
