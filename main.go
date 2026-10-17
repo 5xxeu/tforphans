@@ -509,7 +509,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	var previous *report.Snapshot
 	if o.baselinePath != "" {
 		var err error
-		previous, err = report.ReadSnapshot(o.baselinePath, state.DefaultMaxSize)
+		previous, err = report.ReadSnapshot(ctx, o.baselinePath, state.DefaultMaxSize)
 		if err != nil {
 			return fmt.Errorf("baseline: %w", err)
 		}
@@ -714,6 +714,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			sum.Warnings = append(sum.Warnings, w.Error())
 		}
 		live = append(live, found...)
+	}
+	// A source that ignored the cancel must not turn into a report that
+	// looks finished.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// -types and -exclude-types narrow every source, also the user's own

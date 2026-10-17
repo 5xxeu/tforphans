@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -182,15 +183,15 @@ func TestReadSnapshotErrors(t *testing.T) {
 			if err := os.WriteFile(path, []byte(c.data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadSnapshot(path, c.limit); err == nil || !strings.Contains(err.Error(), c.want) {
+			if _, err := ReadSnapshot(context.Background(), path, c.limit); err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("want %q: %v", c.want, err)
 			}
 		})
 	}
-	if _, err := ReadSnapshot("-", state.DefaultMaxSize); err == nil {
+	if _, err := ReadSnapshot(context.Background(), "-", state.DefaultMaxSize); err == nil {
 		t.Fatal("accepted stdin")
 	}
-	if _, err := ReadSnapshot(filepath.Join(t.TempDir(), "missing"), state.DefaultMaxSize); err == nil {
+	if _, err := ReadSnapshot(context.Background(), filepath.Join(t.TempDir(), "missing"), state.DefaultMaxSize); err == nil {
 		t.Fatal("accepted missing file")
 	}
 }
@@ -208,7 +209,7 @@ func TestSnapshotResourceRoundTrip(t *testing.T) {
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadSnapshot(path, state.DefaultMaxSize)
+	s, err := ReadSnapshot(context.Background(), path, state.DefaultMaxSize)
 	if err != nil {
 		t.Fatal(err)
 	}

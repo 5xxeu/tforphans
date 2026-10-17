@@ -205,7 +205,7 @@ esac
 	if err := os.WriteFile(path, []byte(stdout), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := report.ReadSnapshot(path, 1<<20)
+	snapshot, err := report.ReadSnapshot(context.Background(), path, 1<<20)
 	if err != nil || !reflect.DeepEqual(snapshot.Summary.Listings, doc.Summary.Listings) {
 		t.Fatalf("scan snapshot: %+v, %v", snapshot, err)
 	}
