@@ -36,6 +36,8 @@ type ignoreRule struct {
 	typ, name glob.Pattern
 	hasName   bool
 	conds     []ignoreCond
+	// origin is the file and line (or preset) of the rule, for -explain.
+	origin, text string
 }
 
 type ignoreCond struct {
@@ -58,10 +60,12 @@ func LoadIgnore(path string, optional bool) (*Ignore, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return ParseIgnore(f)
+	return parseIgnore(f, path)
 }
 
-func ParseIgnore(r io.Reader) (*Ignore, error) {
+func ParseIgnore(r io.Reader) (*Ignore, error) { return parseIgnore(r, "ignore") }
+
+func parseIgnore(r io.Reader, origin string) (*Ignore, error) {
 	ig := &Ignore{}
 	sc := bufio.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
@@ -88,7 +92,8 @@ func ParseIgnore(r io.Reader) (*Ignore, error) {
 			words = words[:len(words)-1]
 		}
 		typ, name, hasName := strings.Cut(strings.Join(words, " "), ":")
-		ig.rules = append(ig.rules, ignoreRule{typ: glob.Compile(strings.TrimSpace(typ)), name: glob.Compile(strings.TrimSpace(name)), hasName: hasName, conds: conds})
+		ig.rules = append(ig.rules, ignoreRule{typ: glob.Compile(strings.TrimSpace(typ)), name: glob.Compile(strings.TrimSpace(name)), hasName: hasName, conds: conds,
+			origin: fmt.Sprintf("%s:%d", origin, n), text: l})
 	}
 	return ig, sc.Err()
 }
@@ -117,7 +122,7 @@ func Preset(name string) (*Ignore, error) {
 	if err != nil || strings.ContainsAny(name, "/.") {
 		return nil, fmt.Errorf("unknown ignore preset %q (have %s)", name, strings.Join(Presets(), ", "))
 	}
-	return ParseIgnore(strings.NewReader(string(data)))
+	return parseIgnore(strings.NewReader(string(data)), "preset "+name)
 }
 
 // Merge adds the rules of other.
@@ -141,12 +146,19 @@ func (ig *Ignore) Attributes(typ string) []string {
 }
 
 func (ig *Ignore) Match(r model.Resource) bool {
+	_, ok := ig.Rule(r)
+	return ok
+}
+
+// Rule names the first rule that matches r: where it is written and its
+// text ("preset aws-system:3: aws_default_security_group").
+func (ig *Ignore) Rule(r model.Resource) (string, bool) {
 	for _, rule := range ig.rules {
 		if rule.typ.Match(r.Type) && rule.matchName(r) && rule.matchConds(r) {
-			return true
+			return rule.origin + ": " + rule.text, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func (rule ignoreRule) matchName(r model.Resource) bool {
@@ -268,7 +280,9 @@ type Summary struct {
 	PossibleDuplicateOwnership int               `json:"possible_duplicate_ownership"`
 	DuplicateInState           int               `json:"duplicate_in_state"`
 	Ownership                  []state.Duplicate `json:"-"`
-	InState                    []state.Duplicate `json:"-"`
+	// Explain is set with -explain: why each live object counts as it does.
+	Explain []Explanation     `json:"-"`
+	InState []state.Duplicate `json:"-"`
 	// UnreadStates are root modules whose state could not be read in full:
 	// their objects may show as unmanaged.
 	UnreadStates []UnreadState `json:"unread_states,omitempty"`
@@ -674,7 +688,38 @@ func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summar
 		DuplicateOwnership []state.Duplicate `json:"duplicate_ownership,omitempty"`
 		DuplicateInState   []state.Duplicate `json:"duplicate_in_state,omitempty"`
 		Baseline           *Baseline         `json:"baseline,omitempty"`
-	}{SchemaVersion, orphans, uncertain, s, s.Ownership, s.InState, b})
+		Explain            []Explanation     `json:"explain,omitempty"`
+	}{SchemaVersion, orphans, uncertain, s, s.Ownership, s.InState, b, s.Explain})
+}
+
+// Explanation says why a live object counts as managed, uncertain,
+// ignored or unmanaged (-explain).
+type Explanation struct {
+	Type         string         `json:"type"`
+	Identity     map[string]any `json:"identity"`
+	DisplayName  string         `json:"display_name"`
+	Scope        string         `json:"scope,omitempty"`
+	Source       string         `json:"source"`
+	Status       string         `json:"status"`
+	Reason       string         `json:"reason"`
+	StateAddress string         `json:"state_address,omitempty"`
+	StateSource  string         `json:"state_source,omitempty"`
+	Rule         string         `json:"rule,omitempty"`
+}
+
+// ExplainText prints one line per live object: its status and why.
+func ExplainText(w io.Writer, es []Explanation) error {
+	if len(es) == 0 {
+		return nil
+	}
+	fmt.Fprintln(w, "\nWhy (-explain):")
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "STATUS\tTYPE\tNAME\tIDENTITY\tWHY")
+	for _, e := range es {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Status, Clean(e.Type), Clean(e.DisplayName),
+			Clean((model.Resource{Identity: e.Identity}).IdentityString()), Clean(e.Reason))
+	}
+	return tw.Flush()
 }
 
 // SchemaVersion of the JSON output. It goes up when a field is removed or

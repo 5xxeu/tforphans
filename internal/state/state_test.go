@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -695,5 +696,63 @@ func TestReadContext(t *testing.T) {
 	// An empty path is an error to open, not a panic.
 	if _, err := Fetch(context.Background(), "", false, DefaultMaxSize); err == nil {
 		t.Error("empty path read")
+	}
+}
+
+// TestExplain: how a live object matched, and why the instances that came
+// close did not.
+func TestExplain(t *testing.T) {
+	ix := NewIndex()
+	vault := `registry.terraform.io/hashicorp/vault`
+	ix.AddSnapshots([]Snapshot{{Sources: []string{"infra (default)"}, Instances: []Instance{
+		{Type: "vault_policy", Address: "vault_policy.a", Provider: vault, Identity: map[string]any{"id": "a"}},
+		{Type: "vault_policy", Address: "vault_policy.legacy", Provider: vault, Attributes: map[string]any{"id": "legacy", "name": "legacy"}},
+		{Type: "aws_instance", Address: "aws_instance.x", Identity: map[string]any{"id": "i-1"}},
+		{Type: "aws_instance", Address: "aws_instance.y", Identity: map[string]any{"id": "i-2", "zone": "z9"}},
+		{Type: "google_thing", Address: "google_thing.l", Identity: map[string]any{"ids": []any{"a"}, "region": "eu"}},
+		{Type: "google_thing", Address: "google_thing.p", Identity: map[string]any{"name": "n", "project": "p1"}},
+		{Type: "vault_policy", Address: "vault_policy.c", Provider: vault, Identity: map[string]any{"id": "c", "name": "n"}},
+	}}})
+	// discovery left the project empty: matched, but not where.
+	if m, _, _ := ix.Explain(model.Resource{Type: "google_thing", RequiredKeys: []string{"name"}, Identity: map[string]any{"name": "n", "project": ""}}, 3); !m.Managed || m.Verified || !slices.Equal(m.Unknown, []string{"project"}) {
+		t.Errorf("empty project: %+v", m)
+	}
+	for _, c := range []struct {
+		name     string
+		r        model.Resource
+		via, why string
+		managed  bool
+		missing  []string
+		ofType   int
+	}{
+		{"identity", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "a"}}, "identity", "", true, nil, 3},
+		{"attributes", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "legacy"}}, "attributes", "", true, nil, 3},
+		{"unconfirmed key", model.Resource{Type: "aws_instance", RequiredKeys: []string{"id"}, Identity: map[string]any{"id": "i-1", "account_id": "1"}}, "identity", "", true, []string{"account_id"}, 2},
+		{"other provider", model.Resource{Type: "vault_policy", ProviderSource: "acme/vault", Identity: map[string]any{"id": "a"}}, "", "provider " + vault + ", not acme/vault", false, nil, 3},
+		{"conflict", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "legacy", "name": "x"}}, "", "its attribute name differs from x here", false, nil, 3},
+		{"missing required key", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "a", "namespace": "n"}}, "", "its identity has no namespace", false, nil, 3},
+		{"identity conflict", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "c", "name": "x"}}, "", "name is n there, x here", false, nil, 3},
+		{"nothing close", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "zzz"}}, "", "", false, nil, 3},
+		{"alternative type", model.Resource{Type: "vault_mount", AltTypes: []string{"aws_instance"}, AltIdentity: map[string]map[string]any{"aws_instance": {"id": "i-1", "zone": "z"}}, Identity: map[string]any{"path": "kv"}}, "", "as aws_instance: its identity has no zone", false, nil, 2},
+		{"alternative type, no candidate", model.Resource{Type: "vault_mount", AltTypes: []string{"aws_instance"}, AltIdentity: map[string]map[string]any{"aws_instance": {"id": "i-new", "zone": "z9"}}, Identity: map[string]any{"path": "kv"}}, "", "as aws_instance: id is i-2 there, i-new here", false, nil, 2},
+		{"shared list value", model.Resource{Type: "google_thing", Identity: map[string]any{"ids": []any{"a"}, "region": "us"}}, "", "region is eu there, us here", false, nil, 2},
+		{"no instance of the type", model.Resource{Type: "vault_mount", Identity: map[string]any{"path": "kv"}}, "", "", false, nil, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, rejected, n := ix.Explain(c.r, 3)
+			if m.Managed != c.managed || m.Via != c.via || n != c.ofType || !slices.Equal(m.Unconfirmed, c.missing) {
+				t.Fatalf("%+v, %d of the type", m, n)
+			}
+			if m.Managed && m.Source != "infra (default)" {
+				t.Errorf("source %q", m.Source)
+			}
+			if c.why == "" && len(rejected) > 0 || c.why != "" && (len(rejected) != 1 || rejected[0].Why != c.why || rejected[0].Source != "infra (default)") {
+				t.Errorf("rejected %+v", rejected)
+			}
+			// Explain decides as Match does.
+			if plain := ix.Match(c.r); plain.Managed != m.Managed || plain.Verified != m.Verified || plain.Address != m.Address {
+				t.Errorf("Match %+v, Explain %+v", plain, m)
+			}
+		})
 	}
 }

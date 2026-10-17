@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "orphans": [
+    {
+      "type": "vault_mount",
+      "identity": {
+        "n": 12345678901234567890,
+        "path": "secret"
+      },
+      "display_name": "secret",
+      "import_id": "",
+      "provider": "vault.other",
+      "provider_source": "",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1"
+    },
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "ci"
+      },
+      "display_name": "ci",
+      "import_id": "ci",
+      "provider": "",
+      "provider_source": "hashicorp/vault",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1"
+    }
+  ],
+  "uncertain": [
+    {
+      "type": "vault_mount",
+      "identity": {
+        "path": "kv"
+      },
+      "display_name": "kv",
+      "import_id": "",
+      "provider": "",
+      "provider_source": "hashicorp/vault",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1",
+      "state_address": "vault_mount.kv"
+    }
+  ],
+  "summary": {
+    "states": 1,
+    "duplicate_ownership": 0,
+    "possible_duplicate_ownership": 0,
+    "duplicate_in_state": 0,
+    "managed_by_identity": 1,
+    "live": 6,
+    "managed": 2,
+    "uncertain": 1,
+    "ignored": 1,
+    "orphans": 2,
+    "queried_types": 0,
+    "complete": false,
+    "states_complete": true,
+    "discovery_complete": false,
+    "warnings": [
+      "plugin1: cannot list auth backends: permission denied"
+    ],
+    "notes": [
+      "1 of 3 state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)"
+    ],
+    "by_type": {
+      "vault_mount": {
+        "live": 2,
+        "managed": 0,
+        "uncertain": 1,
+        "ignored": 0,
+        "orphans": 1
+      },
+      "vault_policy": {
+        "live": 4,
+        "managed": 2,
+        "uncertain": 0,
+        "ignored": 1,
+        "orphans": 1
+      }
+    },
+    "coverage": [
+      {
+        "type": "vault_mount",
+        "status": "complete",
+        "live": 2,
+        "managed": 0,
+        "uncertain": 1,
+        "ignored": 0,
+        "orphans": 1
+      },
+      {
+        "type": "vault_policy",
+        "status": "complete",
+        "live": 4,
+        "managed": 2,
+        "uncertain": 0,
+        "ignored": 1,
+        "orphans": 1
+      }
+    ]
+  },
+  "explain": [
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "kept"
+      },
+      "display_name": "kept",
+      "source": "plugin1",
+      "status": "managed",
+      "reason": "vault_policy.kept in state.json, by resource identity",
+      "state_address": "vault_policy.kept",
+      "state_source": "state.json"
+    },
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "legacy"
+      },
+      "display_name": "legacy",
+      "source": "plugin1",
+      "status": "managed",
+      "reason": "vault_policy.legacy in state.json, by attributes (the state instance has no resource identity)",
+      "state_address": "vault_policy.legacy",
+      "state_source": "state.json"
+    },
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "ci"
+      },
+      "display_name": "ci",
+      "source": "plugin1",
+      "status": "unmanaged",
+      "reason": "none of the 2 state instances of vault_policy shares its identity"
+    },
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "tmp-1"
+      },
+      "display_name": "tmp-1",
+      "source": "plugin1",
+      "status": "ignored",
+      "reason": "ignore rule ignore:1: vault_policy:tmp-*",
+      "rule": "ignore:1: vault_policy:tmp-*"
+    },
+    {
+      "type": "vault_mount",
+      "identity": {
+        "path": "kv"
+      },
+      "display_name": "kv",
+      "source": "plugin1",
+      "status": "uncertain",
+      "reason": "matches vault_mount.kv in state.json, by resource identity, but the state does not record the cluster or account (trust it with -proxmox-cluster-states or -plugin-cluster-states)",
+      "state_address": "vault_mount.kv",
+      "state_source": "state.json"
+    },
+    {
+      "type": "vault_mount",
+      "identity": {
+        "n": 12345678901234567890,
+        "path": "secret"
+      },
+      "display_name": "secret",
+      "source": "plugin1",
+      "status": "unmanaged",
+      "reason": "none of the 1 state instances of vault_mount shares its identity"
+    }
+  ]
+}

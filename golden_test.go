@@ -43,6 +43,7 @@ func TestGoldenJSON(t *testing.T) {
 		// The earlier report (its golden file) as the baseline of a later
 		// run.
 		{"report-baseline.json", []string{"-plugin", "cat plugin-later.jsonl", "-baseline", "report.json"}, exitOrphans},
+		{"report-explain.json", []string{"-plugin", "cat plugin.jsonl", "-explain"}, exitOrphans},
 	}
 	for _, r := range runs {
 		t.Run(r.golden, func(t *testing.T) {

@@ -30,6 +30,17 @@ format it does not know; new fields do not change it.
 
 Empty lists and zero counters marked above as optional may be left out.
 
+## Explanations
+
+With `-explain`, the top-level array `explain` has one entry per live
+object in the order they were found: `type`, `identity`, `display_name`,
+`scope`, `source`, `status` (`managed`, `uncertain`, `ignored` or
+`unmanaged`) and `reason`, a sentence for people whose wording may change.
+Managed and uncertain entries add `state_address` and `state_source` (the
+root and workspace, or `-state` argument, it was read from); an ignored one
+adds `rule`, the file and line or preset of the ignore rule and its text.
+Without the flag the array is left out.
+
 ## Duplicate state ownership
 
 The optional top-level arrays `duplicate_ownership` and `duplicate_in_state`

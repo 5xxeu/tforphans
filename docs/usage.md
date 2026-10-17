@@ -84,6 +84,24 @@ after the unmanaged ones with the state address they matched. The second
 line says how the managed objects were matched: by the resource identity in
 state (exact) or by attributes.
 
+`-explain` says for every live object why it landed in its group, after the
+text report or as `explain` in JSON (not with `adopt` or `-format summary`):
+
+```
+STATUS     TYPE          NAME    IDENTITY   WHY
+managed    vault_policy  kept    id=kept    vault_policy.kept in infra (default), by resource identity
+uncertain  aws_instance  web     id=i-0abc  matches aws_instance.web in infra (default), by attributes (the state instance has no resource identity), but the state does not hold account_id to confirm where the object lives
+ignored    vault_policy  tmp-1   id=tmp-1   ignore rule .tforphans-ignore:3: vault_policy:tmp-*
+unmanaged  vault_mount   kv      path=kv    closest: vault_mount.kv in infra (default): its identity has no namespace
+```
+
+A managed or uncertain object names the state address and where that state
+was read; an ignored one the file and line or preset of the rule; an
+unmanaged one up to three state instances that share a key value and what
+differs (provider, a key's value, a key the state does not hold), or that
+no state instance of the type was read. Use it with `-types` to look at one
+type, for example when an object you manage shows up as unmanaged.
+
 The last line says whether "nothing unmanaged" can be trusted: `coverage:
 complete`, or `coverage: INCOMPLETE` with what was not checked (failed or
 truncated listings, unread states, plugin errors, and types that needed a

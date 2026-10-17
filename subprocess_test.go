@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -136,4 +137,26 @@ func waitGone(t *testing.T, pid int) {
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	t.Errorf("process %d still runs", pid)
+}
+
+// TestBinaryExplain: -explain adds a line per live object to the text
+// report, and is refused where there is no report to add it to.
+func TestBinaryExplain(t *testing.T) {
+	dir := t.TempDir()
+	st := `{"version":4,"lineage":"l","serial":1,"resources":[{"mode":"managed","type":"vault_policy","name":"p","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"identity":{"id":"kept"},"attributes":{"id":"kept"}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"kept"}}' '{"type":"vault_policy","identity":{"id":"kept","namespace":"ns"},"display_name":"other"}'`
+	code, stdout, stderr := runBinary(t, dir, "-no-config", "-no-query", "-state", "state.json", "-plugin", plugin, "-explain")
+	if code != exitOrphans || !strings.Contains(stdout, "Why (-explain):") ||
+		!regexp.MustCompile(`managed +vault_policy +id=kept +vault_policy.p in state.json, by resource identity`).MatchString(stdout) ||
+		!regexp.MustCompile(`unmanaged +vault_policy +other +id=kept, namespace=ns +closest: vault_policy.p in state.json: its identity has no namespace`).MatchString(stdout) {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	for _, args := range [][]string{{"adopt", "-no-config", "-no-query", "-plugin", plugin, "-explain"}, {"-no-config", "-no-query", "-plugin", plugin, "-explain", "-format", "summary"}} {
+		if code, _, stderr := runBinary(t, dir, args...); code != exitError || !strings.Contains(stderr, "-explain needs the text or json report") {
+			t.Errorf("%v: exit %d\n%s", args, code, stderr)
+		}
+	}
 }

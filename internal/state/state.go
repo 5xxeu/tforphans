@@ -31,6 +31,9 @@ type Instance struct {
 	Identity    map[string]any
 	Attributes  map[string]any
 	IDSensitive bool
+	// Source is where the instance was read (root and workspace, -state),
+	// for -explain.
+	Source string
 }
 
 type rawState struct {
@@ -427,11 +430,12 @@ type Index struct {
 	snapshots    []Snapshot
 	snapshotKeys map[string]int
 	typeCounts   map[TypeKey]int
+	types        map[string]int  // instances per type
 	root         map[string]bool // resource addresses in root modules
 }
 
 func NewIndex() *Index {
-	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string][]ownedBy{}}
+	return &Index{byValue: map[string][]*Instance{}, root: map[string]bool{}, owned: map[string][]ownedBy{}, types: map[string]int{}}
 }
 
 // RootAddresses returns the <type>.<name> addresses that states already use
@@ -463,6 +467,7 @@ func (ix *Index) Add(instances []Instance) {
 	for i := range instances {
 		in := &instances[i]
 		ix.count++
+		ix.types[in.Type]++
 		if in.Provider != "" && !excludedOwnership(*in) {
 			if ix.typeCounts == nil {
 				ix.typeCounts = map[TypeKey]int{}
@@ -521,12 +526,101 @@ type Match struct {
 	// ByIdentity is set when the state instance has a resource identity;
 	// otherwise the match compared attributes.
 	ByIdentity bool
+	// The rest is for -explain. Via is "identity", "attributes" or "owner"
+	// (a resource that creates the object, Address names it); Type the
+	// state type when it is an alternative name; Source where the state
+	// instance was read.
+	Via    string
+	Type   string
+	Source string
+	// Unconfirmed are the live object's identity keys that state does not
+	// hold; ScopeUnknown says that state cannot tell the object's cluster
+	// or account (Proxmox, plugins marked unverified).
+	Unconfirmed  []string
+	ScopeUnknown bool
+	// Unknown are the live object's keys that discovery left empty
+	// (project ""), so they cannot confirm anything either.
+	Unknown []string
+}
+
+// Rejection is a state instance that shares a key with a live object but
+// does not manage it, and why.
+type Rejection struct {
+	Address, Source, Why string
+}
+
+// Explain is Match plus the instances that came close (at most limit) and
+// the number of state instances of the type.
+func (ix *Index) Explain(r model.Resource, limit int) (Match, []Rejection, int) {
+	var rejected []Rejection
+	m := ix.match(r, func(in *Instance, why string) {
+		if len(rejected) < limit {
+			rejected = append(rejected, Rejection{in.Address, in.Source, why})
+		}
+	})
+	// No candidate at all (they are looked up by the rarest key): show
+	// instances that share any one key value, and why they do not match,
+	// with the checks of match.
+	if !m.Managed && len(rejected) == 0 {
+		rejected = ix.nearby(r, limit)
+	}
+	n := ix.types[r.Type]
+	for _, t := range r.AltTypes {
+		n += ix.types[t]
+	}
+	return m, rejected, n
 }
 
 // Managed returns the address of the state instance that manages r.
 func (ix *Index) Managed(r model.Resource) (string, bool) {
 	m := ix.Match(r)
 	return m.Address, m.Managed
+}
+
+// nearby returns up to limit instances of r's type or its alternative
+// names that share one identity value with r, and why they do not manage it.
+func (ix *Index) nearby(r model.Resource, limit int) []Rejection {
+	var out []Rejection
+	seen := map[*Instance]bool{}
+	for _, typ := range append([]string{r.Type}, r.AltTypes...) {
+		as := r
+		if id, ok := r.AltIdentity[typ]; ok {
+			as.Identity, as.RequiredKeys, as.AttributeKeys = id, nil, nil
+		}
+		for _, k := range model.SortedKeys(as.Identity) {
+			v, ok := model.Scalar(as.Identity[k])
+			if !ok {
+				v, ok = model.Canonical(as.Identity[k])
+			}
+			if !ok || v == "" {
+				continue
+			}
+			for _, in := range ix.byValue[typ+"\x00"+k+"\x00"+v] {
+				if len(out) == limit {
+					return out
+				}
+				if seen[in] {
+					continue
+				}
+				seen[in] = true
+				why := ""
+				ok, _, w, _ := compare(as, in)
+				switch {
+				case typ == r.Type && !model.SameProvider(r.ProviderSource, in.Provider):
+					why = fmt.Sprintf("provider %s, not %s", orUnknown(in.Provider), orUnknown(r.ProviderSource))
+				case !ok:
+					why = w
+				default:
+					why = "in another place (node or cluster) than the scanned one"
+				}
+				if typ != r.Type {
+					why = "as " + typ + ": " + why
+				}
+				out = append(out, Rejection{in.Address, in.Source, why})
+			}
+		}
+	}
+	return out
 }
 
 // Match looks r up, preferring a verified match over an unverified one.
@@ -536,7 +630,19 @@ func (ix *Index) Managed(r model.Resource) (string, bool) {
 // must be present. The instance's identity is used when state has one
 // (Terraform 1.12+ with an identity-aware provider), otherwise its
 // attributes, which covers older state and plugin results.
-func (ix *Index) Match(r model.Resource) Match {
+func (ix *Index) Match(r model.Resource) Match { return ix.match(r, nil) }
+
+// match is Match; rejected, when set, hears of each candidate that does
+// not manage r.
+func (ix *Index) match(r model.Resource, rejected func(in *Instance, why string)) Match {
+	reject := func(typ string, in *Instance, why string) {
+		if rejected != nil {
+			if typ != r.Type {
+				why = "as " + typ + ": " + why
+			}
+			rejected(in, why)
+		}
+	}
 	tried := map[*Instance]bool{}
 	var best Match
 	for _, typ := range append([]string{r.Type}, r.AltTypes...) {
@@ -553,21 +659,39 @@ func (ix *Index) Match(r model.Resource) Match {
 			// provider (telmate's proxmox_vm_qemu); the type itself must
 			// come from the same provider.
 			if typ == r.Type && !model.SameProvider(r.ProviderSource, in.Provider) {
+				reject(typ, in, fmt.Sprintf("provider %s, not %s", orUnknown(in.Provider), orUnknown(r.ProviderSource)))
 				continue
 			}
-			ok, verified := matches(as, in)
-			if ok && r.Scope != nil {
+			ok, verified, why, missing := compare(as, in)
+			if !ok {
+				reject(typ, in, why)
+				continue
+			}
+			scopeUnknown := false
+			if r.Scope != nil {
 				inScope, known := scopeCheck(r.Scope, typ, in)
 				if !inScope {
+					reject(typ, in, "in another place (node or cluster) than the scanned one")
 					continue
 				}
-				verified = verified && known
+				verified, scopeUnknown = verified && known, !known
+			}
+			m := Match{Address: in.Address, Managed: true, Verified: verified, ByIdentity: len(in.Identity) > 0,
+				Via: "attributes", Source: in.Source, Unconfirmed: missing, ScopeUnknown: scopeUnknown}
+			if !verified {
+				m.Unknown = unknownKeys(as)
+			}
+			if m.ByIdentity {
+				m.Via = "identity"
+			}
+			if typ != r.Type {
+				m.Type = typ
 			}
 			switch {
-			case ok && verified:
-				return Match{Address: in.Address, Managed: true, Verified: true, ByIdentity: len(in.Identity) > 0}
-			case ok && !best.Managed:
-				best = Match{Address: in.Address, Managed: true, ByIdentity: len(in.Identity) > 0}
+			case verified:
+				return m
+			case !best.Managed:
+				best = m
 			}
 		}
 	}
@@ -593,7 +717,7 @@ func (ix *Index) Match(r model.Resource) Match {
 						}
 						verified = verified && known
 					}
-					m := Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified}
+					m := Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified, Via: "owner", Source: by.parent.Source}
 					if verified {
 						return m
 					}
@@ -688,7 +812,10 @@ func UnknownLocation(identity map[string]any) bool {
 	return false
 }
 
-func matches(r model.Resource, in *Instance) (ok, verified bool) {
+// compare tells whether the instance manages r and whether that is
+// verified; otherwise why not. missing are the keys of r the instance does
+// not hold (it then matches unverified at best).
+func compare(r model.Resource, in *Instance) (ok, verified bool, why string, missing []string) {
 	// Attribute names only loosely follow identity names (AWS identities
 	// carry account_id, which is not an attribute), so with the attribute
 	// fallback a missing secondary key is tolerated; a conflicting value
@@ -707,7 +834,7 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 	for _, k := range primary {
 		isPrimary[k] = true
 	}
-	equal, primaryEqual, primaryEmpty, missing := 0, 0, 0, 0
+	equal, primaryEqual, primaryEmpty, absent := 0, 0, 0, 0
 	for k, want := range r.Identity {
 		w, ok := model.Canonical(want)
 		if !ok {
@@ -718,7 +845,7 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 		// ID (name, id) is no evidence of anything: it must not let the
 		// location alone match.
 		if w == "" && emptyIsUnknown[k] {
-			missing++
+			absent++
 			if isPrimary[k] {
 				primaryEmpty++
 			}
@@ -727,13 +854,19 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 		got, ok := model.Canonical(src[k])
 		if !ok {
 			if strict && isRequired[k] {
-				return false, false
+				return false, false, "its identity has no " + k, nil
 			}
-			missing++
+			absent++
+			missing = append(missing, k)
 			continue
 		}
 		if got != w {
-			return false, false
+			// Identities are never sensitive; attributes may be, and only
+			// a sensitive id is known here, so their values stay unsaid.
+			if !strict {
+				return false, false, fmt.Sprintf("its attribute %s differs from %s here", k, short(w)), nil
+			}
+			return false, false, fmt.Sprintf("%s is %s there, %s here", k, short(got), short(w)), nil
 		}
 		equal++
 		if isPrimary[k] {
@@ -743,10 +876,47 @@ func matches(r model.Resource, in *Instance) (ok, verified bool) {
 	if strict {
 		// An identity in state that lacks a key of the live object (an
 		// account, a region) cannot confirm where the object lives.
-		return equal > 0, missing == 0
+		if equal == 0 {
+			return false, false, "no identity key in common", nil
+		}
+		slices.Sort(missing)
+		return true, absent == 0, "", missing
 	}
 	ok = primaryEqual > 0 && primaryEqual+primaryEmpty == len(isPrimary)
-	return ok, ok && missing == 0
+	if !ok {
+		keys := slices.Sorted(maps.Keys(isPrimary))
+		return false, false, "no identity, and its attributes do not hold all of " + strings.Join(keys, ", "), nil
+	}
+	slices.Sort(missing)
+	return true, absent == 0, "", missing
+}
+
+// unknownKeys are the keys of r whose value discovery left empty where
+// empty means unknown (see emptyIsUnknown).
+func unknownKeys(r model.Resource) []string {
+	var out []string
+	for k, v := range r.Identity {
+		if s, ok := model.Canonical(v); ok && s == "" && emptyIsUnknown[k] {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// short bounds a value quoted in an explanation.
+func short(s string) string {
+	if len(s) > 80 {
+		s = strings.ToValidUTF8(s[:80], "") + "..."
+	}
+	return s
+}
+
+func orUnknown(provider string) string {
+	if provider == "" {
+		return "unknown"
+	}
+	return provider
 }
 
 // candidates returns the instances that can match r. A match has to equal
