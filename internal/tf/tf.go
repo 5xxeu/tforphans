@@ -369,6 +369,25 @@ func AliasOnly(dir string) (map[string][]string, error) {
 	return out, nil
 }
 
+// Aliases maps local names to the aliases of every aliased provider
+// configuration of the root module (provider "aws" { alias = "prod" }).
+func Aliases(dir string) (map[string][]string, error) {
+	mod, diags := tfconfig.LoadModule(dir)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("read %s: %w", dir, diags.Err())
+	}
+	out := map[string][]string{}
+	for _, pc := range mod.ProviderConfigs {
+		if pc.Alias != "" && !slices.Contains(out[pc.Name], pc.Alias) {
+			out[pc.Name] = append(out[pc.Name], pc.Alias)
+		}
+	}
+	for _, as := range out {
+		sort.Strings(as)
+	}
+	return out, nil
+}
+
 // NormalizeSource expands "ns/type" to "registry.terraform.io/ns/type".
 func NormalizeSource(src string) string {
 	src = strings.ToLower(src)

@@ -251,20 +251,73 @@ func TestParseQueryStreamLimit(t *testing.T) {
 	}
 }
 
-// Generated blocks would use the empty default configuration of a provider
-// the root configures only with aliases, so its types are skipped.
+// A provider the root configures only with aliases is listed through each
+// alias, never with its empty default configuration.
 func TestPlanAliasOnly(t *testing.T) {
 	p := BuildPlan(schemas(t), nil, PlanOptions{AliasOnly: map[string][]string{"aws": {"prod"}}})
+	aliased := 0
+	for _, q := range p.Queries {
+		if q.Provider != "aws" {
+			continue
+		}
+		if q.Alias != "prod" {
+			t.Errorf("aws queried with the default configuration: %+v", q)
+		}
+		aliased++
+	}
+	if aliased == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "queried through aws.prod") {
+		t.Errorf("%d aliased queries, notes %v", aliased, p.Notes)
+	}
+	// -no-aliases: nothing of aws is queried, the empty default neither,
+	// and every type is a gap of aws.prod.
+	p = BuildPlan(schemas(t), nil, PlanOptions{AliasOnly: map[string][]string{"aws": {"prod"}}, NoAliases: true})
 	for _, q := range p.Queries {
 		if q.Provider == "aws" {
-			t.Errorf("aws queried: %+v", q)
+			t.Errorf("aws queried with -no-aliases: %+v", q)
 		}
 	}
-	if len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "provider = aws.<alias>") || !strings.Contains(p.Notes[0], "(aws.prod)") {
-		t.Errorf("notes %v", p.Notes)
+	gaps := 0
+	for _, sk := range p.Skipped {
+		if sk.Provider == "aws.prod" && !sk.Excluded {
+			gaps++
+		}
 	}
-	if len(p.Skipped) == 0 {
-		t.Error("aws types not reported as skipped")
+	if gaps == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "-no-aliases leaves them out") {
+		t.Errorf("%d gaps, notes %v", gaps, p.Notes)
+	}
+}
+
+// The default configuration and each alias are listed, each its own block:
+// default in dev, alias in prod.
+func TestPlanAliases(t *testing.T) {
+	p := BuildPlan(schemas(t), nil, PlanOptions{Aliases: map[string][]string{"aws": {"prod"}}})
+	refs := map[string]int{}
+	labels := map[string]bool{}
+	for _, q := range p.Queries {
+		if q.Provider != "aws" {
+			continue
+		}
+		refs[q.Ref()]++
+		if labels[q.Label()] {
+			t.Errorf("label used twice: %s", q.Label())
+		}
+		labels[q.Label()] = true
+		if q.Alias == "prod" && (!strings.Contains(string(q.HCL(100)), "provider = aws.prod\n") || !strings.HasPrefix(q.Label(), "tfo_aws_prod_aws_")) {
+			t.Errorf("aliased block:\n%s", q.HCL(100))
+		}
+	}
+	if refs["aws"] == 0 || refs["aws"] != refs["aws.prod"] || len(p.Notes) != 0 {
+		t.Errorf("queries per configuration %v, notes %v", refs, p.Notes)
+	}
+	// -no-aliases: the default only, each alias type a gap.
+	p = BuildPlan(schemas(t), nil, PlanOptions{Aliases: map[string][]string{"aws": {"prod"}}, NoAliases: true})
+	for _, q := range p.Queries {
+		if q.Alias != "" {
+			t.Errorf("alias queried with -no-aliases: %+v", q)
+		}
+	}
+	if !slices.ContainsFunc(p.Skipped, func(sk Skip) bool { return sk.Provider == "aws.prod" && !sk.Excluded }) {
+		t.Errorf("no gap for aws.prod: %+v", p.Skipped)
 	}
 }
 
@@ -293,6 +346,22 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	p = BuildPlan(&s, nil, PlanOptions{ProviderConfigs: map[string]string{"google": `project = var.p`, "google-beta": `project = var.p`}})
 	if len(p.Queries) != 1 {
 		t.Errorf("equal configurations: %+v", p.Queries)
+	}
+	// Aliases: an equal pair lists once, through google; an alias of its
+	// own (no known text) is never a twin of the default.
+	aliases := map[string][]string{"google": {"prod"}, "google-beta": {"prod"}}
+	p = BuildPlan(&s, nil, PlanOptions{Aliases: aliases, ProviderConfigs: map[string]string{
+		"google": `project = "a"`, "google-beta": `project = "a"`, "google.prod": `project = "b"`, "google-beta.prod": `project = "b"`}})
+	var refs []string
+	for _, q := range p.Queries {
+		refs = append(refs, q.Ref())
+	}
+	if slices.Sort(refs); !slices.Equal(refs, []string{"google", "google.prod"}) {
+		t.Errorf("aliased twins: %v", refs)
+	}
+	p = BuildPlan(&s, nil, PlanOptions{Aliases: map[string][]string{"google": {"prod"}}})
+	if len(p.Queries) != 2 {
+		t.Errorf("alias without known text dropped: %+v", p.Queries)
 	}
 	// Only google-beta takes the project argument: both are queried.
 	var s3 Schemas
@@ -403,14 +472,10 @@ func TestPlanOptIn(t *testing.T) {
 		t.Errorf("named: %v", got)
 	}
 	// With only aliased configurations an opt-in type stays left out on
-	// purpose; the others are checks that were needed.
+	// purpose; the others are listed through the alias.
 	p = BuildPlan(&s, nil, PlanOptions{AliasOnly: map[string][]string{"google": {"prod"}}})
-	excluded := map[string]bool{}
-	for _, sk := range p.Skipped {
-		excluded[sk.Type] = sk.Excluded
-	}
-	if len(p.Queries) != 0 || !excluded["google_project"] || excluded["google_compute_network"] || len(excluded) != 2 {
-		t.Errorf("alias-only: queries %v, skipped %+v", types(p), p.Skipped)
+	if got := types(p); !slices.Equal(got, []string{"google_compute_network"}) || p.Queries[0].Ref() != "google.prod" || len(p.Skipped) != 1 || !p.Skipped[0].Excluded {
+		t.Errorf("alias-only: queries %v, skipped %+v", got, p.Skipped)
 	}
 }
 

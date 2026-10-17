@@ -106,7 +106,7 @@ The last line says whether "nothing unmanaged" can be trusted: `coverage:
 complete`, or `coverage: INCOMPLETE` with what was not checked (failed or
 truncated listings, unread states, plugin errors, and types that needed a
 check and were skipped in a root: a list resource with a required argument
-not given with `-arg`, a provider configured only with aliases). A type
+not given with `-arg`, a provider configuration left out with `-no-aliases`). A type
 left out on purpose (`-exclude-types`, opt-in types, google-beta listed
 through google, a scope not asked for) or one with no list resource or
 data source at all does not make coverage incomplete; the line then reads

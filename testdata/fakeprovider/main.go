@@ -22,6 +22,7 @@ import (
 	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	pschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/identityschema"
@@ -50,9 +51,21 @@ func (p *fakeProvider) Metadata(_ context.Context, _ provider.MetadataRequest, r
 	resp.TypeName = "fake"
 }
 
-func (p *fakeProvider) Schema(context.Context, provider.SchemaRequest, *provider.SchemaResponse) {}
+// Schema: dir, when set, replaces $FAKE_DIR for this configuration, so
+// that a default and an aliased configuration look at different places
+// (accounts). Terraform runs each configuration in a process of its own.
+func (p *fakeProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
+	resp.Schema = pschema.Schema{Attributes: map[string]pschema.Attribute{
+		"dir": pschema.StringAttribute{Optional: true},
+	}}
+}
 
-func (p *fakeProvider) Configure(context.Context, provider.ConfigureRequest, *provider.ConfigureResponse) {
+func (p *fakeProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	var dir types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("dir"), &dir)...)
+	if !dir.IsNull() && !dir.IsUnknown() {
+		os.Setenv("FAKE_DIR", dir.ValueString())
+	}
 }
 
 func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource {

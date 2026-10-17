@@ -76,6 +76,10 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
+	aliases, err := tf.Aliases(root)
+	if err != nil {
+		return nil, err
+	}
 	aliasOnly, err := tf.AliasOnly(root)
 	if err != nil {
 		return nil, err
@@ -84,7 +88,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly,
+	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly, Aliases: aliases, NoAliases: o.noAliases,
 		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 || o.namesFromTags && hasTags(schemas, t) }, ProviderConfigs: configs})
 	for _, sk := range plan.Skipped {
 		sk.Root = root
@@ -172,16 +176,22 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs, attr. ignore rules or -names-from-tags", root, block))
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
-	// providerOf is the local provider name a list block instance used.
+	// providerOf is the provider configuration a list block instance
+	// used (aws, aws.prod): coverage counts each configuration apart.
 	providerOf := func(address, typ string) string {
 		block, _, _ := strings.Cut(address, "[")
 		if q, ok := byAddress[block]; ok {
-			return q.Provider
+			return q.Ref()
 		}
-		if local, _, _ := strings.Cut(userLists[block].Provider, "."); local != "" {
-			return local
+		if ref := userLists[block].Provider; ref != "" {
+			return ref
 		}
 		local, _, _ := strings.Cut(typ, "_")
+		return local
+	}
+	// localOf is its local name (the provider, whatever the alias).
+	localOf := func(address, typ string) string {
+		local, _, _ := strings.Cut(providerOf(address, typ), ".")
 		return local
 	}
 	providerSource := func(address, typ string) string {
@@ -190,7 +200,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		if source == "" {
 			source = userListProvider(userLists[block].Provider, typ, declared, schemas)
 			if source == "" {
-				addr := "registry.terraform.io/hashicorp/" + providerOf(address, typ)
+				addr := "registry.terraform.io/hashicorp/" + localOf(address, typ)
 				if _, ok := schemas.ProviderSchemas[addr]; ok {
 					source = addr
 				}
@@ -218,7 +228,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 		if generated, ok := byAddress[block]; ok {
 			config = string(generated.HCL(o.limit))
-			provider = generated.Provider
+			provider = generated.Ref()
 		}
 		complete := finished[q.Address]
 		for _, f := range res.Failed {
@@ -270,6 +280,8 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		switch {
 		case q.Temporary:
 			f.UndeclaredProvider = q.Source
+		case q.Alias != "":
+			f.Provider = q.Ref()
 		case !strings.HasPrefix(q.Type, q.Provider+"_") && q.Type != q.Provider:
 			f.Provider = q.Provider
 		}
