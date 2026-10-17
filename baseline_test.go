@@ -414,3 +414,37 @@ func TestBaselineConfig(t *testing.T) {
 		t.Fatalf("explicit config: %+v, %v", o, err)
 	}
 }
+
+// TestBaselineEnvironmentRun: -environment is stored in the report, and a
+// baseline of another environment shows every finding.
+func TestBaselineEnvironmentRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", `printf '%s\n' '{"type":"vault_policy","identity":{"id":"known"}}'`}
+	known := model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "known"}, Source: "plugin1"}
+	saveReportTest(t, "staging.json", []model.Resource{known}, report.Summary{Environment: "staging"})
+	code, stdout, stderr := runReportTest(t, append(base, "-environment", "prod", "-baseline", "staging.json", "-format", "json")...)
+	if code != exitOrphans || !strings.Contains(stdout, `"environment": "prod"`) || !strings.Contains(stdout, `"environment_changed": true`) ||
+		!strings.Contains(stderr, "baseline: 1 new, 0 known (not shown), 0 resolved, 1 not verified (the baseline is from another environment)") ||
+		!strings.Contains(stderr, `the baseline is from environment "staging", this run is "prod"`) {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, _, stderr := runReportTest(t, append(base, "-environment", "staging", "-baseline", "staging.json")...); code != exitOK || !strings.Contains(stderr, "baseline: 0 new, 1 known") {
+		t.Fatalf("same environment: exit %d\n%s", code, stderr)
+	}
+	for _, bad := range []string{"a\nb", " prod", strings.Repeat("x", 101)} {
+		if code, _, stderr := runReportTest(t, append(base, "-environment", bad)...); code != exitError || !strings.Contains(stderr, "-environment must be") {
+			t.Errorf("%q: exit %d\n%s", bad, code, stderr)
+		}
+	}
+	// A label, so the repository's config may set it.
+	if err := os.WriteFile(defaultConfigFile, []byte("environment: prod\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if o, err := parseFlags(nil, io.Discard); err != nil || o.environment != "prod" {
+		t.Fatalf("automatic config: %+v, %v", o, err)
+	}
+}

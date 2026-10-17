@@ -34,6 +34,13 @@ type Diff struct {
 	Counters        map[string]CounterChange `json:"counters"`
 	CoverageChanges []CoverageChange         `json:"coverage_changes"`
 	Complete        CompleteChange           `json:"complete"`
+	// Environment is set when either report has an -environment.
+	Environment *EnvironmentChange `json:"environment,omitempty"`
+}
+
+type EnvironmentChange struct {
+	Old string `json:"old"`
+	New string `json:"new"`
 }
 
 var diffCounters = []string{"live", "managed", "uncertain", "ignored", "orphans", "states", "queried_types"}
@@ -44,6 +51,9 @@ func CompareSnapshots(old, current Snapshot) Diff {
 		Added: []model.Resource{}, Resolved: b.ResolvedFindings, Unverified: b.UnverifiedFindings,
 		Counters: map[string]CounterChange{}, CoverageChanges: []CoverageChange{},
 		Complete: CompleteChange{old.Summary.Complete, current.Summary.Complete},
+	}
+	if old.Summary.Environment != "" || current.Summary.Environment != "" {
+		d.Environment = &EnvironmentChange{old.Summary.Environment, current.Summary.Environment}
 	}
 	for i, r := range marked {
 		if r.Baseline == "new" {
@@ -98,6 +108,11 @@ func (d Diff) Text(w io.Writer, verbose bool) error {
 	added := make([]Finding, len(d.Added))
 	for i, r := range d.Added {
 		added[i] = finding(r, "")
+	}
+	if e := d.Environment; e != nil && e.Old != e.New {
+		if _, err := fmt.Fprintf(w, "environment changed from %q to %q: every finding is added, none resolved\n", Clean(e.Old), Clean(e.New)); err != nil {
+			return err
+		}
 	}
 	for _, group := range []struct {
 		name string

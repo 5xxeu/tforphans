@@ -144,7 +144,14 @@ type Baseline struct {
 	Unverified         int       `json:"unverified"`
 	ResolvedFindings   []Finding `json:"resolved_findings"`
 	UnverifiedFindings []Finding `json:"unverified_findings"`
+	// EnvironmentChanged: the baseline has another -environment (or one
+	// of the two has none).
+	EnvironmentChanged bool `json:"environment_changed,omitempty"`
 }
+
+// environmentChanged is the reason of every missing finding when the
+// baseline comes from another environment.
+const environmentChanged = "environment changed"
 
 // Compare marks current orphans and checks missing findings against listings.
 // An object without an identity or import ID can never be matched or resolved.
@@ -152,9 +159,13 @@ func Compare(old, current []model.Resource, oldSummary, currentSummary Summary) 
 	before, now := indexFindings(old), indexFindings(current)
 	marked := make([]model.Resource, len(current))
 	b := Baseline{ResolvedFindings: []Finding{}, UnverifiedFindings: []Finding{}}
+	// Objects of another environment can carry the same identities (the
+	// same account under another label, or a copied setup): nothing there
+	// makes a finding here known or a missing one resolved.
+	b.EnvironmentChanged = oldSummary.Environment != currentSummary.Environment
 	for i, r := range current {
 		r.Baseline = "new"
-		if before.contains(r) {
+		if !b.EnvironmentChanged && before.contains(r) {
 			r.Baseline = "known"
 			b.Known++
 		} else {
@@ -165,6 +176,10 @@ func Compare(old, current []model.Resource, oldSummary, currentSummary Summary) 
 	oldListings := indexListings(oldSummary.Listings)
 	newListings := indexListings(currentSummary.Listings)
 	for _, r := range old {
+		if b.EnvironmentChanged {
+			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, environmentChanged))
+			continue
+		}
 		if _, ok := keyFinding(r); !ok {
 			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, "identity and import_id missing"))
 			continue

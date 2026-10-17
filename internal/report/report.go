@@ -298,7 +298,10 @@ type Summary struct {
 	// Complete is false when something was not checked: failed or
 	// truncated listings, unread states, plugin errors, types that needed
 	// a check and were skipped.
-	Complete          bool               `json:"complete"`
+	Complete bool `json:"complete"`
+	// Environment is the -environment label: a baseline from another
+	// environment proves nothing about this one.
+	Environment       string             `json:"environment,omitempty"`
 	StatesComplete    bool               `json:"states_complete"`
 	DiscoveryComplete bool               `json:"discovery_complete"`
 	Providers         []ProviderCoverage `json:"providers,omitempty"`
