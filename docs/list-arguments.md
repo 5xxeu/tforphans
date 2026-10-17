@@ -28,7 +28,7 @@ queries fan out over what they return. Nothing is missed for a zone that
 nobody thought of, at the price of one query per zone and type (GCP has
 about 130 zones). When the zones cannot be read,
 the queries that need them fail with that error, the others still run; a
-disabled Compute API counts as one (see `-strict-api`). A shorter list
+disabled Compute API counts as one (a gap; see `-strict-api`). A shorter list
 is still possible:
 
 ```sh

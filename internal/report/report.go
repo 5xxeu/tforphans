@@ -304,7 +304,7 @@ type Summary struct {
 	Orphans   int `json:"orphans"`
 	Queried   int `json:"queried_types"`
 	// APIOff counts failed listings whose API is not enabled (they are in
-	// failed_queries too); they count as gaps only with -strict-api.
+	// failed_queries too); they count as gaps unless -strict-api=false.
 	APIOff int `json:"api_not_enabled,omitempty"`
 	// StrictIgnored counts failed listings and skipped types that
 	// -strict-ignore kept from making coverage incomplete.

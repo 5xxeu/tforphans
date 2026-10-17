@@ -202,7 +202,7 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 			beyond = append(beyond, fmt.Sprintf("%d providers without list resources", len(slices.Compact(slices.Sorted(slices.Values(s.NoList))))))
 		}
 		if s.APIOff > 0 && !o.strictAPI {
-			beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api counts them)", s.APIOff))
+			beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api=false left them out)", s.APIOff))
 		}
 		if s.StrictIgnored > 0 {
 			beyond = append(beyond, fmt.Sprintf("%d failed listings or skipped types of -strict-ignore", s.StrictIgnored))
