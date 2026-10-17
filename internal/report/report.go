@@ -272,6 +272,9 @@ type Summary struct {
 	// UnreadStates are root modules whose state could not be read in full:
 	// their objects may show as unmanaged.
 	UnreadStates []UnreadState `json:"unread_states,omitempty"`
+	// FailedSources are roots, scans and plugins that failed as a whole:
+	// the run went on with the others, and exits 1 after the report.
+	FailedSources []FailedSource `json:"failed_sources,omitempty"`
 	// ManagedByIdentity counts managed objects matched by the resource
 	// identity in state; the others were matched by attributes.
 	ManagedByIdentity int `json:"managed_by_identity"`
@@ -865,4 +868,36 @@ func (s *Summary) AddListable(provider string, types ...string) {
 // CanList reports whether the type was listable for the provider family.
 func (s *Summary) CanList(typ, family string) bool {
 	return s.Listable[[2]string{typ, family}] || s.Listable[[2]string{typ, ""}]
+}
+
+// FailedSource is a root, -scan or plugin that failed as a whole.
+type FailedSource struct {
+	Source string `json:"source"`
+	Error  string `json:"error"`
+}
+
+// FailSource records a root, scan or plugin that failed as a whole; the
+// warning makes coverage incomplete.
+func (s *Summary) FailSource(source string, err error) {
+	// The whole message: which block or data source failed is often on a
+	// line of its own. Bounded, since terraform can say a lot.
+	var lines []string
+	for _, l := range strings.Split(err.Error(), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	msg := strings.Join(lines, "; ")
+	if len(msg) > 2000 {
+		msg = strings.ToValidUTF8(msg[:2000], "") + "..."
+	}
+	s.FailedSources = append(s.FailedSources, FailedSource{Source: source, Error: msg})
+	// Its results are dropped: listings it recorded before failing are no
+	// evidence that a baseline finding is gone.
+	for i := range s.Listings {
+		if s.Listings[i].Source == source {
+			s.Listings[i].Complete = false
+		}
+	}
+	s.Warnings = append(s.Warnings, source+" failed: "+msg)
 }

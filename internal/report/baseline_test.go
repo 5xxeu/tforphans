@@ -2,7 +2,9 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,6 +109,11 @@ func TestBaselineMissingListing(t *testing.T) {
 		}},
 		{"unknown provider", "", func(_ *model.Resource, _, now *Summary) { now.Listings[0].Provider = "" }},
 		{"incomplete", "listing incomplete", func(_ *model.Resource, _, now *Summary) { now.Listings[0].Complete = false }},
+		// A root whose results were dropped (it timed out after its query)
+		// proves nothing, even with listings it recorded before.
+		{"failed source", "listing incomplete", func(_ *model.Resource, _, now *Summary) {
+			now.FailSource("infra", errors.New("gave up after 1s (-source-timeout)"))
+		}},
 		{"incomplete before fingerprint", "listing incomplete", func(_ *model.Resource, _, now *Summary) {
 			now.Listings[0].Complete = false
 			now.Listings[0].Fingerprint = "changed"
@@ -182,15 +189,15 @@ func TestReadSnapshotErrors(t *testing.T) {
 			if err := os.WriteFile(path, []byte(c.data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadSnapshot(path, c.limit); err == nil || !strings.Contains(err.Error(), c.want) {
+			if _, err := ReadSnapshot(context.Background(), path, c.limit); err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("want %q: %v", c.want, err)
 			}
 		})
 	}
-	if _, err := ReadSnapshot("-", state.DefaultMaxSize); err == nil {
+	if _, err := ReadSnapshot(context.Background(), "-", state.DefaultMaxSize); err == nil {
 		t.Fatal("accepted stdin")
 	}
-	if _, err := ReadSnapshot(filepath.Join(t.TempDir(), "missing"), state.DefaultMaxSize); err == nil {
+	if _, err := ReadSnapshot(context.Background(), filepath.Join(t.TempDir(), "missing"), state.DefaultMaxSize); err == nil {
 		t.Fatal("accepted missing file")
 	}
 }
@@ -208,7 +215,7 @@ func TestSnapshotResourceRoundTrip(t *testing.T) {
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ReadSnapshot(path, state.DefaultMaxSize)
+	s, err := ReadSnapshot(context.Background(), path, state.DefaultMaxSize)
 	if err != nil {
 		t.Fatal(err)
 	}

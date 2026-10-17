@@ -215,7 +215,7 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 	scheme := strings.ToLower(urlScheme(src))
 	switch {
 	case src == "-":
-		return ReadLimited(os.Stdin, maxSize)
+		return readContext(ctx, func() (io.ReadCloser, error) { return io.NopCloser(os.Stdin), nil }, maxSize)
 	case scheme == "https", scheme == "http":
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 		if err != nil {
@@ -263,12 +263,41 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 		// whole string, credentials included, in the error.
 		return nil, fmt.Errorf("unsupported state URL %s: use https, a file or -", Redact(src))
 	default:
-		f, err := os.Open(src)
+		return ReadFile(ctx, src, maxSize)
+	}
+}
+
+// ReadFile is ReadLimited of a file that gives up when ctx ends
+// (-timeout): a named pipe nobody writes to blocks already when it is
+// opened.
+func ReadFile(ctx context.Context, path string, maxSize int64) ([]byte, error) {
+	return readContext(ctx, func() (io.ReadCloser, error) { return os.Open(path) }, maxSize)
+}
+
+// readContext is ReadLimited of what open returns, giving up when ctx
+// ends. The reading goroutine stays blocked until the process exits;
+// nothing waits for it.
+func readContext(ctx context.Context, open func() (io.ReadCloser, error), maxSize int64) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := open()
 		if err != nil {
-			return nil, err
+			done <- result{nil, err}
+			return
 		}
-		defer f.Close()
-		return ReadLimited(f, maxSize)
+		defer r.Close()
+		data, err := ReadLimited(r, maxSize)
+		done <- result{data, err}
+	}()
+	select {
+	case res := <-done:
+		return res.data, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

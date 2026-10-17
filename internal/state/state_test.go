@@ -674,3 +674,26 @@ func BenchmarkMatch(b *testing.B) {
 		})
 	}
 }
+
+// TestReadContext: a pipe left open with no data does not outlive -timeout.
+func TestReadContext(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pw.Close()
+	defer pr.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := readContext(ctx, func() (io.ReadCloser, error) { return io.NopCloser(pr), nil }, DefaultMaxSize); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Errorf("%v after %s", err, time.Since(start))
+	}
+	if data, err := readContext(context.Background(), func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("{}")), nil }, DefaultMaxSize); err != nil || string(data) != "{}" {
+		t.Errorf("%q %v", data, err)
+	}
+	// An empty path is an error to open, not a panic.
+	if _, err := Fetch(context.Background(), "", false, DefaultMaxSize); err == nil {
+		t.Error("empty path read")
+	}
+}

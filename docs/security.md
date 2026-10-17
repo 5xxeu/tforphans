@@ -21,6 +21,9 @@
   refresh JSON; `-max-state-size` sets a positive byte count or a size such
   as `512M` or `2G` (powers of 1024). An automatic `.tforphans.yaml` may
   lower this limit; raising it requires the command line or `-config FILE`.
+  `terraform query` output is read as a stream, limited the same way by
+  `-max-query-size` and to 1,000,000 objects; attributes not asked for are
+  dropped as each object is read.
 - Files it writes: a temporary `zz_tforphans_<pid>.tfquery.hcl` (and
   `zz_tforphans_<pid>_override.tf` when a provider is declared only in child
   modules, `zz_tforphans_<pid>_auto.tf` for automatic list arguments,

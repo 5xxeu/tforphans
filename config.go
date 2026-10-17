@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/state"
+	"github.com/5xxeu/tforphans/internal/tf"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -110,14 +111,14 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 		case !explicit && slices.Contains(configOnlyExplicit, key):
 			return fmt.Errorf("%s: %s is accepted only from a file given with -config, since this file is read on its own and could come with someone else's repository", path, key)
 		}
-		if !explicit && key == "max-state-size" {
+		if limit, ok := map[string]int64{"max-state-size": state.DefaultMaxSize, "max-query-size": tf.DefaultMaxQuerySize}[key]; ok && !explicit {
 			for _, v := range vals {
 				var size sizeFlag
 				if err := size.Set(v); err != nil {
 					return fmt.Errorf("%s: %s: %w", path, key, err)
 				}
-				if int64(size) > state.DefaultMaxSize {
-					return fmt.Errorf("%s: %s above %d bytes is accepted only on the command line or via -config, since this file is read on its own and could come with someone else's repository", path, key, state.DefaultMaxSize)
+				if int64(size) > limit {
+					return fmt.Errorf("%s: %s above %d bytes is accepted only on the command line or via -config, since this file is read on its own and could come with someone else's repository", path, key, limit)
 				}
 			}
 		}

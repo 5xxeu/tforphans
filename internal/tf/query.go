@@ -122,6 +122,9 @@ type Listing struct {
 }
 
 type QueryResult struct {
+	// Text is the output that is not JSON (bounded), for messages
+	// terraform prints as text.
+	Text   string
 	Found  []model.Resource
 	Failed []Failure
 	// Started counts list block instances that started, and generated
@@ -242,7 +245,7 @@ func RemoveStale(dir string) error {
 // QueryResult.Failed. Errors that abort the whole query are returned.
 // limitFor returns the limit of the list block at an address, 0 if unknown.
 // keys returns the identity keys of the objects a list block finds.
-func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string) int, keys KeysFunc) (*QueryResult, error) {
+func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string) int, keys KeysFunc, found func(*model.Resource)) (*QueryResult, error) {
 	// Files left by a run that was killed would clash with this one (same
 	// labels) or keep changing the configuration. Those of a process that
 	// is gone are removed; another run still working here is an error.
@@ -270,17 +273,28 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	defer os.Remove(path)
 
 	args := []string{"query", "-json", "-no-color"}
-	out, stderr, runErr := r.run(ctx, args...)
+	// Read as it comes: the output with whole objects can be large, and a
+	// runaway provider must not fill memory.
+	var res *QueryResult
+	var fatal []string
+	var parseErr error
+	stderr, runErr := r.stream(ctx, func(pipe io.Reader) error {
+		res, fatal, parseErr = ParseQueryReader(&sizeLimit{r: pipe, left: r.querySize()}, r.Dir, keys, limitFor, found)
+		return parseErr
+	}, args...)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	// Terraform before 1.14 and OpenTofu print this (on stdout).
-	if runErr != nil && strings.Contains(string(out)+string(stderr), `no command named "query"`) {
-		return nil, fmt.Errorf("%s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin))
+	if parseErr != nil {
+		return nil, parseErr
 	}
-	res, fatal, err := ParseQueryStream(out, r.Dir, keys, limitFor)
-	if err != nil {
-		return nil, err
+	if res == nil {
+		// The command did not start, so nothing was read.
+		return nil, cmdError(args, stderr, runErr)
+	}
+	// Terraform before 1.14 and OpenTofu print this (on stdout).
+	if runErr != nil && strings.Contains(res.Text+string(stderr), `no command named "query"`) {
+		return nil, fmt.Errorf("%s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin))
 	}
 	// The regions or zones of an auto argument could not be read: its
 	// queries fail (a disabled Compute API is classified as such).
@@ -366,15 +380,34 @@ type queryMessage struct {
 // early, and one whose limit is unknown may have too; both are reported as
 // failures so that -strict does not pass on a truncated list.
 func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(address string) int) (*QueryResult, []string, error) {
+	return ParseQueryReader(bytes.NewReader(data), source, keys, limitFor, nil)
+}
+
+// maxQueryObjects bounds the objects one terraform query may return, like
+// the plugins' limit; a variable so that tests can lower it.
+var maxQueryObjects = 1000000
+
+// maxQueryText bounds the lines of plain text kept from the output.
+const maxQueryText = 64 << 10
+
+// ParseQueryReader reads terraform query -json output as it comes. found,
+// when set, sees each object as it is parsed, so that whole objects
+// (include_resource) need not all be held until the end.
+func ParseQueryReader(r io.Reader, source string, keys KeysFunc, limitFor func(address string) int, found func(*model.Resource)) (*QueryResult, []string, error) {
 	res := &QueryResult{}
 	var errs []Failure
 	var started []string
 	finished := map[string]bool{}
-	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 || line[0] != '{' {
+			// Messages such as Terraform before 1.14's "no command named
+			// query" come as text.
+			if len(res.Text)+len(line) < maxQueryText {
+				res.Text += string(line) + "\n"
+			}
 			continue
 		}
 		var m queryMessage
@@ -412,7 +445,10 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 			f := m.ListResourceFound
 			block, _, _ := strings.Cut(f.Address, "[")
 			required, attribute := keys(block, f.ResourceType)
-			res.Found = append(res.Found, model.Resource{
+			if len(res.Found) >= maxQueryObjects {
+				return nil, nil, fmt.Errorf("terraform query returned more than %d objects; narrow it with -types or -arg", maxQueryObjects)
+			}
+			r := model.Resource{
 				Type:          f.ResourceType,
 				Identity:      f.Identity,
 				DisplayName:   f.DisplayName,
@@ -421,7 +457,11 @@ func ParseQueryStream(data []byte, source string, keys KeysFunc, limitFor func(a
 				Attributes:    f.ResourceObject,
 				ListAddress:   f.Address,
 				Source:        source,
-			})
+			}
+			if found != nil {
+				found(&r)
+			}
+			res.Found = append(res.Found, r)
 		case m.Diagnostic != nil && m.Diagnostic.Severity == "error":
 			d := m.Diagnostic
 			msg := d.Summary
@@ -474,4 +514,34 @@ func listType(addr string) string {
 	}
 	typ, _, _ := strings.Cut(rest, ".")
 	return typ
+}
+
+// DefaultMaxQuerySize bounds the output of one terraform query.
+const DefaultMaxQuerySize int64 = 1 << 30
+
+func (r Runner) querySize() int64 {
+	if r.MaxQuerySize == 0 {
+		return DefaultMaxQuerySize
+	}
+	return r.MaxQuerySize
+}
+
+// sizeLimit fails a read once more than left bytes came through, instead
+// of cutting the output short as io.LimitReader would.
+type sizeLimit struct {
+	r    io.Reader
+	left int64
+	max  int64
+}
+
+func (l *sizeLimit) Read(p []byte) (int, error) {
+	if l.max == 0 {
+		l.max = l.left
+	}
+	n, err := l.r.Read(p)
+	l.left -= int64(n)
+	if l.left < 0 {
+		return n, fmt.Errorf("terraform query output is larger than %d bytes (-max-query-size); narrow it with -types, or ask for fewer attributes", l.max)
+	}
+	return n, err
 }

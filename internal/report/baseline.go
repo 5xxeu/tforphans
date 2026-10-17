@@ -2,10 +2,11 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"regexp"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -18,16 +19,15 @@ type Snapshot struct {
 	Summary Summary
 }
 
-func ReadSnapshot(path string, maxSize int64) (*Snapshot, error) {
+func ReadSnapshot(ctx context.Context, path string, maxSize int64) (*Snapshot, error) {
 	if path == "-" {
 		return nil, errors.New("report must be a file path, not -")
 	}
-	f, err := os.Open(path)
-	if err != nil {
+	data, err := state.ReadFile(ctx, path, maxSize)
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
 		return nil, err
 	}
-	defer f.Close()
-	data, err := state.ReadLimited(f, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

@@ -171,7 +171,12 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			snapshots, n, err := pullStateRoot(ctx, o, d)
+			var n int
+			snapshots, err := withSource(ctx, o, func(ctx context.Context) ([]state.Snapshot, error) {
+				snapshots, read, err := pullStateRoot(ctx, o, d)
+				n = read
+				return snapshots, err
+			})
 			mu.Lock()
 			defer mu.Unlock()
 			// The workspaces that were read still count.

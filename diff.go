@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,12 +54,12 @@ func runDiff(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: unknown -format %q\n", report.Clean(*format))
 		return exitError
 	}
-	old, err := report.ReadSnapshot(paths[0], state.DefaultMaxSize)
+	old, err := report.ReadSnapshot(context.Background(), paths[0], state.DefaultMaxSize)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return exitError
 	}
-	current, err := report.ReadSnapshot(paths[1], state.DefaultMaxSize)
+	current, err := report.ReadSnapshot(context.Background(), paths[1], state.DefaultMaxSize)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return exitError

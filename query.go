@@ -23,7 +23,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err := tf.RemoveStale(root); err != nil {
 		return nil, err
 	}
-	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion}
+	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion, MaxQuerySize: o.maxQuerySize}
 	initialized := r.Initialized()
 	if !initialized && o.init {
 		if err := r.Init(ctx); err != nil {
@@ -35,7 +35,8 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	// coverage and for -strict. (Without .terraform a root may still work:
 	// no providers, or providers from dev_overrides.)
 	uninitialized := func(err error) bool {
-		if initialized || o.init {
+		// A timeout or cancel is no sign of a missing init.
+		if initialized || o.init || ctx.Err() != nil {
 			return false
 		}
 		u := report.NewUnreadState(root, err)
@@ -49,14 +50,15 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if o.noQuery {
 		// Only the state is needed: no provider schemas or query files.
 		snapshots, n, err := pullRoot(ctx, o, root)
-		if err != nil {
-			if uninitialized(err) {
-				return nil, nil
-			}
-			return nil, err
-		}
+		// The workspaces that were read still count.
 		idx.AddSnapshots(snapshots)
 		sum.States += n
+		if err != nil && !uninitialized(err) {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
+		}
 		return nil, nil
 	}
 	schemas, err := r.ProvidersSchema(ctx)
@@ -98,14 +100,19 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 
 	snapshots, n, err := pullRoot(ctx, o, root)
+	// The workspaces that were read still count; an unread one is a gap,
+	// as with -state-roots, and the root is still queried.
+	idx.AddSnapshots(snapshots)
+	sum.States += n
 	if err != nil {
 		if uninitialized(err) {
 			return nil, nil
 		}
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
 	}
-	idx.AddSnapshots(snapshots)
-	sum.States += n
 
 	// The user's own list blocks run too, even when nothing is generated.
 	userLists, err := tf.UserLists(root)
@@ -137,29 +144,32 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 		return idKeys.For(userListProvider(userLists[block].Provider, typ, declared, schemas), typ)
 	}
-	res, err := r.Query(ctx, plan, limitFor, keysFor)
-	if err != nil {
-		return nil, err
-	}
-	// Whole objects are large; keep the attributes asked for. Generated
-	// blocks ask for them; the user's own blocks do only with their own
-	// include_resource = true.
+	// Whole objects are large; keep the attributes asked for, as each
+	// object is read. Generated blocks ask for them; the user's own blocks
+	// do only with their own include_resource = true.
 	noAttrs := map[string]bool{}
-	for i := range res.Found {
-		f := &res.Found[i]
+	var noAttrsOrder []string
+	trim := func(f *model.Resource) {
 		if f.Attributes == nil {
 			block, _, _ := strings.Cut(f.ListAddress, "[")
 			tags := o.namesFromTags && hasTags(schemas, f.Type)
 			if _, generated := byAddress[block]; !generated && (len(o.wantedAttrs(f.Type)) > 0 || tags) && !noAttrs[block] {
 				noAttrs[block] = true
-				sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs, attr. ignore rules or -names-from-tags", root, block))
+				noAttrsOrder = append(noAttrsOrder, block)
 			}
-			continue
+			return
 		}
 		if o.namesFromTags {
 			f.TagName = nameTag(f.Attributes)
 		}
 		f.Attributes = keepAttrs(f.Attributes, o.wantedAttrs(f.Type))
+	}
+	res, err := r.Query(ctx, plan, limitFor, keysFor, trim)
+	if err != nil {
+		return nil, queryError{err}
+	}
+	for _, block := range noAttrsOrder {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%s: %s has no include_resource = true, so its results carry no attributes for -include-attrs, attr. ignore rules or -names-from-tags", root, block))
 	}
 	sum.Queried += len(plan.Queries) + len(userLists)
 	// providerOf is the local provider name a list block instance used.
@@ -383,3 +393,10 @@ func nameTag(attrs map[string]any) string {
 	name, _ := tags["Name"].(string)
 	return strings.TrimSpace(name)
 }
+
+// queryError is a failure of terraform query itself, after the root's
+// state was read: the root is not covered, but its objects are known.
+type queryError struct{ err error }
+
+func (e queryError) Error() string { return e.err.Error() }
+func (e queryError) Unwrap() error { return e.err }

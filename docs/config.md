@@ -31,7 +31,7 @@ job may then run, so what a file may set depends on what it could do:
 |---|---|---|
 | `plugin`, `terraform`, `terragrunt`, `allow-http`, `o`, `state` URLs | no | no |
 | `init`, `refresh`, `allow-unpinned`, `include-attrs`, `state` files, `proxmox-cluster-states`, `plugin-cluster-states`, `allow-incomplete` | no | yes |
-| `max-state-size` | at most 1 GiB | any positive size |
+| `max-state-size`, `max-query-size` | at most 1 GiB | any positive size |
 | everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, ...) | yes | yes |
 
 The first row runs any command, sends credentials to an address of the
@@ -42,7 +42,7 @@ more certain than they are (a state file of its own counts as proof of
 management): fine in a file you name, not in one that is read on its own
 and may come with someone else's repository.
 
-An automatic `.tforphans.yaml` may lower `max-state-size` from its 1 GiB
+An automatic `.tforphans.yaml` may lower `max-state-size` and `max-query-size` from their 1 GiB
 default, but a larger value is an error, even if the command line overrides
 it. Pass a larger limit on the command line or in a file given with
 `-config`.

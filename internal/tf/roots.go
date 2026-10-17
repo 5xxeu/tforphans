@@ -702,7 +702,9 @@ func configTokens(src []byte) string {
 func (r Runner) QueryVersion(ctx context.Context) error {
 	out, _, err := r.run(ctx, "version", "-json")
 	if err != nil {
-		return nil
+		// A version that cannot be told is no reason to stop; running out
+		// of time is (-source-timeout must see it).
+		return ctx.Err()
 	}
 	var v struct {
 		Version string `json:"terraform_version"`

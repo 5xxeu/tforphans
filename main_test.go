@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
@@ -715,5 +717,139 @@ func TestStateParallelismBounds(t *testing.T) {
 	}
 	if _, err := parseFlags([]string{"-no-config", "-names-from-tags"}, io.Discard); err == nil {
 		t.Error("-names-from-tags accepted without adopt")
+	}
+}
+
+// TestFailedSourceKeepsReport: a plugin that fails or runs out of time does
+// not take the results of the others with it; the run exits 1 after the
+// report.
+func TestFailedSourceKeepsReport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	good := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"kept"}}'`
+	for _, c := range []struct {
+		name, bad string
+		args      []string
+		want      string
+	}{
+		{"fails", "exit 3", nil, "plugin2 failed"},
+		{"times out", "exec sleep 30", []string{"-source-timeout", "300ms"}, "gave up after 300ms (-source-timeout)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := append([]string{"-no-config", "-no-query", "-format", "json", "-plugin", good, "-plugin", c.bad}, c.args...)
+			var stdout, stderr bytes.Buffer
+			start := time.Now()
+			if code := run(context.Background(), args, &stdout, &stderr); code != exitError {
+				t.Fatalf("exit %d: %s", code, &stderr)
+			}
+			if time.Since(start) > 10*time.Second {
+				t.Errorf("took %s", time.Since(start))
+			}
+			var out struct {
+				Orphans []model.Resource `json:"orphans"`
+				Summary struct {
+					Complete      bool                  `json:"complete"`
+					FailedSources []report.FailedSource `json:"failed_sources"`
+				} `json:"summary"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+				t.Fatalf("%v: %s", err, &stdout)
+			}
+			if len(out.Orphans) != 1 || out.Orphans[0].Identity["id"] != "kept" || out.Summary.Complete ||
+				len(out.Summary.FailedSources) != 1 || out.Summary.FailedSources[0].Source != "plugin2" {
+				t.Errorf("report: %s", &stdout)
+			}
+			if !strings.Contains(stderr.String(), c.want) {
+				t.Errorf("stderr: %s", &stderr)
+			}
+		})
+	}
+	// -timeout stops the whole run.
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "exec sleep 30", "-timeout", "300ms"}, &stdout, &stderr); code != exitError || !strings.Contains(stderr.String(), "stopped after 300ms (-timeout)") {
+		t.Errorf("-timeout: exit %d: %s", code, &stderr)
+	}
+}
+
+// TestSourceTimeoutKeepsCause: a root whose query timed out after its
+// state was read is still told apart from an unread state.
+func TestSourceTimeoutKeepsCause(t *testing.T) {
+	o := &options{sourceTimeout: 50 * time.Millisecond}
+	_, err := withSource(context.Background(), o, func(ctx context.Context) (struct{}, error) {
+		<-ctx.Done()
+		return struct{}{}, queryError{ctx.Err()}
+	})
+	var qe queryError
+	if !errors.As(err, &qe) || !strings.Contains(err.Error(), "gave up after 50ms (-source-timeout)") {
+		t.Errorf("%v", err)
+	}
+}
+
+// TestSourceTimeoutAfterSuccess: a source that returns no error after its
+// deadline still timed out.
+func TestSourceTimeoutAfterSuccess(t *testing.T) {
+	o := &options{sourceTimeout: 50 * time.Millisecond}
+	_, err := withSource(context.Background(), o, func(ctx context.Context) (int, error) {
+		<-ctx.Done()
+		return 1, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "gave up after 50ms (-source-timeout)") {
+		t.Errorf("%v", err)
+	}
+}
+
+// TestRootStateFailures: with a terraform that hangs, -source-timeout makes
+// the root a failed source (not "not initialized"); with one workspace that
+// cannot be read, the other one still counts.
+func TestRootStateFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell terraform")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(filepath.Join(root, ".terraform"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := `{"version":4,"lineage":"l","serial":1,"resources":[{"mode":"managed","type":"vault_policy","name":"p","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"identity":{"id":"kept"},"attributes":{"id":"kept"}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(dir, "terraform")
+	script := `#!/bin/sh
+case "$1" in
+workspace) printf '* default\n  bad\n' ;;
+state) [ "$TF_WORKSPACE" = bad ] && { echo "Error: access denied" >&2; exit 1; }; cat "` + filepath.Join(dir, "state.json") + `" ;;
+esac
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"kept"}}'`
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-config", "-no-query", "-terraform", fake, "-plugin", plugin, "-format", "json", root}, &stdout, &stderr)
+	var out struct {
+		Orphans []model.Resource `json:"orphans"`
+		Summary struct {
+			Managed      int                  `json:"managed"`
+			UnreadStates []report.UnreadState `json:"unread_states"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil || code != exitOK || out.Summary.Managed != 1 || len(out.Orphans) != 0 ||
+		len(out.Summary.UnreadStates) != 1 || !strings.Contains(out.Summary.UnreadStates[0].Error, "workspace bad") {
+		t.Errorf("one workspace unread: exit %d, %v\n%s\n%s", code, err, &stdout, &stderr)
+	}
+
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".terraform")); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run(context.Background(), []string{"-no-config", "-no-query", "-terraform", fake, "-plugin", plugin, "-source-timeout", "300ms", root}, &stdout, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "gave up after 300ms (-source-timeout)") || strings.Contains(stderr.String(), "not initialized") {
+		t.Errorf("hanging terraform: exit %d\n%s", code, &stderr)
 	}
 }

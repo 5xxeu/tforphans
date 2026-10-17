@@ -15,7 +15,10 @@ format it does not know; new fields do not change it.
   `api_not_enabled`, `strict_ignored`, `duplicate_ownership`,
   `possible_duplicate_ownership`, `duplicate_in_state`), `complete`,
   `states_complete`, `discovery_complete`, `unread_states`
-  (`[{root, error}]`), `failed_queries` (`address`, `type`, `scope`,
+  (`[{root, error}]`), `failed_sources` (`[{source, error}]`: a root,
+  `-scan NAME` or `pluginN` that failed as a whole; the run exits 1 and
+  its `listings` are marked incomplete),
+  `failed_queries` (`address`, `type`, `scope`,
   `root`, `category`, `message`), `skipped_types` (`type`, `reason`,
   `root`, `excluded`: left out on purpose or without any listing),
   `warnings`, `notes`, `providers_without_list`, `by_type` and `by_scope`

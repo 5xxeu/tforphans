@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
@@ -1016,5 +1017,62 @@ func TestIntegrationTerragrunt(t *testing.T) {
 	// Without -terragrunt the unit is no root: nothing to read.
 	if _, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live); !strings.Contains(stderr, "0 states read") {
 		t.Errorf("without -terragrunt:\n%s", stderr)
+	}
+}
+
+// TestIntegrationFailedRoot: a root that fails before its state is read
+// does not take the other roots' results with it; its state counts as
+// unread, so adopt does not import its objects a second time.
+func TestIntegrationFailedRoot(t *testing.T) {
+	data, root := setup(t)
+	for _, d := range []string{"good", "broken"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(root, "good", "main.tf"), `
+terraform {
+  required_providers {
+    fake = { source = "example.com/fake/fake" }
+  }
+}
+provider "fake" {}
+`)
+	// Initialized like the good one, but its own list block does not parse.
+	good, _ := os.ReadFile(filepath.Join(root, "good", "main.tf"))
+	write(t, filepath.Join(root, "broken", "main.tf"), string(good))
+	write(t, filepath.Join(root, "broken", "mine.tfquery.hcl"), "list \"fake_thing\" \"x\" {\n")
+	write(t, filepath.Join(data, "thing", "stray"), "")
+	t.Chdir(root)
+	code, stdout, stderr := runTool("-format", "json", "-types", "fake_thing", "good", "broken")
+	if code != exitError {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	var out struct {
+		Orphans []model.Resource `json:"orphans"`
+		Summary struct {
+			Complete      bool                  `json:"complete"`
+			FailedSources []report.FailedSource `json:"failed_sources"`
+			UnreadStates  []report.UnreadState  `json:"unread_states"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("%v\n%s", err, stdout)
+	}
+	if len(out.Orphans) != 1 || out.Orphans[0].Identity["id"] != "stray" || out.Summary.Complete ||
+		len(out.Summary.FailedSources) != 1 || out.Summary.FailedSources[0].Source != "broken" ||
+		len(out.Summary.UnreadStates) != 1 || out.Summary.UnreadStates[0].Root != "broken" {
+		t.Errorf("report:\n%s\n%s", stdout, stderr)
+	}
+	if code, _, stderr := runTool("adopt", "-types", "fake_thing", "good", "broken"); code != exitError || !strings.Contains(stderr, "not writing import blocks") {
+		t.Errorf("adopt with a failed root: exit %d\n%s", code, stderr)
+	}
+	// terraform query itself fails after the state was read: the root is a
+	// failed source, but its state is not unread.
+	code, stdout, stderr = runTool("-format", "json", "-types", "fake_thing", "-max-query-size", "10", "good")
+	out.Summary.FailedSources, out.Summary.UnreadStates = nil, nil
+	if err := json.Unmarshal([]byte(stdout), &out); code != exitError || err != nil || len(out.Summary.FailedSources) != 1 ||
+		!strings.Contains(out.Summary.FailedSources[0].Error, "larger than 10 bytes") || len(out.Summary.UnreadStates) != 0 {
+		t.Errorf("-max-query-size: exit %d, %v\n%s\n%s", code, err, stdout, stderr)
 	}
 }

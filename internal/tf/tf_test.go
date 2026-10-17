@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/5xxeu/tforphans/internal/glob"
+	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/proc"
 	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/hashicorp/hcl/v2/hclparse"
@@ -927,5 +928,52 @@ func TestClassifyElsewhere(t *testing.T) {
 	f = Failure{Message: off, Elsewhere: true}
 	if f.Classify(); f.Category != FailOther {
 		t.Errorf("API off in the provider's project, query in another: %q", f.Category)
+	}
+}
+
+func TestParseQueryReaderLimitsAndTrim(t *testing.T) {
+	found := `{"list_resource_found":{"address":"list.fake_thing.t","display_name":"%d","identity":{"id":"%d"},"resource_type":"fake_thing","resource_object":{"id":"%d","secret":"x","labels":{"a":"b"}}},"type":"list_resource_found"}` + "\n"
+	var in strings.Builder
+	in.WriteString("Error: some text terraform printed\n")
+	for i := range 3 {
+		fmt.Fprintf(&in, found, i, i, i)
+	}
+	// The callback sees each object as it is read and may drop attributes.
+	seen := 0
+	res, _, err := ParseQueryReader(strings.NewReader(in.String()), "root", noKeys, func(string) int { return 100 }, func(r *model.Resource) {
+		seen++
+		r.Attributes = map[string]any{"labels": r.Attributes["labels"]}
+	})
+	if err != nil || seen != 3 || len(res.Found) != 3 || res.Found[0].Attributes["secret"] != nil || res.Found[0].Attributes["labels"] == nil {
+		t.Fatalf("err=%v seen=%d found=%+v", err, seen, res.Found)
+	}
+	if !strings.Contains(res.Text, "some text terraform printed") {
+		t.Errorf("text: %q", res.Text)
+	}
+	old := maxQueryObjects
+	maxQueryObjects = 2
+	defer func() { maxQueryObjects = old }()
+	if _, _, err := ParseQueryReader(strings.NewReader(in.String()), "root", noKeys, func(string) int { return 100 }, nil); err == nil || !strings.Contains(err.Error(), "more than 2 objects") {
+		t.Errorf("object limit: %v", err)
+	}
+}
+
+func TestSizeLimit(t *testing.T) {
+	data := strings.Repeat("{}\n", 100) // 300 bytes
+	if _, _, err := ParseQueryReader(&sizeLimit{r: strings.NewReader(data), left: 299}, "root", noKeys, func(string) int { return 100 }, nil); err == nil || !strings.Contains(err.Error(), "larger than 299 bytes") {
+		t.Errorf("over the limit: %v", err)
+	}
+	if _, _, err := ParseQueryReader(&sizeLimit{r: strings.NewReader(data), left: 300}, "root", noKeys, func(string) int { return 100 }, nil); err != nil {
+		t.Errorf("at the limit: %v", err)
+	}
+}
+
+// TestQueryStartFailure: a terraform that cannot start is an error, not a
+// panic over a result that was never read.
+func TestQueryStartFailure(t *testing.T) {
+	r := Runner{Bin: filepath.Join(t.TempDir(), "missing-terraform"), Dir: t.TempDir()}
+	_, err := r.Query(context.Background(), Plan{}, func(string) int { return 100 }, noKeys, nil)
+	if err == nil {
+		t.Fatal("no error")
 	}
 }
