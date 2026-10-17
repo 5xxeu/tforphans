@@ -353,3 +353,19 @@ func TestBaselineTransitions(t *testing.T) {
 		}
 	}
 }
+
+// TestBaselineTransitionUnknownLocation: with project "", an object of
+// another root with the same key is not the old finding.
+func TestBaselineTransitionUnknownLocation(t *testing.T) {
+	a := model.Resource{Type: "google_compute_instance", Identity: map[string]any{"name": "node", "zone": "z1", "project": ""}, Source: "root-a", ListAddress: "list.x.a"}
+	b := a
+	b.Source, b.ListAddress = "root-b", "list.x.b"
+	_, res := CompareRun([]model.Resource{a}, nil, Summary{}, Summary{}, []Seen{{Resource: b, Status: BecameIgnored, Rule: "gke"}})
+	if res.Resolved != 0 || res.Unverified != 1 || res.UnverifiedFindings[0].Transition != "" {
+		t.Errorf("another root's object resolved the finding: %+v", res)
+	}
+	_, res = CompareRun([]model.Resource{a}, nil, Summary{}, Summary{}, []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
+	if res.Resolved != 1 || res.ResolvedFindings[0].Transition != BecameIgnored {
+		t.Errorf("the same listing's object: %+v", res)
+	}
+}

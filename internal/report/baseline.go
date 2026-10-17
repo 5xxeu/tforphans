@@ -97,7 +97,7 @@ const (
 )
 
 // seenAs finds r among the objects seen this run (same key, compatible
-// provider). Several matches give the least certain status: uncertain,
+// provider; the same listing when a location is unknown). Several matches give the least certain status: uncertain,
 // then managed, then ignored.
 func seenAs(r model.Resource, seen map[findingKey][]Seen) (Seen, bool) {
 	k, ok := keyFinding(r)
@@ -107,8 +107,15 @@ func seenAs(r model.Resource, seen map[findingKey][]Seen) (Seen, bool) {
 	rank := map[string]int{BecameUnsure: 0, "managed": 1, BecameIgnored: 2}
 	var best Seen
 	found := false
+	// With a location the listing left empty (project ""), equal keys of
+	// another source may be another object (as in dedupe): only the same
+	// listing says what became of this one.
+	unknown := state.UnknownLocation(r.Identity)
 	for _, s := range seen[k] {
 		if !model.SameProvider(r.ProviderSource, s.Resource.ProviderSource) {
+			continue
+		}
+		if unknown && (s.Resource.Source != r.Source || s.Resource.ListAddress != r.ListAddress) {
 			continue
 		}
 		if !found || rank[s.Status] < rank[best.Status] {
