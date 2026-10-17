@@ -708,6 +708,7 @@ func TestExplain(t *testing.T) {
 		{Type: "vault_policy", Address: "vault_policy.a", Provider: vault, Identity: map[string]any{"id": "a"}},
 		{Type: "vault_policy", Address: "vault_policy.legacy", Provider: vault, Attributes: map[string]any{"id": "legacy", "name": "legacy"}},
 		{Type: "aws_instance", Address: "aws_instance.x", Identity: map[string]any{"id": "i-1"}},
+		{Type: "aws_instance", Address: "aws_instance.y", Identity: map[string]any{"id": "i-2", "zone": "z9"}},
 		{Type: "vault_policy", Address: "vault_policy.c", Provider: vault, Identity: map[string]any{"id": "c", "name": "n"}},
 	}}})
 	for _, c := range []struct {
@@ -720,12 +721,14 @@ func TestExplain(t *testing.T) {
 	}{
 		{"identity", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "a"}}, "identity", "", true, nil, 3},
 		{"attributes", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "legacy"}}, "attributes", "", true, nil, 3},
-		{"unconfirmed key", model.Resource{Type: "aws_instance", RequiredKeys: []string{"id"}, Identity: map[string]any{"id": "i-1", "account_id": "1"}}, "identity", "", true, []string{"account_id"}, 1},
+		{"unconfirmed key", model.Resource{Type: "aws_instance", RequiredKeys: []string{"id"}, Identity: map[string]any{"id": "i-1", "account_id": "1"}}, "identity", "", true, []string{"account_id"}, 2},
 		{"other provider", model.Resource{Type: "vault_policy", ProviderSource: "acme/vault", Identity: map[string]any{"id": "a"}}, "", "provider " + vault + ", not acme/vault", false, nil, 3},
 		{"conflict", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "legacy", "name": "x"}}, "", "its attribute name differs from x here", false, nil, 3},
 		{"missing required key", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "a", "namespace": "n"}}, "", "its identity has no namespace", false, nil, 3},
 		{"identity conflict", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "c", "name": "x"}}, "", "name is n there, x here", false, nil, 3},
 		{"nothing close", model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "zzz"}}, "", "", false, nil, 3},
+		{"alternative type", model.Resource{Type: "vault_mount", AltTypes: []string{"aws_instance"}, AltIdentity: map[string]map[string]any{"aws_instance": {"id": "i-1", "zone": "z"}}, Identity: map[string]any{"path": "kv"}}, "", "as aws_instance: its identity has no zone", false, nil, 2},
+		{"alternative type, no candidate", model.Resource{Type: "vault_mount", AltTypes: []string{"aws_instance"}, AltIdentity: map[string]map[string]any{"aws_instance": {"id": "i-new", "zone": "z9"}}, Identity: map[string]any{"path": "kv"}}, "", "as aws_instance: id is i-2 there, i-new here", false, nil, 2},
 		{"no instance of the type", model.Resource{Type: "vault_mount", Identity: map[string]any{"path": "kv"}}, "", "", false, nil, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {

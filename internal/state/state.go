@@ -556,30 +556,10 @@ func (ix *Index) Explain(r model.Resource, limit int) (Match, []Rejection, int) 
 		}
 	})
 	// No candidate at all (they are looked up by the rarest key): show
-	// instances that share any one key value, and why they do not match.
+	// instances that share any one key value, and why they do not match,
+	// with the checks of match.
 	if !m.Managed && len(rejected) == 0 {
-		seen := map[*Instance]bool{}
-		for _, k := range model.SortedKeys(r.Identity) {
-			v, ok := model.Scalar(r.Identity[k])
-			if !ok || v == "" {
-				continue
-			}
-			for _, in := range ix.byValue[r.Type+"\x00"+k+"\x00"+v] {
-				if seen[in] || len(rejected) >= limit {
-					continue
-				}
-				seen[in] = true
-				why := ""
-				if !model.SameProvider(r.ProviderSource, in.Provider) {
-					why = fmt.Sprintf("provider %s, not %s", orUnknown(in.Provider), orUnknown(r.ProviderSource))
-				} else if ok, _, w, _ := compare(r, in); !ok {
-					why = w
-				} else {
-					why = "in another place (node or cluster) than the scanned one"
-				}
-				rejected = append(rejected, Rejection{in.Address, in.Source, why})
-			}
-		}
+		rejected = ix.nearby(r, limit)
 	}
 	n := ix.types[r.Type]
 	for _, t := range r.AltTypes {
@@ -594,6 +574,49 @@ func (ix *Index) Managed(r model.Resource) (string, bool) {
 	return m.Address, m.Managed
 }
 
+// nearby returns up to limit instances of r's type or its alternative
+// names that share one identity value with r, and why they do not manage it.
+func (ix *Index) nearby(r model.Resource, limit int) []Rejection {
+	var out []Rejection
+	seen := map[*Instance]bool{}
+	for _, typ := range append([]string{r.Type}, r.AltTypes...) {
+		as := r
+		if id, ok := r.AltIdentity[typ]; ok {
+			as.Identity, as.RequiredKeys, as.AttributeKeys = id, nil, nil
+		}
+		for _, k := range model.SortedKeys(as.Identity) {
+			v, ok := model.Scalar(as.Identity[k])
+			if !ok || v == "" {
+				continue
+			}
+			for _, in := range ix.byValue[typ+"\x00"+k+"\x00"+v] {
+				if len(out) == limit {
+					return out
+				}
+				if seen[in] {
+					continue
+				}
+				seen[in] = true
+				why := ""
+				ok, _, w, _ := compare(as, in)
+				switch {
+				case typ == r.Type && !model.SameProvider(r.ProviderSource, in.Provider):
+					why = fmt.Sprintf("provider %s, not %s", orUnknown(in.Provider), orUnknown(r.ProviderSource))
+				case !ok:
+					why = w
+				default:
+					why = "in another place (node or cluster) than the scanned one"
+				}
+				if typ != r.Type {
+					why = "as " + typ + ": " + why
+				}
+				out = append(out, Rejection{in.Address, in.Source, why})
+			}
+		}
+	}
+	return out
+}
+
 // Match looks r up, preferring a verified match over an unverified one.
 //
 // An instance matches when it has the same type and every identity attribute
@@ -606,8 +629,11 @@ func (ix *Index) Match(r model.Resource) Match { return ix.match(r, nil) }
 // match is Match; rejected, when set, hears of each candidate that does
 // not manage r.
 func (ix *Index) match(r model.Resource, rejected func(in *Instance, why string)) Match {
-	reject := func(in *Instance, why string) {
+	reject := func(typ string, in *Instance, why string) {
 		if rejected != nil {
+			if typ != r.Type {
+				why = "as " + typ + ": " + why
+			}
 			rejected(in, why)
 		}
 	}
@@ -627,19 +653,19 @@ func (ix *Index) match(r model.Resource, rejected func(in *Instance, why string)
 			// provider (telmate's proxmox_vm_qemu); the type itself must
 			// come from the same provider.
 			if typ == r.Type && !model.SameProvider(r.ProviderSource, in.Provider) {
-				reject(in, fmt.Sprintf("provider %s, not %s", orUnknown(in.Provider), orUnknown(r.ProviderSource)))
+				reject(typ, in, fmt.Sprintf("provider %s, not %s", orUnknown(in.Provider), orUnknown(r.ProviderSource)))
 				continue
 			}
 			ok, verified, why, missing := compare(as, in)
 			if !ok {
-				reject(in, why)
+				reject(typ, in, why)
 				continue
 			}
 			scopeUnknown := false
 			if r.Scope != nil {
 				inScope, known := scopeCheck(r.Scope, typ, in)
 				if !inScope {
-					reject(in, "in another place (node or cluster) than the scanned one")
+					reject(typ, in, "in another place (node or cluster) than the scanned one")
 					continue
 				}
 				verified, scopeUnknown = verified && known, !known
