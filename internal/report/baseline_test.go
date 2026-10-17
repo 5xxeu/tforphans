@@ -305,3 +305,51 @@ func TestBaselineEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// TestBaselineTransitions: a missing finding that the run saw as something
+// else says what it became; one it did not see at all was no longer found.
+func TestBaselineTransitions(t *testing.T) {
+	l := Listing{Source: "infra", Address: "list.thing.all", Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same"}
+	gone := func(id string) model.Resource {
+		return model.Resource{Type: "thing", Identity: map[string]any{"id": id}, Source: "infra", ListAddress: l.Address, ProviderSource: "hashicorp/foo"}
+	}
+	old := []model.Resource{gone("managed"), gone("ignored"), gone("uncertain"), gone("deleted"), gone("other-provider"), gone("both")}
+	seen := []Seen{
+		{Resource: gone("managed"), Status: "managed", StateAddress: "thing.m"},
+		{Resource: gone("ignored"), Status: BecameIgnored, Rule: ".tforphans-ignore:1: thing"},
+		{Resource: gone("uncertain"), Status: BecameUnsure, StateAddress: "thing.u"},
+		{Resource: model.Resource{Type: "thing", Identity: map[string]any{"id": "other-provider"}, ProviderSource: "acme/foo"}, Status: "managed", StateAddress: "thing.o"},
+		// Seen twice: the less certain status wins.
+		{Resource: gone("both"), Status: "managed", StateAddress: "thing.b"},
+		{Resource: gone("both"), Status: BecameUnsure, StateAddress: "thing.b2"},
+	}
+	sum := Summary{Listings: []Listing{l}}
+	_, b := CompareRun(old, nil, sum, sum, seen)
+	got := map[string]Finding{}
+	for _, f := range append(b.ResolvedFindings, b.UnverifiedFindings...) {
+		got[f.Identity["id"].(string)] = f
+	}
+	for id, want := range map[string][3]string{
+		"managed":        {BecameManaged, "thing.m", ""},
+		"ignored":        {BecameIgnored, "", ".tforphans-ignore:1: thing"},
+		"uncertain":      {BecameUnsure, "thing.u", ""},
+		"deleted":        {NoLongerFound, "", ""},
+		"other-provider": {NoLongerFound, "", ""},
+		"both":           {BecameUnsure, "thing.b2", ""},
+	} {
+		f := got[id]
+		if f.Transition != want[0] || f.StateAddress != want[1] || f.Rule != want[2] {
+			t.Errorf("%s: %+v", id, f)
+		}
+	}
+	if b.Resolved != 4 || b.Unverified != 2 || got["uncertain"].Reason != "now uncertain" {
+		t.Errorf("%+v", b)
+	}
+	// Without the run's live objects (diff) nothing is said about them.
+	_, b = Compare(old, nil, sum, sum)
+	for _, f := range append(b.ResolvedFindings, b.UnverifiedFindings...) {
+		if f.Transition != "" {
+			t.Errorf("offline transition: %+v", f)
+		}
+	}
+}

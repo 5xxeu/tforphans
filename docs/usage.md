@@ -174,7 +174,12 @@ label: tforphans does not check that the credentials really point at that
 environment. An automatic `.tforphans.yaml` may set `environment: prod`.
 
 An absent finding may have been deleted, become managed, been ignored or
-become uncertain. "Not verified" means matching listing evidence is missing,
+become uncertain. The run sees every live object, so it tells these apart:
+the summary line reads, for example, `3 resolved (1 became managed, 1
+ignored, 1 no longer found)`, and JSON gives each finding a `transition`
+with the state address or ignore rule. A finding that is now uncertain is
+not verified (`now uncertain`), even when its listing ran. "Not verified"
+otherwise means matching listing evidence is missing,
 the listing did not finish, its provider or configuration changed, or the
 finding came from a plugin. Plugins are named by position, so a run cannot
 show that the same plugin ran again. It is not evidence that the object

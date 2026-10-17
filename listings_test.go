@@ -209,7 +209,9 @@ func TestUserListingEvidence(t *testing.T) {
 			if err := json.Unmarshal([]byte(diffJSON), &d); err != nil {
 				t.Fatal(err)
 			}
-			if code != exitOK || !reflect.DeepEqual(d.Resolved, b.ResolvedFindings) || !reflect.DeepEqual(d.Unverified, b.UnverifiedFindings) {
+			// The run also knows what became of a finding (it saw every
+			// live object); diff only has the two reports.
+			if code != exitOK || !reflect.DeepEqual(d.Resolved, withoutTransitions(b.ResolvedFindings)) || !reflect.DeepEqual(d.Unverified, withoutTransitions(b.UnverifiedFindings)) {
 				t.Fatalf("diff disagrees: %s%s", diffJSON, stderr)
 			}
 		})
@@ -302,4 +304,13 @@ esac
 			}
 		})
 	}
+}
+
+func withoutTransitions(fs []report.Finding) []report.Finding {
+	out := make([]report.Finding, len(fs))
+	for i, f := range fs {
+		f.Transition, f.StateAddress, f.Rule = "", "", ""
+		out[i] = f
+	}
+	return out
 }

@@ -741,6 +741,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	live = dedupe(live)
 	var orphans []model.Resource
 	var uncertain []report.Uncertain
+	var seen []report.Seen // live objects that are no orphans, for -baseline
 	sum.ByType = map[string]*report.TypeCount{}
 	byScope := map[string]*report.TypeCount{}
 	byTypeScope := map[[2]string]*report.TypeCount{}
@@ -782,6 +783,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		switch {
 		case m.Managed && m.Verified:
+			seen = append(seen, report.Seen{Resource: *r, Status: "managed", StateAddress: m.Address})
 			sum.Managed++
 			if m.ByIdentity {
 				sum.ManagedByIdentity++
@@ -790,11 +792,13 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 				tc.Managed++
 			}
 		case ignored:
+			seen = append(seen, report.Seen{Resource: *r, Status: report.BecameIgnored, Rule: rule})
 			sum.Ignored++
 			for _, tc := range counts {
 				tc.Ignored++
 			}
 		case m.Managed:
+			seen = append(seen, report.Seen{Resource: *r, Status: report.BecameUnsure, StateAddress: m.Address})
 			sum.Uncertain++
 			uncertain = append(uncertain, report.Uncertain{Resource: *r, StateAddress: m.Address})
 			for _, tc := range counts {
@@ -881,7 +885,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	shown := orphans
 	if previous != nil {
 		var b report.Baseline
-		orphans, b = report.Compare(previous.Orphans, orphans, previous.Summary, sum)
+		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, sum, seen)
 		baseline = &b
 		if b.EnvironmentChanged {
 			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.environment))
@@ -969,7 +973,16 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if baseline.EnvironmentChanged {
 			why = "the baseline is from another environment"
 		}
-		fmt.Fprintf(stderr, "baseline: %d new, %d known (not shown), %d resolved, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, baseline.Unverified, why)
+		resolved := ""
+		if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
+			resolved = " (" + parts + ")"
+		}
+		if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
+			why = "now uncertain"
+		} else if n > 0 {
+			why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
+		}
+		fmt.Fprintf(stderr, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
 		if o.verbose {
 			if err := report.PrintFindings(stderr, baseline.UnverifiedFindings, 8); err != nil {
 				return err
@@ -1224,4 +1237,26 @@ func explain(r model.Resource, m state.Match, rejected []state.Rejection, ofType
 		e.StateAddress, e.StateSource = m.Address, m.Source
 	}
 	return e
+}
+
+func countTransition(fs []report.Finding, transition string) int {
+	n := 0
+	for _, f := range fs {
+		if f.Transition == transition {
+			n++
+		}
+	}
+	return n
+}
+
+// transitionSummary counts what became of resolved findings: "1 became
+// managed, 2 no longer found".
+func transitionSummary(fs []report.Finding) string {
+	var parts []string
+	for _, t := range [][2]string{{report.BecameManaged, "became managed"}, {report.BecameIgnored, "ignored"}, {report.NoLongerFound, "no longer found"}} {
+		if n := countTransition(fs, t[0]); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, t[1]))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
