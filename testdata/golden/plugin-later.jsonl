@@ -1,0 +1,4 @@
+{"type":"vault_policy","identity":{"id":"kept"},"display_name":"kept","provider_source":"hashicorp/vault"}
+{"type":"vault_policy","identity":{"id":"legacy"},"display_name":"legacy","provider_source":"hashicorp/vault"}
+{"type":"vault_policy","identity":{"id":"new"},"display_name":"new","provider_source":"hashicorp/vault"}
+{"type":"vault_mount","identity":{"path":"secret","n":12345678901234567890},"display_name":"secret","provider":"vault.other"}

@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -174,6 +176,13 @@ func (t *thing) List(ctx context.Context, req list.ListRequest, stream *list.Lis
 	// FAKE_PANIC=<kind> crashes the provider while listing that kind.
 	if os.Getenv("FAKE_PANIC") == t.kind {
 		panic("fake provider crash")
+	}
+	// FAKE_HANG=<kind> writes the provider's pid to $FAKE_DIR/hanging and
+	// never finishes listing that kind, for tests that stop a run.
+	if os.Getenv("FAKE_HANG") == t.kind {
+		_ = os.WriteFile(filepath.Join(os.Getenv("FAKE_DIR"), "hanging"), []byte(strconv.Itoa(os.Getpid())), 0o644)
+		<-ctx.Done()
+		time.Sleep(time.Hour)
 	}
 	// FAKE_FAIL=<kind>:<message> makes listing that kind fail with message.
 	if kind, msg, ok := strings.Cut(os.Getenv("FAKE_FAIL"), ":"); ok && kind == t.kind {

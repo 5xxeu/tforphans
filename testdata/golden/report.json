@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "orphans": [
+    {
+      "type": "vault_mount",
+      "identity": {
+        "n": 12345678901234567890,
+        "path": "secret"
+      },
+      "display_name": "secret",
+      "import_id": "",
+      "provider": "vault.other",
+      "provider_source": "",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1"
+    },
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "ci"
+      },
+      "display_name": "ci",
+      "import_id": "ci",
+      "provider": "",
+      "provider_source": "hashicorp/vault",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1"
+    }
+  ],
+  "uncertain": [
+    {
+      "type": "vault_mount",
+      "identity": {
+        "path": "kv"
+      },
+      "display_name": "kv",
+      "import_id": "",
+      "provider": "",
+      "provider_source": "hashicorp/vault",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1",
+      "state_address": "vault_mount.kv"
+    }
+  ],
+  "summary": {
+    "states": 1,
+    "duplicate_ownership": 0,
+    "possible_duplicate_ownership": 0,
+    "duplicate_in_state": 0,
+    "failed_sources": [
+      {
+        "source": "plugin2",
+        "error": "plugin2: exit status 3"
+      }
+    ],
+    "managed_by_identity": 1,
+    "live": 6,
+    "managed": 2,
+    "uncertain": 1,
+    "ignored": 1,
+    "orphans": 2,
+    "queried_types": 0,
+    "complete": false,
+    "states_complete": true,
+    "discovery_complete": false,
+    "warnings": [
+      "plugin1: cannot list auth backends: permission denied",
+      "plugin2 failed: plugin2: exit status 3"
+    ],
+    "notes": [
+      "1 of 3 state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)"
+    ],
+    "by_type": {
+      "vault_mount": {
+        "live": 2,
+        "managed": 0,
+        "uncertain": 1,
+        "ignored": 0,
+        "orphans": 1
+      },
+      "vault_policy": {
+        "live": 4,
+        "managed": 2,
+        "uncertain": 0,
+        "ignored": 1,
+        "orphans": 1
+      }
+    },
+    "coverage": [
+      {
+        "type": "vault_mount",
+        "status": "complete",
+        "live": 2,
+        "managed": 0,
+        "uncertain": 1,
+        "ignored": 0,
+        "orphans": 1
+      },
+      {
+        "type": "vault_policy",
+        "status": "complete",
+        "live": 4,
+        "managed": 2,
+        "uncertain": 0,
+        "ignored": 1,
+        "orphans": 1
+      }
+    ]
+  }
+}
