@@ -105,6 +105,14 @@ current findings. The extra object is:
  "resolved_findings": [], "unverified_findings": []}
 ```
 
+`summary.environment` holds the `-environment` name and is omitted without
+it. When the baseline's name differs from the current one (also when only
+one of them has a name), the object adds `"environment_changed": true`,
+every current orphan is `"new"` and every old finding is unverified with
+reason `environment changed`. `diff` then adds
+`"environment": {"old": "...", "new": "..."}`, present whenever either
+report has a name.
+
 The arrays contain the old findings' `type`, `identity`, `scope`,
 `provider_source`, `display_name`, `import_id`, `source` and `list_address`;
 `unverified_findings` also has `reason`. Findings match by type, JSON identity,

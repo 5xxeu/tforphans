@@ -32,7 +32,7 @@ job may then run, so what a file may set depends on what it could do:
 | `plugin`, `terraform`, `terragrunt`, `allow-http`, `o`, `state` URLs | no | no |
 | `init`, `refresh`, `allow-unpinned`, `include-attrs`, `state` files, `proxmox-cluster-states`, `plugin-cluster-states`, `allow-incomplete` | no | yes |
 | `max-state-size`, `max-query-size` | at most 1 GiB | any positive size |
-| everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, ...) | yes | yes |
+| everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, `baseline`, `environment`, ...) | yes | yes |
 
 The first row runs any command, sends credentials to an address of the
 file's choosing or overwrites any file: it belongs on the command line,

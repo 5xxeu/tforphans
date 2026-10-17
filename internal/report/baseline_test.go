@@ -270,3 +270,38 @@ func BenchmarkBaseline(b *testing.B) {
 		})
 	}
 }
+
+// TestBaselineEnvironment: a baseline of another environment (or one
+// without the label when this run has it) makes nothing known or resolved.
+func TestBaselineEnvironment(t *testing.T) {
+	l := Listing{Source: "infra", Address: "list.thing.all", Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same"}
+	known := model.Resource{Type: "thing", Identity: map[string]any{"id": "known"}, Source: "infra", ListAddress: l.Address}
+	gone := model.Resource{Type: "thing", Identity: map[string]any{"id": "gone"}, Source: "infra", ListAddress: l.Address}
+	for _, c := range []struct {
+		old, now string
+		changed  bool
+	}{{"", "", false}, {"prod", "prod", false}, {"prod", "staging", true}, {"", "prod", true}, {"prod", "", true}} {
+		old := Summary{Environment: c.old, Listings: []Listing{l}}
+		now := Summary{Environment: c.now, Listings: []Listing{l}}
+		marked, b := Compare([]model.Resource{known, gone}, []model.Resource{known}, old, now)
+		if b.EnvironmentChanged != c.changed {
+			t.Errorf("%q to %q: changed %v", c.old, c.now, b.EnvironmentChanged)
+		}
+		if c.changed {
+			if marked[0].Baseline != "new" || b.New != 1 || b.Known != 0 || b.Resolved != 0 || b.Unverified != 2 ||
+				b.UnverifiedFindings[0].Reason != "environment changed" || b.UnverifiedFindings[1].Reason != "environment changed" {
+				t.Errorf("%q to %q: %+v %+v", c.old, c.now, marked, b)
+			}
+		} else if marked[0].Baseline != "known" || b.Known != 1 || b.Resolved != 1 || b.Unverified != 0 {
+			t.Errorf("%q to %q: %+v %+v", c.old, c.now, marked, b)
+		}
+		d := CompareSnapshots(Snapshot{Orphans: []model.Resource{known, gone}, Summary: old}, Snapshot{Orphans: []model.Resource{known}, Summary: now})
+		if (d.Environment != nil) != (c.old != "" || c.now != "") || len(d.Added) != map[bool]int{true: 1, false: 0}[c.changed] {
+			t.Errorf("%q to %q: diff %+v", c.old, c.now, d)
+		}
+		var text bytes.Buffer
+		if err := d.Text(&text, false); err != nil || strings.Contains(text.String(), "environment changed from") != c.changed {
+			t.Errorf("%q to %q: diff text %v\n%s", c.old, c.now, err, &text)
+		}
+	}
+}

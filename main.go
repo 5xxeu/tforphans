@@ -153,6 +153,7 @@ type options struct {
 	adopt                  bool   // "adopt" subcommand: write import blocks
 	out                    string // adopt: output file, empty for stdout
 	baselinePath           string
+	environment            string
 	ignorePath             string
 	presets                []string
 	includeAttrs           []string
@@ -262,6 +263,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
 	}
 	fs.StringVar(&o.baselinePath, "baseline", "", "previous -format json report; show and fail only on new findings (not supported with adopt)")
+	fs.StringVar(&o.environment, "environment", "", "name of the environment this run checks, e.g. prod; stored in the JSON report, and a -baseline of another environment verifies nothing")
 	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...] lines (default "+defaultIgnoreFile+" if present)")
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
 	fs.BoolVar(&o.noDefaultPresets, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
@@ -341,6 +343,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	if o.adopt && o.baselinePath != "" {
 		return nil, errors.New("-baseline is not supported with adopt")
+	}
+	if len(o.environment) > 100 || report.Clean(o.environment) != o.environment {
+		return nil, errors.New("-environment must be one line of at most 100 bytes without control characters or extra spaces")
 	}
 	if o.baselinePath == "-" {
 		return nil, errors.New("-baseline must be a file path, not -")
@@ -852,12 +857,16 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
+	sum.Environment = o.environment
 	var baseline *report.Baseline
 	shown := orphans
 	if previous != nil {
 		var b report.Baseline
 		orphans, b = report.Compare(previous.Orphans, orphans, previous.Summary, sum)
 		baseline = &b
+		if b.EnvironmentChanged {
+			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.environment))
+		}
 		shown = nil
 		for _, r := range orphans {
 			if r.Baseline == "new" {
@@ -934,7 +943,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	printSummary(stderr, o, sum)
 	if baseline != nil {
-		fmt.Fprintf(stderr, "baseline: %d new, %d known (not shown), %d resolved, %d not verified (their type or scope was not fully listed this run)\n", baseline.New, baseline.Known, baseline.Resolved, baseline.Unverified)
+		why := "their type or scope was not fully listed this run"
+		if baseline.EnvironmentChanged {
+			why = "the baseline is from another environment"
+		}
+		fmt.Fprintf(stderr, "baseline: %d new, %d known (not shown), %d resolved, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, baseline.Unverified, why)
 		if o.verbose {
 			if err := report.PrintFindings(stderr, baseline.UnverifiedFindings, 8); err != nil {
 				return err

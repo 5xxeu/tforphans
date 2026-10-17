@@ -140,6 +140,21 @@ The fingerprint does not detect changes to values of variables, locals or
 data sources, or to the provider configuration body. Keep these consistent
 between the baseline and the current run.
 
+Name the environment when one repository checks several (the same roots
+with other credentials or workspaces):
+
+```sh
+tforphans -environment prod -format json > baseline-prod.json
+tforphans -environment prod -baseline baseline-prod.json -strict
+```
+
+The name goes into the report (`summary.environment`). When the baseline
+has another name, or only one of the two reports has one, nothing is known
+or resolved: every finding counts as new and every missing one is not
+verified (`environment changed`), with a note saying so. The name is only a
+label: tforphans does not check that the credentials really point at that
+environment. An automatic `.tforphans.yaml` may set `environment: prod`.
+
 An absent finding may have been deleted, become managed, been ignored or
 become uncertain. "Not verified" means matching listing evidence is missing,
 the listing did not finish, its provider or configuration changed, or the
