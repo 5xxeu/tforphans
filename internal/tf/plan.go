@@ -207,9 +207,20 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		// one: each may look at another account. When the root has only
 		// aliased ones, the default is an empty configuration that may
 		// reach another account through the environment: it is left out.
+		sc := opt.Configs[addr]
+		// Two local names of one source: terraform resolves the provider
+		// blocks unreliably (a run may give an alias an empty
+		// configuration), so a listing that ran proves nothing.
+		if !temporary && len(sc.LocalNames) > 1 {
+			names := strings.Join(sc.LocalNames, ", ")
+			for _, t := range types {
+				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + addr + " is required under several local names (" + names + ")", Provider: local})
+			}
+			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is required under several local names (%s), and terraform resolves its configurations unreliably then: its %d list-capable types were not queried; give it one local name", addr, names, len(types)))
+			continue
+		}
 		configs := []ConfigRef{{Local: local}}
 		var aliases []ConfigRef
-		sc := opt.Configs[addr]
 		if !temporary {
 			aliases = sc.Aliases
 		}

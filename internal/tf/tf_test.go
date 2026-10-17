@@ -1091,9 +1091,9 @@ func TestQueryStartFailure(t *testing.T) {
 	}
 }
 
-// TestPlanTwoLocalNames: two local names of one source share its default
-// configuration; aliases declared under either are listed, each through
-// the name it is declared under.
+// TestPlanTwoLocalNames: terraform resolves the provider blocks of two
+// local names of one source unreliably, so none of its types is queried:
+// each is a gap, and a note says why.
 func TestPlanTwoLocalNames(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
@@ -1104,13 +1104,7 @@ terraform {
   }
 }
 provider "awseu" {
-  region = "eu-west-1"
-}
-provider "awseu" {
   alias = "x"
-}
-provider "aws" {
-  alias = "y"
 }
 provider "google" {
   alias = "other"
@@ -1123,18 +1117,23 @@ provider "google" {
 		t.Fatalf("local names %v %v", declared, err)
 	}
 	configs, err := ProviderSourceConfigs(dir)
-	if err != nil || !reflect.DeepEqual(configs["registry.terraform.io/hashicorp/aws"], SourceConfigs{Plain: true, Aliases: []ConfigRef{{"aws", "y"}, {"awseu", "x"}}}) ||
-		!reflect.DeepEqual(configs["registry.terraform.io/hashicorp/google"], SourceConfigs{Aliases: []ConfigRef{{"google", "other"}}}) {
+	if err != nil || !reflect.DeepEqual(configs["registry.terraform.io/hashicorp/aws"], SourceConfigs{Aliases: []ConfigRef{{"awseu", "x"}}, LocalNames: []string{"aws", "awseu"}}) ||
+		!reflect.DeepEqual(configs["registry.terraform.io/hashicorp/google"], SourceConfigs{Aliases: []ConfigRef{{"google", "other"}}, LocalNames: []string{"google"}}) {
 		t.Fatalf("configs %+v %v", configs, err)
 	}
 	p := BuildPlan(schemas(t), declared, PlanOptions{Configs: configs})
-	refs := map[string]bool{}
 	for _, q := range p.Queries {
 		if q.Source == "registry.terraform.io/hashicorp/aws" {
-			refs[q.Ref()] = true
+			t.Errorf("aws queried: %+v", q)
 		}
 	}
-	if !refs["aws"] || !refs["awseu.x"] || !refs["aws.y"] || len(refs) != 3 {
-		t.Errorf("configurations listed: %v", refs)
+	gaps := 0
+	for _, sk := range p.Skipped {
+		if !sk.Excluded && strings.Contains(sk.Reason, "several local names (aws, awseu)") {
+			gaps++
+		}
+	}
+	if gaps == 0 || !slices.ContainsFunc(p.Notes, func(n string) bool { return strings.Contains(n, "give it one local name") }) {
+		t.Errorf("%d gaps, notes %v", gaps, p.Notes)
 	}
 }

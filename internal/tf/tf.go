@@ -355,6 +355,9 @@ type SourceConfigs struct {
 	// Aliases of every provider block of the source, with the local name
 	// they are declared under: blocks refer to them through it.
 	Aliases []ConfigRef
+	// LocalNames are the names required_providers gives the source; more
+	// than one makes terraform resolve its configurations unreliably.
+	LocalNames []string
 }
 
 // ConfigRef is an aliased provider configuration: local name and alias.
@@ -384,8 +387,28 @@ func ProviderSourceConfigs(dir string) (map[string]SourceConfigs, error) {
 		}
 		out[addr] = c
 	}
+	for name, req := range mod.RequiredProviders {
+		if req.Source != "" {
+			addr := NormalizeSource(req.Source)
+			c := out[addr]
+			c.LocalNames = append(c.LocalNames, name)
+			out[addr] = c
+		}
+	}
+	// A provider block of a name not in required_providers is the implicit
+	// hashicorp/<name>: one more name of that source.
+	for _, pc := range mod.ProviderConfigs {
+		if req, ok := mod.RequiredProviders[pc.Name]; !ok || req.Source == "" {
+			addr := "registry.terraform.io/hashicorp/" + pc.Name
+			if c := out[addr]; !slices.Contains(c.LocalNames, pc.Name) {
+				c.LocalNames = append(c.LocalNames, pc.Name)
+				out[addr] = c
+			}
+		}
+	}
 	for _, c := range out {
 		slices.SortFunc(c.Aliases, func(a, b ConfigRef) int { return strings.Compare(a.Ref(), b.Ref()) })
+		sort.Strings(c.LocalNames)
 	}
 	return out, nil
 }
