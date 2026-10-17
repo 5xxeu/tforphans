@@ -38,8 +38,8 @@ plain text line
 		if !reflect.DeepEqual(whole, bytewise) || !reflect.DeepEqual(wErrs, bErrs) {
 			t.Fatalf("results differ:\n%+v\n%+v", whole, bytewise)
 		}
-		if bytewise != nil && len(seen) != len(bytewise.Found) {
-			t.Fatalf("callback saw %d of %d", len(seen), len(bytewise.Found))
+		if bytewise != nil && (len(seen) != len(bytewise.Found) || len(seen) > 0 && !reflect.DeepEqual(seen, bytewise.Found)) {
+			t.Fatalf("callback saw %+v, found %+v", seen, bytewise.Found)
 		}
 	})
 }
