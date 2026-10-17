@@ -67,3 +67,43 @@ resource "fake_thing" "a" {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }
+
+// TestIntegrationTransitionAfterDedupe: two roots list the same object;
+// dedupe keeps one copy, which depends on the order of the roots. The
+// finding of the baseline (from root a) still finds what became of it when
+// the copy kept this time is root b's.
+func TestIntegrationTransitionAfterDedupe(t *testing.T) {
+	data, _ := setup(t)
+	dir := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		root := filepath.Join(dir, name)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(root, "main.tf"), `
+terraform {
+  required_providers {
+    fakeloc = { source = "example.com/fake/fake" }
+  }
+}
+resource "fake_thing" "m" {
+  provider = fakeloc
+  name     = "managed-`+name+`"
+}
+`)
+		terraform(t, root, "apply", "-auto-approve", "-no-color")
+	}
+	write(t, filepath.Join(data, "thing", "orphan-1"), "")
+	t.Chdir(dir)
+	args := []string{"-no-config", "-types", "fake_thing", "-format", "json"}
+	code, baseline, stderr := runTool(append(args, "a", "b")...)
+	if code != exitOrphans || !strings.Contains(baseline, `"source": "a"`) {
+		t.Fatalf("baseline run: exit %d\n%s\n%s", code, baseline, stderr)
+	}
+	write(t, "baseline.json", baseline)
+	write(t, ".tforphans-ignore", "fake_thing:orphan-1\n")
+	code, stdout, stderr := runTool(append(args, "-baseline", "baseline.json", "b", "a")...)
+	if code != exitOK || !strings.Contains(stderr, "1 resolved (1 ignored)") || !strings.Contains(stdout, `"transition": "ignored"`) {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}

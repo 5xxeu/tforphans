@@ -738,10 +738,29 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		return len(o.include) > 0 && !o.include.Match(r.Type) || o.exclude.Match(r.Type)
 	})
 	scopes := slices.Clone(live) // every source's results, for -v
+	// Every listing that returned an object, also those whose copy dedupe
+	// drops: -baseline looks a finding up under its own listing.
+	origins := map[string][]model.Resource{}
+	if previous != nil {
+		for _, r := range scopes {
+			origins[r.Key()] = append(origins[r.Key()], r)
+		}
+	}
 	live = dedupe(live)
 	var orphans []model.Resource
 	var uncertain []report.Uncertain
 	var seen []report.Seen // live objects that are no orphans, for -baseline
+	addSeen := func(r model.Resource, status, address, rule string) {
+		for _, o := range origins[r.Key()] {
+			if !model.SameProvider(o.ProviderSource, r.ProviderSource) ||
+				state.UnknownLocation(r.Identity) && (o.Source != r.Source || o.ListAddress != r.ListAddress) {
+				continue
+			}
+			c := r
+			c.Source, c.ListAddress = o.Source, o.ListAddress
+			seen = append(seen, report.Seen{Resource: c, Status: status, StateAddress: address, Rule: rule})
+		}
+	}
 	sum.ByType = map[string]*report.TypeCount{}
 	byScope := map[string]*report.TypeCount{}
 	byTypeScope := map[[2]string]*report.TypeCount{}
@@ -783,7 +802,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		switch {
 		case m.Managed && m.Verified:
-			seen = append(seen, report.Seen{Resource: *r, Status: "managed", StateAddress: m.Address})
+			addSeen(*r, "managed", m.Address, "")
 			sum.Managed++
 			if m.ByIdentity {
 				sum.ManagedByIdentity++
@@ -792,13 +811,13 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 				tc.Managed++
 			}
 		case ignored:
-			seen = append(seen, report.Seen{Resource: *r, Status: report.BecameIgnored, Rule: rule})
+			addSeen(*r, report.BecameIgnored, "", rule)
 			sum.Ignored++
 			for _, tc := range counts {
 				tc.Ignored++
 			}
 		case m.Managed:
-			seen = append(seen, report.Seen{Resource: *r, Status: report.BecameUnsure, StateAddress: m.Address})
+			addSeen(*r, report.BecameUnsure, m.Address, "")
 			sum.Uncertain++
 			uncertain = append(uncertain, report.Uncertain{Resource: *r, StateAddress: m.Address})
 			for _, tc := range counts {
