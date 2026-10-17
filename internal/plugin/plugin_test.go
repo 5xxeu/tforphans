@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -219,6 +220,21 @@ func TestParseUnverified(t *testing.T) {
 func TestParseTwoObjectsOnALine(t *testing.T) {
 	if _, _, err := Parse([]byte(`{"type":"t","identity":{"id":"x"}}{"error":"permission denied"}`), "plugin1"); err == nil {
 		t.Error("no error")
+	}
+}
+
+// TestParseNumberRange: JSON allows numbers HCL cannot read; one of them in
+// an import block would make the whole file invalid. Large but readable
+// numbers stay exact.
+func TestParseNumberRange(t *testing.T) {
+	for _, bad := range []string{`1e7000000000`, `[1, {"n": -1e-7000000000}]`} {
+		if _, _, err := Parse([]byte(`{"type":"t","identity":{"id":"x","v":`+bad+`}}`), "plugin1"); err == nil || !strings.Contains(err.Error(), "out of range for Terraform") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	res, _, err := Parse([]byte(`{"type":"t","identity":{"n":123456789012345678901234567890,"f":1e300}}`), "plugin1")
+	if err != nil || len(res) != 1 || res[0].Identity["n"].(json.Number) != "123456789012345678901234567890" {
+		t.Errorf("%+v %v", res, err)
 	}
 }
 

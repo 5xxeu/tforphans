@@ -203,6 +203,17 @@ and resource identity, and run the whole flow including the import round
 trip; the Proxmox test runs the real `bpg/proxmox` against a fake Proxmox VE
 API.
 
+Fuzz targets check that plugin output always becomes import blocks that
+parse as HCL with every id and identity value intact (`FuzzImportHCL`,
+`FuzzHCLString`), that no state crashes the parsers and every identity
+matches itself (`FuzzParse`), and that `terraform query` output gives the
+same result however it is split (`FuzzParseQuery`). The unit tests run their
+seeds; CI fuzzes each for a minute every night. Locally:
+
+```sh
+go test -run '^$' -fuzz '^FuzzImportHCL$' -fuzztime 5m ./internal/report/
+```
+
 A `v*` tag builds the release with GoReleaser (`.goreleaser.yaml`) as a
 draft, with checksums, SBOMs and a build provenance attestation, and pushes
 the Homebrew cask to `5xxeu/homebrew-tap` (secret `HOMEBREW_TAP_TOKEN`: a

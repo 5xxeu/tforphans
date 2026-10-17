@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/proc"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type line struct {
@@ -137,6 +139,9 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, error
 		if !typeName.MatchString(l.Type) || l.Provider != "" && !providerRef.MatchString(l.Provider) {
 			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"type" or "provider" is not a valid name`))
 		}
+		if num := badNumber(l.Identity); num != "" {
+			return nil, nil, fmt.Errorf("%s line %d: identity number %.40s is out of range for Terraform", source, n, num)
+		}
 		l.Resource.Source = source
 		if l.Unverified {
 			l.Resource.Scope = &model.Scope{Unverifiable: true}
@@ -155,4 +160,29 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, error
 		return nil, nil, fmt.Errorf("%s: %w", source, err)
 	}
 	return res, warns, nil
+}
+
+// badNumber returns the first number in v that JSON allows but HCL cannot
+// read (1e7000000000): written into an import block, it would make the
+// whole file invalid.
+func badNumber(v any) string {
+	switch t := v.(type) {
+	case json.Number:
+		if _, err := cty.ParseNumberVal(t.String()); err != nil {
+			return t.String()
+		}
+	case []any:
+		for _, e := range t {
+			if bad := badNumber(e); bad != "" {
+				return bad
+			}
+		}
+	case map[string]any:
+		for _, k := range model.SortedKeys(t) {
+			if bad := badNumber(t[k]); bad != "" {
+				return bad
+			}
+		}
+	}
+	return ""
 }
