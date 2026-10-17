@@ -142,12 +142,10 @@ type PlanOptions struct {
 	Args    []Arg
 	Include glob.List // empty: all types
 	Exclude glob.List
-	// AliasOnly holds the local names the root configures only with
-	// aliases (see AliasOnly), with the aliases.
-	AliasOnly map[string][]string
-	// Aliases holds every aliased configuration of the root by local name
-	// (see Aliases): each is listed as well as the default.
-	Aliases map[string][]string
+	// Configs holds the root's provider configurations by provider address
+	// (see ProviderSourceConfigs): each alias is listed as well as the
+	// default, under the local name the generated blocks use.
+	Configs map[string]SourceConfigs
 	// NoAliases lists only default configurations; the types of each
 	// aliased one are skipped, a gap in coverage (-no-aliases).
 	NoAliases bool
@@ -209,20 +207,19 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		// one: each may look at another account. When the root has only
 		// aliased ones, the default is an empty configuration that may
 		// reach another account through the environment: it is left out.
-		configs := []string{""}
-		var aliases []string
+		configs := []ConfigRef{{Local: local}}
+		var aliases []ConfigRef
+		sc := opt.Configs[addr]
 		if !temporary {
-			aliases = slices.Clone(opt.Aliases[local])
-			for _, a := range opt.AliasOnly[local] {
-				if !slices.Contains(aliases, a) {
-					aliases = append(aliases, a)
-				}
-			}
-			sort.Strings(aliases)
+			aliases = sc.Aliases
 		}
-		if !temporary && len(opt.AliasOnly[local]) > 0 {
+		if !temporary && len(aliases) > 0 && !sc.Plain {
 			configs = nil
-			refs := local + "." + strings.Join(opt.AliasOnly[local], ", "+local+".")
+			var names []string
+			for _, a := range aliases {
+				names = append(names, a.Ref())
+			}
+			refs := strings.Join(names, ", ")
 			if opt.NoAliases {
 				p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases (%s) and -no-aliases leaves them out, so its list-capable types were not queried (not with the empty default configuration either)", local, refs))
 			} else {
@@ -235,17 +232,16 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 				continue
 			}
-			for _, alias := range configs {
-				if alias != "" && opt.NoAliases {
-					ref := local + "." + alias
-					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider configuration " + ref + " not listed (-no-aliases)", Provider: ref})
+			for _, c := range configs {
+				if c.Alias != "" && opt.NoAliases {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider configuration " + c.Ref() + " not listed (-no-aliases)", Provider: c.Ref()})
 					continue
 				}
-				q, reason := planType(t, local, addr, ps.ListResourceSchemas[t], opt.Args)
-				q.Alias = alias
+				q, reason := planType(t, c.Local, addr, ps.ListResourceSchemas[t], opt.Args)
+				q.Alias = c.Alias
 				if reason != "" {
 					// The kind of reason stays first (missing argument).
-					if alias != "" {
+					if c.Alias != "" {
 						reason += " (provider " + q.Ref() + ")"
 					}
 					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: q.Ref()})

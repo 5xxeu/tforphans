@@ -549,7 +549,7 @@ list "fake_thing" "tfo_aliased" {
 	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOrphans || !strings.Contains(stderr, "coverage: complete") {
 		t.Errorf("alias-only provider, type covered by the user's block: exit %d\n%s", code, stderr)
 	}
-	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that needed a check)") {
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that need an argument") {
 		t.Errorf("alias-only provider, type not covered: exit %d\n%s", code, stderr)
 	}
 }

@@ -147,29 +147,6 @@ func TestDataDir(t *testing.T) {
 	}
 }
 
-func TestAliasOnly(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
-provider "aws" {
-  alias = "prod"
-}
-provider "aws" {
-  alias = "dev"
-}
-provider "google" {}
-provider "google" {
-  alias = "other"
-}
-`), 0o644)
-	got, err := AliasOnly(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || strings.Join(got["aws"], ",") != "dev,prod" {
-		t.Errorf("got %v", got)
-	}
-}
-
 func TestConfigImports(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "imports.tf"), []byte(`

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -254,7 +255,7 @@ func TestParseQueryStreamLimit(t *testing.T) {
 // A provider the root configures only with aliases is listed through each
 // alias, never with its empty default configuration.
 func TestPlanAliasOnly(t *testing.T) {
-	p := BuildPlan(schemas(t), nil, PlanOptions{AliasOnly: map[string][]string{"aws": {"prod"}}})
+	p := BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Aliases: []ConfigRef{{"aws", "prod"}}}}})
 	aliased := 0
 	for _, q := range p.Queries {
 		if q.Provider != "aws" {
@@ -270,7 +271,7 @@ func TestPlanAliasOnly(t *testing.T) {
 	}
 	// -no-aliases: nothing of aws is queried, the empty default neither,
 	// and every type is a gap of aws.prod.
-	p = BuildPlan(schemas(t), nil, PlanOptions{AliasOnly: map[string][]string{"aws": {"prod"}}, NoAliases: true})
+	p = BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Aliases: []ConfigRef{{"aws", "prod"}}}}, NoAliases: true})
 	for _, q := range p.Queries {
 		if q.Provider == "aws" {
 			t.Errorf("aws queried with -no-aliases: %+v", q)
@@ -290,7 +291,7 @@ func TestPlanAliasOnly(t *testing.T) {
 // The default configuration and each alias are listed, each its own block:
 // default in dev, alias in prod.
 func TestPlanAliases(t *testing.T) {
-	p := BuildPlan(schemas(t), nil, PlanOptions{Aliases: map[string][]string{"aws": {"prod"}}})
+	p := BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Plain: true, Aliases: []ConfigRef{{"aws", "prod"}}}}})
 	refs := map[string]int{}
 	labels := map[string]bool{}
 	for _, q := range p.Queries {
@@ -330,7 +331,7 @@ func TestPlanAliases(t *testing.T) {
 		t.Errorf("no missing-argument skip for aws.prod: %+v", p.Skipped)
 	}
 	// -no-aliases: the default only, each alias type a gap.
-	p = BuildPlan(schemas(t), nil, PlanOptions{Aliases: map[string][]string{"aws": {"prod"}}, NoAliases: true})
+	p = BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Plain: true, Aliases: []ConfigRef{{"aws", "prod"}}}}, NoAliases: true})
 	for _, q := range p.Queries {
 		if q.Alias != "" {
 			t.Errorf("alias queried with -no-aliases: %+v", q)
@@ -369,8 +370,8 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	}
 	// Aliases: an equal pair lists once, through google; an alias of its
 	// own (no known text) is never a twin of the default.
-	aliases := map[string][]string{"google": {"prod"}, "google-beta": {"prod"}}
-	p = BuildPlan(&s, nil, PlanOptions{Aliases: aliases, ProviderConfigs: map[string]string{
+	aliases := map[string]SourceConfigs{"registry.terraform.io/hashicorp/google": {Plain: true, Aliases: []ConfigRef{{"google", "prod"}}}, "registry.terraform.io/hashicorp/google-beta": {Plain: true, Aliases: []ConfigRef{{"google-beta", "prod"}}}}
+	p = BuildPlan(&s, nil, PlanOptions{Configs: aliases, ProviderConfigs: map[string]string{
 		"google": `project = "a"`, "google-beta": `project = "a"`, "google.prod": `project = "b"`, "google-beta.prod": `project = "b"`}})
 	var refs []string
 	for _, q := range p.Queries {
@@ -379,7 +380,7 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	if slices.Sort(refs); !slices.Equal(refs, []string{"google", "google.prod"}) {
 		t.Errorf("aliased twins: %v", refs)
 	}
-	p = BuildPlan(&s, nil, PlanOptions{Aliases: map[string][]string{"google": {"prod"}}})
+	p = BuildPlan(&s, nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/google": {Plain: true, Aliases: []ConfigRef{{"google", "prod"}}}}})
 	if len(p.Queries) != 2 {
 		t.Errorf("alias without known text dropped: %+v", p.Queries)
 	}
@@ -493,7 +494,7 @@ func TestPlanOptIn(t *testing.T) {
 	}
 	// With only aliased configurations an opt-in type stays left out on
 	// purpose; the others are listed through the alias.
-	p = BuildPlan(&s, nil, PlanOptions{AliasOnly: map[string][]string{"google": {"prod"}}})
+	p = BuildPlan(&s, nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/google": {Aliases: []ConfigRef{{"google", "prod"}}}}})
 	if got := types(p); !slices.Equal(got, []string{"google_compute_network"}) || p.Queries[0].Ref() != "google.prod" || len(p.Skipped) != 1 || !p.Skipped[0].Excluded {
 		t.Errorf("alias-only: queries %v, skipped %+v", got, p.Skipped)
 	}
@@ -1087,5 +1088,53 @@ func TestQueryStartFailure(t *testing.T) {
 	_, err := r.Query(context.Background(), Plan{}, func(string) int { return 100 }, noKeys, nil)
 	if err == nil {
 		t.Fatal("no error")
+	}
+}
+
+// TestPlanTwoLocalNames: two local names of one source share its default
+// configuration; aliases declared under either are listed, each through
+// the name it is declared under.
+func TestPlanTwoLocalNames(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws   = { source = "hashicorp/aws" }
+    awseu = { source = "hashicorp/aws" }
+  }
+}
+provider "awseu" {
+  region = "eu-west-1"
+}
+provider "awseu" {
+  alias = "x"
+}
+provider "aws" {
+  alias = "y"
+}
+provider "google" {
+  alias = "other"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared, err := LocalNames(dir)
+	if err != nil || declared["registry.terraform.io/hashicorp/aws"] != "aws" {
+		t.Fatalf("local names %v %v", declared, err)
+	}
+	configs, err := ProviderSourceConfigs(dir)
+	if err != nil || !reflect.DeepEqual(configs["registry.terraform.io/hashicorp/aws"], SourceConfigs{Plain: true, Aliases: []ConfigRef{{"aws", "y"}, {"awseu", "x"}}}) ||
+		!reflect.DeepEqual(configs["registry.terraform.io/hashicorp/google"], SourceConfigs{Aliases: []ConfigRef{{"google", "other"}}}) {
+		t.Fatalf("configs %+v %v", configs, err)
+	}
+	p := BuildPlan(schemas(t), declared, PlanOptions{Configs: configs})
+	refs := map[string]bool{}
+	for _, q := range p.Queries {
+		if q.Source == "registry.terraform.io/hashicorp/aws" {
+			refs[q.Ref()] = true
+		}
+	}
+	if !refs["aws"] || !refs["awseu.x"] || !refs["aws.y"] || len(refs) != 3 {
+		t.Errorf("configurations listed: %v", refs)
 	}
 }

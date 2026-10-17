@@ -76,11 +76,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	aliases, err := tf.Aliases(root)
-	if err != nil {
-		return nil, err
-	}
-	aliasOnly, err := tf.AliasOnly(root)
+	providerConfigs, err := tf.ProviderSourceConfigs(root)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +84,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, AliasOnly: aliasOnly, Aliases: aliases, NoAliases: o.noAliases,
+	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, Configs: providerConfigs, NoAliases: o.noAliases,
 		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 || o.namesFromTags && hasTags(schemas, t) }, ProviderConfigs: configs})
 	for _, sk := range plan.Skipped {
 		sk.Root = root
