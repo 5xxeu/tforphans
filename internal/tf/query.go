@@ -288,13 +288,13 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	if parseErr != nil {
 		return nil, parseErr
 	}
-	// Terraform before 1.14 and OpenTofu print this (on stdout).
-	if runErr != nil && strings.Contains(res.Text+string(stderr), `no command named "query"`) {
-		return nil, fmt.Errorf("%s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin))
-	}
 	if res == nil {
 		// The command did not start, so nothing was read.
 		return nil, cmdError(args, stderr, runErr)
+	}
+	// Terraform before 1.14 and OpenTofu print this (on stdout).
+	if runErr != nil && strings.Contains(res.Text+string(stderr), `no command named "query"`) {
+		return nil, fmt.Errorf("%s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin))
 	}
 	// The regions or zones of an auto argument could not be read: its
 	// queries fail (a disabled Compute API is classified as such).

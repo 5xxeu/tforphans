@@ -547,7 +547,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Notes = append(sum.Notes, "no ROOT_DIR given and no Terraform configuration in the current directory: terraform query was not run, only -scan and -plugin (as with -no-query)")
 	}
 	if !o.noQuery && len(o.roots) > 0 {
-		if err := (tf.Runner{Bin: o.terraformBin, Dir: o.roots[0]}).QueryVersion(ctx); err != nil {
+		// No root can be queried when this fails, so it stops the run; a
+		// hanging terraform is still bounded by -source-timeout.
+		if _, err := withSource(ctx, o, func(ctx context.Context) (struct{}, error) {
+			return struct{}{}, (tf.Runner{Bin: o.terraformBin, Dir: o.roots[0]}).QueryVersion(ctx)
+		}); err != nil {
 			return err
 		}
 	}
@@ -1088,7 +1092,19 @@ func withSource[T any](ctx context.Context, o *options, f func(context.Context) 
 	defer cancel()
 	v, err := f(srcCtx)
 	if err != nil && ctx.Err() == nil && srcCtx.Err() != nil {
-		err = fmt.Errorf("gave up after %s (-source-timeout)", o.sourceTimeout)
+		err = sourceTimeout{o.sourceTimeout, err}
 	}
 	return v, err
 }
+
+// sourceTimeout keeps the error it replaces in the chain: a root whose
+// query timed out after its state was read is still a queryError.
+type sourceTimeout struct {
+	after time.Duration
+	err   error
+}
+
+func (e sourceTimeout) Error() string {
+	return fmt.Sprintf("gave up after %s (-source-timeout)", e.after)
+}
+func (e sourceTimeout) Unwrap() error { return e.err }

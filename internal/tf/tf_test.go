@@ -967,3 +967,13 @@ func TestSizeLimit(t *testing.T) {
 		t.Errorf("at the limit: %v", err)
 	}
 }
+
+// TestQueryStartFailure: a terraform that cannot start is an error, not a
+// panic over a result that was never read.
+func TestQueryStartFailure(t *testing.T) {
+	r := Runner{Bin: filepath.Join(t.TempDir(), "missing-terraform"), Dir: t.TempDir()}
+	_, err := r.Query(context.Background(), Plan{}, func(string) int { return 100 }, noKeys, nil)
+	if err == nil {
+		t.Fatal("no error")
+	}
+}

@@ -674,3 +674,22 @@ func BenchmarkMatch(b *testing.B) {
 		})
 	}
 }
+
+// TestReadContext: a pipe left open with no data does not outlive -timeout.
+func TestReadContext(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pw.Close()
+	defer pr.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := readContext(ctx, pr, DefaultMaxSize); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Errorf("%v after %s", err, time.Since(start))
+	}
+	if data, err := readContext(context.Background(), strings.NewReader("{}"), DefaultMaxSize); err != nil || string(data) != "{}" {
+		t.Errorf("%q %v", data, err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -768,5 +769,19 @@ func TestFailedSourceKeepsReport(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "exec sleep 30", "-timeout", "300ms"}, &stdout, &stderr); code != exitError || !strings.Contains(stderr.String(), "stopped after 300ms (-timeout)") {
 		t.Errorf("-timeout: exit %d: %s", code, &stderr)
+	}
+}
+
+// TestSourceTimeoutKeepsCause: a root whose query timed out after its
+// state was read is still told apart from an unread state.
+func TestSourceTimeoutKeepsCause(t *testing.T) {
+	o := &options{sourceTimeout: 50 * time.Millisecond}
+	_, err := withSource(context.Background(), o, func(ctx context.Context) (struct{}, error) {
+		<-ctx.Done()
+		return struct{}{}, queryError{ctx.Err()}
+	})
+	var qe queryError
+	if !errors.As(err, &qe) || !strings.Contains(err.Error(), "gave up after 50ms (-source-timeout)") {
+		t.Errorf("%v", err)
 	}
 }

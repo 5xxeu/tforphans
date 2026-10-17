@@ -215,7 +215,7 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 	scheme := strings.ToLower(urlScheme(src))
 	switch {
 	case src == "-":
-		return ReadLimited(os.Stdin, maxSize)
+		return readContext(ctx, os.Stdin, maxSize)
 	case scheme == "https", scheme == "http":
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 		if err != nil {
@@ -268,7 +268,29 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 			return nil, err
 		}
 		defer f.Close()
-		return ReadLimited(f, maxSize)
+		// A named pipe can block like stdin.
+		return readContext(ctx, f, maxSize)
+	}
+}
+
+// readContext is ReadLimited that gives up when ctx ends (-timeout): a
+// pipe left open by the writer would block it for ever. The reading
+// goroutine stays blocked until the process exits; nothing waits for it.
+func readContext(ctx context.Context, r io.Reader, maxSize int64) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := ReadLimited(r, maxSize)
+		done <- result{data, err}
+	}()
+	select {
+	case res := <-done:
+		return res.data, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
