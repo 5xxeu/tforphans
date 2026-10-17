@@ -659,12 +659,19 @@ func ProviderConfigs(dir string) (map[string]string, error) {
 		content, _, _ := f.Body.PartialContent(providerSchema)
 		for i, b := range content.Blocks {
 			attrs, _, _ := b.Body.PartialContent(aliasSchema)
-			if _, aliased := attrs.Attributes["alias"]; aliased {
-				continue
+			// Aliased configurations under local.alias: generated blocks
+			// list through each of them too.
+			key := b.Labels[0]
+			if a, aliased := attrs.Attributes["alias"]; aliased {
+				v, diags := a.Expr.Value(nil)
+				if diags.HasErrors() || v.IsNull() || !v.IsKnown() || v.Type() != cty.String {
+					continue
+				}
+				key += "." + v.AsString()
 			}
 			unique := fmt.Sprintf("unique %s %d", path, i)
 			if override {
-				overridden[b.Labels[0]] = unique
+				overridden[key] = unique
 				continue
 			}
 			text := unique
@@ -673,7 +680,7 @@ func ProviderConfigs(dir string) (map[string]string, error) {
 				r := body.SrcRange
 				text = configTokens(f.Bytes[r.Start.Byte+1 : r.End.Byte-1])
 			}
-			out[b.Labels[0]] = text
+			out[key] = text
 		}
 	}
 	maps.Copy(out, overridden)

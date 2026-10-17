@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -251,20 +252,93 @@ func TestParseQueryStreamLimit(t *testing.T) {
 	}
 }
 
-// Generated blocks would use the empty default configuration of a provider
-// the root configures only with aliases, so its types are skipped.
+// A provider the root configures only with aliases is listed through each
+// alias, never with its empty default configuration.
 func TestPlanAliasOnly(t *testing.T) {
-	p := BuildPlan(schemas(t), nil, PlanOptions{AliasOnly: map[string][]string{"aws": {"prod"}}})
+	p := BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Aliases: []ConfigRef{{"aws", "prod"}}}}})
+	aliased := 0
+	for _, q := range p.Queries {
+		if q.Provider != "aws" {
+			continue
+		}
+		if q.Alias != "prod" {
+			t.Errorf("aws queried with the default configuration: %+v", q)
+		}
+		aliased++
+	}
+	if aliased == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "queried through aws.prod") {
+		t.Errorf("%d aliased queries, notes %v", aliased, p.Notes)
+	}
+	// -no-aliases: nothing of aws is queried, the empty default neither,
+	// and every type is a gap of aws.prod.
+	p = BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Aliases: []ConfigRef{{"aws", "prod"}}}}, NoAliases: true})
 	for _, q := range p.Queries {
 		if q.Provider == "aws" {
-			t.Errorf("aws queried: %+v", q)
+			t.Errorf("aws queried with -no-aliases: %+v", q)
 		}
 	}
-	if len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "provider = aws.<alias>") || !strings.Contains(p.Notes[0], "(aws.prod)") {
-		t.Errorf("notes %v", p.Notes)
+	gaps := 0
+	for _, sk := range p.Skipped {
+		if sk.Provider == "aws.prod" && !sk.Excluded {
+			gaps++
+		}
 	}
-	if len(p.Skipped) == 0 {
-		t.Error("aws types not reported as skipped")
+	if gaps == 0 || len(p.Notes) != 1 || !strings.Contains(p.Notes[0], "-no-aliases leaves them out") {
+		t.Errorf("%d gaps, notes %v", gaps, p.Notes)
+	}
+}
+
+// The default configuration and each alias are listed, each its own block:
+// default in dev, alias in prod.
+func TestPlanAliases(t *testing.T) {
+	p := BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Plain: true, Aliases: []ConfigRef{{"aws", "prod"}}}}})
+	refs := map[string]int{}
+	labels := map[string]bool{}
+	for _, q := range p.Queries {
+		if q.Provider != "aws" {
+			continue
+		}
+		refs[q.Ref()]++
+		if labels[q.Label()] {
+			t.Errorf("label used twice: %s", q.Label())
+		}
+		labels[q.Label()] = true
+		if q.Alias == "prod" && (!strings.Contains(string(q.HCL(100)), "provider = aws.prod\n") || !strings.HasPrefix(q.Label(), "tfo_aws_prod_aws_")) {
+			t.Errorf("aliased block:\n%s", q.HCL(100))
+		}
+	}
+	if refs["aws"] == 0 || refs["aws"] != refs["aws.prod"] || len(p.Notes) != 0 {
+		t.Errorf("queries per configuration %v, notes %v", refs, p.Notes)
+	}
+	// A type skipped for both configurations keeps the kind of reason
+	// first (missing argument), so that hints still recognize it.
+	defaults := map[string]string{}
+	for _, sk := range p.Skipped {
+		if sk.Provider == "aws" {
+			defaults[sk.Type] = sk.Reason
+		}
+	}
+	checked := 0
+	for _, sk := range p.Skipped {
+		if sk.Provider == "aws.prod" {
+			checked++
+			if sk.Reason != defaults[sk.Type]+" (provider aws.prod)" {
+				t.Errorf("alias skip %q, default %q", sk.Reason, defaults[sk.Type])
+			}
+		}
+	}
+	if checked == 0 || !slices.ContainsFunc(p.Skipped, func(sk Skip) bool { return strings.HasPrefix(sk.Reason, MissingArgs) && sk.Provider == "aws.prod" }) {
+		t.Errorf("no missing-argument skip for aws.prod: %+v", p.Skipped)
+	}
+	// -no-aliases: the default only, each alias type a gap.
+	p = BuildPlan(schemas(t), nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/aws": {Plain: true, Aliases: []ConfigRef{{"aws", "prod"}}}}, NoAliases: true})
+	for _, q := range p.Queries {
+		if q.Alias != "" {
+			t.Errorf("alias queried with -no-aliases: %+v", q)
+		}
+	}
+	if !slices.ContainsFunc(p.Skipped, func(sk Skip) bool { return sk.Provider == "aws.prod" && !sk.Excluded }) {
+		t.Errorf("no gap for aws.prod: %+v", p.Skipped)
 	}
 }
 
@@ -293,6 +367,22 @@ func TestPlanSameTypeTwoProviders(t *testing.T) {
 	p = BuildPlan(&s, nil, PlanOptions{ProviderConfigs: map[string]string{"google": `project = var.p`, "google-beta": `project = var.p`}})
 	if len(p.Queries) != 1 {
 		t.Errorf("equal configurations: %+v", p.Queries)
+	}
+	// Aliases: an equal pair lists once, through google; an alias of its
+	// own (no known text) is never a twin of the default.
+	aliases := map[string]SourceConfigs{"registry.terraform.io/hashicorp/google": {Plain: true, Aliases: []ConfigRef{{"google", "prod"}}}, "registry.terraform.io/hashicorp/google-beta": {Plain: true, Aliases: []ConfigRef{{"google-beta", "prod"}}}}
+	p = BuildPlan(&s, nil, PlanOptions{Configs: aliases, ProviderConfigs: map[string]string{
+		"google": `project = "a"`, "google-beta": `project = "a"`, "google.prod": `project = "b"`, "google-beta.prod": `project = "b"`}})
+	var refs []string
+	for _, q := range p.Queries {
+		refs = append(refs, q.Ref())
+	}
+	if slices.Sort(refs); !slices.Equal(refs, []string{"google", "google.prod"}) {
+		t.Errorf("aliased twins: %v", refs)
+	}
+	p = BuildPlan(&s, nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/google": {Plain: true, Aliases: []ConfigRef{{"google", "prod"}}}}})
+	if len(p.Queries) != 2 {
+		t.Errorf("alias without known text dropped: %+v", p.Queries)
 	}
 	// Only google-beta takes the project argument: both are queried.
 	var s3 Schemas
@@ -403,14 +493,10 @@ func TestPlanOptIn(t *testing.T) {
 		t.Errorf("named: %v", got)
 	}
 	// With only aliased configurations an opt-in type stays left out on
-	// purpose; the others are checks that were needed.
-	p = BuildPlan(&s, nil, PlanOptions{AliasOnly: map[string][]string{"google": {"prod"}}})
-	excluded := map[string]bool{}
-	for _, sk := range p.Skipped {
-		excluded[sk.Type] = sk.Excluded
-	}
-	if len(p.Queries) != 0 || !excluded["google_project"] || excluded["google_compute_network"] || len(excluded) != 2 {
-		t.Errorf("alias-only: queries %v, skipped %+v", types(p), p.Skipped)
+	// purpose; the others are listed through the alias.
+	p = BuildPlan(&s, nil, PlanOptions{Configs: map[string]SourceConfigs{"registry.terraform.io/hashicorp/google": {Aliases: []ConfigRef{{"google", "prod"}}}}})
+	if got := types(p); !slices.Equal(got, []string{"google_compute_network"}) || p.Queries[0].Ref() != "google.prod" || len(p.Skipped) != 1 || !p.Skipped[0].Excluded {
+		t.Errorf("alias-only: queries %v, skipped %+v", got, p.Skipped)
 	}
 }
 
@@ -914,6 +1000,33 @@ func TestAutoArg(t *testing.T) {
 	if deps, _ := both.AutoDependents("data.google_compute_regions.tfo_auto_google"); len(deps) != 2 {
 		t.Errorf("regions dependents %v", deps)
 	}
+	// Each provider configuration reads its own zones: the alias's data
+	// sources use the alias, and their errors concern only its queries.
+	prod := zonal
+	prod.Alias = "prod"
+	aliased := Plan{Queries: []Query{zonal, prod}}
+	data = string(aliased.AutoHCL())
+	for _, want := range []string{
+		"data \"google_compute_regions\" \"tfo_auto_google\" {\n  provider = google\n}",
+		"data \"google_compute_regions\" \"tfo_auto_google_prod\" {\n  provider = google.prod\n}",
+		"data \"google_compute_zones\" \"tfo_auto_google_prod\" {\n  provider = google.prod\n",
+	} {
+		if !strings.Contains(data, want) {
+			t.Errorf("aliased auto HCL lacks %q:\n%s", want, data)
+		}
+	}
+	if !strings.Contains(string(prod.HCL(10)), "data.google_compute_zones.tfo_auto_google_prod") {
+		t.Errorf("aliased query reads another configuration's zones:\n%s", prod.HCL(10))
+	}
+	if deps, _ := aliased.AutoDependents(`data.google_compute_zones.tfo_auto_google["r"]`); len(deps) != 1 || deps[0].Alias != "" {
+		t.Errorf("default zones dependents %+v", deps)
+	}
+	if deps, _ := aliased.AutoDependents(`data.google_compute_zones.tfo_auto_google_prod["r"]`); len(deps) != 1 || deps[0].Alias != "prod" {
+		t.Errorf("alias zones dependents %+v", deps)
+	}
+	if only := (Plan{Queries: []Query{prod}}).AutoHCL(); strings.Contains(string(only), "provider = google\n") {
+		t.Errorf("alias-only plan reads zones through the default:\n%s", only)
+	}
 	if got := (Plan{}).AutoHCL(); got != nil {
 		t.Errorf("no auto arguments: %q", got)
 	}
@@ -975,5 +1088,95 @@ func TestQueryStartFailure(t *testing.T) {
 	_, err := r.Query(context.Background(), Plan{}, func(string) int { return 100 }, noKeys, nil)
 	if err == nil {
 		t.Fatal("no error")
+	}
+}
+
+// TestPlanTwoLocalNames: terraform resolves the provider blocks of two
+// local names of one source unreliably, so none of its types is queried:
+// each is a gap, and a note says why.
+func TestPlanTwoLocalNames(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws   = { source = "hashicorp/aws" }
+    awseu = { source = "hashicorp/aws" }
+  }
+}
+provider "awseu" {
+  alias = "x"
+}
+provider "google" {
+  alias = "other"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared, err := LocalNames(dir)
+	if err != nil || declared["registry.terraform.io/hashicorp/aws"] != "aws" {
+		t.Fatalf("local names %v %v", declared, err)
+	}
+	configs, err := ProviderSourceConfigs(dir)
+	if err != nil || !reflect.DeepEqual(configs["registry.terraform.io/hashicorp/aws"], SourceConfigs{Aliases: []ConfigRef{{"awseu", "x"}}, LocalNames: []string{"aws", "awseu"}}) ||
+		!reflect.DeepEqual(configs["registry.terraform.io/hashicorp/google"], SourceConfigs{Aliases: []ConfigRef{{"google", "other"}}, LocalNames: []string{"google"}}) {
+		t.Fatalf("configs %+v %v", configs, err)
+	}
+	p := BuildPlan(schemas(t), declared, PlanOptions{Configs: configs})
+	for _, q := range p.Queries {
+		if q.Source == "registry.terraform.io/hashicorp/aws" {
+			t.Errorf("aws queried: %+v", q)
+		}
+	}
+	gaps := 0
+	for _, sk := range p.Skipped {
+		if !sk.Excluded && strings.Contains(sk.Reason, "several local names (aws, awseu)") {
+			gaps++
+		}
+	}
+	if gaps == 0 || !slices.ContainsFunc(p.Notes, func(n string) bool { return strings.Contains(n, "give it one local name") }) {
+		t.Errorf("%d gaps, notes %v", gaps, p.Notes)
+	}
+}
+
+// Each configuration of a source with several local names is a gap of its
+// own, and an entry without source counts as the implicit hashicorp/<name>.
+func TestPlanTwoLocalNamesConfigs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws   = { version = "~> 6.0" }
+    awseu = { source = "hashicorp/aws" }
+  }
+}
+provider "aws" {}
+provider "awseu" {
+  alias = "prod"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared, err := LocalNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs, err := ProviderSourceConfigs(dir)
+	if err != nil || !reflect.DeepEqual(configs["registry.terraform.io/hashicorp/aws"], SourceConfigs{Plain: true, Aliases: []ConfigRef{{"awseu", "prod"}}, LocalNames: []string{"aws", "awseu"}}) {
+		t.Fatalf("configs %+v %v", configs, err)
+	}
+	p := BuildPlan(schemas(t), declared, PlanOptions{Configs: configs})
+	byRef := map[string]int{}
+	for _, sk := range p.Skipped {
+		if !sk.Excluded && strings.Contains(sk.Reason, "several local names (aws, awseu)") {
+			byRef[sk.Provider]++
+		}
+	}
+	if n := byRef["awseu.prod"]; n == 0 || byRef["aws"] != n || byRef["awseu"] != n || len(byRef) != 3 {
+		t.Fatalf("gaps by configuration %v", byRef)
+	}
+	for _, q := range p.Queries {
+		if q.Source == "registry.terraform.io/hashicorp/aws" {
+			t.Errorf("aws queried: %+v", q)
+		}
 	}
 }

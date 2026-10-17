@@ -517,3 +517,21 @@ func TestIgnoreRuleOrigin(t *testing.T) {
 		t.Errorf("matched %q", rule)
 	}
 }
+
+// A user block through one configuration of a source with several local
+// names covers that one: the alias stays a gap.
+func TestBuildCoverageConfigs(t *testing.T) {
+	reason := "provider registry.terraform.io/hashicorp/aws is required under several local names (aws, awseu)"
+	skipped := []tf.Skip{
+		{Type: "aws_x", Reason: reason, Root: "r", Provider: "aws"},
+		{Type: "aws_x", Reason: reason, Root: "r", Provider: "awseu.prod"},
+	}
+	checks := []tf.Check{{Type: "aws_x", Root: "r", Provider: "aws"}}
+	got := BuildCoverage(nil, checks, skipped, nil)
+	incomplete := slices.ContainsFunc(got, func(c Coverage) bool {
+		return c.Type == "aws_x" && c.Status == "incomplete" && slices.Contains(c.Reasons, "skipped: "+reason)
+	})
+	if !incomplete {
+		t.Errorf("coverage %+v", got)
+	}
+}

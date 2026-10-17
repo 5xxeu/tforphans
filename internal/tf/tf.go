@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -332,39 +333,84 @@ func LocalNames(dir string) (map[string]string, error) {
 		return nil, fmt.Errorf("read %s: %w", dir, diags.Err())
 	}
 	out := map[string]string{}
-	for name, req := range mod.RequiredProviders {
-		if req.Source != "" {
-			out[NormalizeSource(req.Source)] = name
+	// Two local names may require one source (terraform warns): the first
+	// by name is the one generated blocks use, whatever the map order.
+	for _, name := range slices.Sorted(maps.Keys(mod.RequiredProviders)) {
+		if req := mod.RequiredProviders[name]; req.Source != "" {
+			if _, seen := out[NormalizeSource(req.Source)]; !seen {
+				out[NormalizeSource(req.Source)] = name
+			}
 		}
 	}
 	return out, nil
 }
 
-// AliasOnly maps the local names of providers that the root module
-// configures only with aliases (provider "aws" { alias = "prod" }, no
-// provider "aws" block without one) to those aliases. A provider without
-// any provider block is not included: its default configuration reads
-// credentials from the environment, as the user intends.
-func AliasOnly(dir string) (map[string][]string, error) {
+// SourceConfigs are the configurations the root module gives a provider:
+// terraform keys them by provider address, so every local name of one
+// source (terraform warns about two) refers to the same ones.
+type SourceConfigs struct {
+	// Plain is set when some provider block has no alias; a source with
+	// aliases only would get an empty default configuration.
+	Plain bool
+	// Aliases of every provider block of the source, with the local name
+	// they are declared under: blocks refer to them through it.
+	Aliases []ConfigRef
+	// LocalNames are the names required_providers gives the source; more
+	// than one makes terraform resolve its configurations unreliably.
+	LocalNames []string
+}
+
+// ConfigRef is an aliased provider configuration: local name and alias.
+type ConfigRef struct{ Local, Alias string }
+
+// Ref is how a block refers to it: aws.prod.
+func (c ConfigRef) Ref() string { return c.Local + "." + c.Alias }
+
+// ProviderSourceConfigs maps provider addresses to their configurations
+// in the root module's provider blocks.
+func ProviderSourceConfigs(dir string) (map[string]SourceConfigs, error) {
 	mod, diags := tfconfig.LoadModule(dir)
 	if diags.HasErrors() {
 		return nil, fmt.Errorf("read %s: %w", dir, diags.Err())
 	}
-	aliases := map[string][]string{}
-	plain := map[string]bool{}
+	out := map[string]SourceConfigs{}
 	for _, pc := range mod.ProviderConfigs {
+		addr := "registry.terraform.io/hashicorp/" + pc.Name
+		if req, ok := mod.RequiredProviders[pc.Name]; ok && req.Source != "" {
+			addr = NormalizeSource(req.Source)
+		}
+		c := out[addr]
 		if pc.Alias == "" {
-			plain[pc.Name] = true
-		} else {
-			aliases[pc.Name] = append(aliases[pc.Name], pc.Alias)
+			c.Plain = true
+		} else if ref := (ConfigRef{pc.Name, pc.Alias}); !slices.Contains(c.Aliases, ref) {
+			c.Aliases = append(c.Aliases, ref)
+		}
+		out[addr] = c
+	}
+	// An entry without source is the implicit hashicorp/<name>.
+	for name, req := range mod.RequiredProviders {
+		addr := "registry.terraform.io/hashicorp/" + name
+		if req.Source != "" {
+			addr = NormalizeSource(req.Source)
+		}
+		c := out[addr]
+		c.LocalNames = append(c.LocalNames, name)
+		out[addr] = c
+	}
+	// A provider block of a name not in required_providers is the implicit
+	// hashicorp/<name>: one more name of that source.
+	for _, pc := range mod.ProviderConfigs {
+		if req, ok := mod.RequiredProviders[pc.Name]; !ok || req.Source == "" {
+			addr := "registry.terraform.io/hashicorp/" + pc.Name
+			if c := out[addr]; !slices.Contains(c.LocalNames, pc.Name) {
+				c.LocalNames = append(c.LocalNames, pc.Name)
+				out[addr] = c
+			}
 		}
 	}
-	out := map[string][]string{}
-	for name, as := range aliases {
-		if !plain[name] {
-			sort.Strings(as)
-			out[name] = as
-		}
+	for _, c := range out {
+		slices.SortFunc(c.Aliases, func(a, b ConfigRef) int { return strings.Compare(a.Ref(), b.Ref()) })
+		sort.Strings(c.LocalNames)
 	}
 	return out, nil
 }

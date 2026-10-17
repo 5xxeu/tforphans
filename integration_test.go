@@ -521,9 +521,9 @@ list "fake_thing" "tfo_aliased" {
 `)
 	write(t, filepath.Join(data, "thing", "via-alias"), "")
 	t.Chdir(root)
-	// fake has only an aliased configuration, so no generated blocks: only
-	// the user's block lists; its label starts with tfo_ like generated
-	// ones, and it is still the user's.
+	// fake has only an aliased configuration: generated blocks list through
+	// it, next to the user's block, whose label starts with tfo_ like
+	// generated ones and which is still the user's.
 	code, stdout, stderr := runTool("adopt")
 	if code != exitOK || !strings.Contains(stdout, "to = fake_thing.via_alias\n  provider = fake.second\n") {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
@@ -541,15 +541,15 @@ list "fake_thing" "tfo_aliased" {
 	}
 
 	code, _, stderr = runTool("-types", "fake_thing")
-	if code != exitOrphans || !strings.Contains(stderr, "note: .: provider fake is configured only with aliases") || !strings.Contains(stderr, "1 resource types queried") {
+	if code != exitOrphans || !strings.Contains(stderr, "note: .: provider fake is configured only with aliases, so its list-capable types were queried through fake.second") || !strings.Contains(stderr, "2 resource types queried") {
 		t.Errorf("alias-only provider: exit %d\n%s", code, stderr)
 	}
-	// The user's block covers fake_thing; fake_zoned, skipped for the
-	// aliases, is a gap that -strict does not pass.
+	// fake_thing is listed; fake_zoned, skipped for the alias (it needs a
+	// zone), is a gap that -strict does not pass.
 	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOrphans || !strings.Contains(stderr, "coverage: complete") {
 		t.Errorf("alias-only provider, type covered by the user's block: exit %d\n%s", code, stderr)
 	}
-	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that needed a check)") {
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-strict"); code != exitError || !strings.Contains(stderr, "coverage: INCOMPLETE (1 types skipped that need an argument") {
 		t.Errorf("alias-only provider, type not covered: exit %d\n%s", code, stderr)
 	}
 }

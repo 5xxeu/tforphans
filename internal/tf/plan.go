@@ -83,6 +83,9 @@ func ParseArg(s string) (Arg, error) {
 type Query struct {
 	Type     string
 	Provider string // local name
+	// Alias is the provider configuration's alias ("" for the default):
+	// each configuration may look at another account.
+	Alias string
 	// Source is the provider address. Temporary is set when the root module
 	// does not declare the provider (only child modules do) and the local
 	// name exists only for the duration of the run.
@@ -139,9 +142,13 @@ type PlanOptions struct {
 	Args    []Arg
 	Include glob.List // empty: all types
 	Exclude glob.List
-	// AliasOnly holds the local names the root configures only with
-	// aliases (see AliasOnly), with the aliases.
-	AliasOnly map[string][]string
+	// Configs holds the root's provider configurations by provider address
+	// (see ProviderSourceConfigs): each alias is listed as well as the
+	// default, under the local name the generated blocks use.
+	Configs map[string]SourceConfigs
+	// NoAliases lists only default configurations; the types of each
+	// aliased one are skipped, a gap in coverage (-no-aliases).
+	NoAliases bool
 	// IncludeResource tells which types need their attributes; nil: none.
 	IncludeResource func(resourceType string) bool
 	// ProviderConfigs are the root's default provider configurations by
@@ -196,39 +203,85 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 			continue
 		}
 		local, temporary := localName(addr, declared, used)
-		// Generated blocks use the default configuration. When the root
-		// has only aliased ones, the default is an empty configuration
-		// that may reach another account through the environment.
-		if aliases := opt.AliasOnly[local]; !temporary && len(aliases) > 0 {
+		// Generated blocks use the default configuration and every aliased
+		// one: each may look at another account. When the root has only
+		// aliased ones, the default is an empty configuration that may
+		// reach another account through the environment: it is left out.
+		sc := opt.Configs[addr]
+		// Two local names of one source: terraform resolves the provider
+		// blocks unreliably (a run may give an alias an empty
+		// configuration), so a listing that ran proves nothing.
+		if !temporary && len(sc.LocalNames) > 1 {
+			names := strings.Join(sc.LocalNames, ", ")
+			// One gap per configuration, the default under every name: a
+			// user block through one of them covers that one only.
+			var refs []string
+			if sc.Plain || len(sc.Aliases) == 0 {
+				refs = append(refs, sc.LocalNames...)
+			}
+			for _, a := range sc.Aliases {
+				refs = append(refs, a.Ref())
+			}
 			for _, t := range types {
 				if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
 					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 					continue
 				}
-				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + local + " is configured only with aliases", Provider: local})
+				for _, ref := range refs {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + addr + " is required under several local names (" + names + ")", Provider: ref})
+				}
 			}
-			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases (%s.%s), so its %d list-capable types were not queried with the empty default configuration; add your own list blocks with provider = %s.<alias> to a .tfquery.hcl file in the root",
-				local, local, strings.Join(aliases, ", "+local+"."), len(types), local))
+			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is required under several local names (%s), and terraform resolves its configurations unreliably then: its %d list-capable types were not queried; give it one local name", addr, names, len(types)))
 			continue
 		}
+		configs := []ConfigRef{{Local: local}}
+		var aliases []ConfigRef
+		if !temporary {
+			aliases = sc.Aliases
+		}
+		if !temporary && len(aliases) > 0 && !sc.Plain {
+			configs = nil
+			var names []string
+			for _, a := range aliases {
+				names = append(names, a.Ref())
+			}
+			refs := strings.Join(names, ", ")
+			if opt.NoAliases {
+				p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases (%s) and -no-aliases leaves them out, so its list-capable types were not queried (not with the empty default configuration either)", local, refs))
+			} else {
+				p.Notes = append(p.Notes, fmt.Sprintf("provider %s is configured only with aliases, so its list-capable types were queried through %s, not with the empty default configuration", local, refs))
+			}
+		}
+		configs = append(configs, aliases...)
 		for _, t := range types {
 			if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
 				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 				continue
 			}
-			q, reason := planType(t, local, addr, ps.ListResourceSchemas[t], opt.Args)
-			if reason != "" {
-				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: local})
-				continue
-			}
-			q.Source, q.Temporary = addr, temporary
-			q.IncludeResource = opt.IncludeResource != nil && opt.IncludeResource(t)
-			p.Queries = append(p.Queries, q)
-			if temporary {
-				if p.Declare == nil {
-					p.Declare = map[string]string{}
+			for _, c := range configs {
+				if c.Alias != "" && opt.NoAliases {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider configuration " + c.Ref() + " not listed (-no-aliases)", Provider: c.Ref()})
+					continue
 				}
-				p.Declare[local] = addr
+				q, reason := planType(t, c.Local, addr, ps.ListResourceSchemas[t], opt.Args)
+				q.Alias = c.Alias
+				if reason != "" {
+					// The kind of reason stays first (missing argument).
+					if c.Alias != "" {
+						reason += " (provider " + q.Ref() + ")"
+					}
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: q.Ref()})
+					continue
+				}
+				q.Source, q.Temporary = addr, temporary
+				q.IncludeResource = opt.IncludeResource != nil && opt.IncludeResource(t)
+				p.Queries = append(p.Queries, q)
+				if temporary {
+					if p.Declare == nil {
+						p.Declare = map[string]string{}
+					}
+					p.Declare[local] = addr
+				}
 			}
 		}
 	}
@@ -247,7 +300,13 @@ func (p *Plan) dropTwins(configs map[string]string) {
 	for _, q := range p.Queries {
 		cfg := ""
 		if !q.Temporary {
-			cfg = configs[q.Provider]
+			var known bool
+			cfg, known = configs[q.Ref()]
+			// An alias says by its name that it is a configuration of its
+			// own; only a known equal text makes two aliases twins.
+			if !known && q.Alias != "" {
+				cfg = "alias " + q.Ref()
+			}
 		}
 		// Arguments too: a provider whose schema lacks one (-arg
 		// project=...) lists another place than the one that takes it.
@@ -270,7 +329,7 @@ func (p *Plan) dropTwins(configs map[string]string) {
 		if !q.Temporary && cur.Temporary || q.Temporary == cur.Temporary && isFamilyName(q.Source, fam) && !isFamilyName(cur.Source, fam) {
 			drop, kept[i] = cur, q
 		}
-		p.Skipped = append(p.Skipped, Skip{Type: drop.Type, Reason: fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Provider, drop.Provider), Excluded: true})
+		p.Skipped = append(p.Skipped, Skip{Type: drop.Type, Reason: fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Ref(), drop.Ref()), Excluded: true})
 	}
 	p.Queries = kept
 	for local := range p.Declare {
@@ -367,8 +426,16 @@ func (q Query) autoZones() bool {
 }
 
 // autoLabel is the label of the data sources that read the regions and
-// zones for queries through the provider's local name.
-func autoLabel(local string) string { return LabelPrefix + "auto_" + local }
+// zones for queries through a provider configuration (local name and
+// alias): each configuration may look at another project.
+func autoLabel(local, alias string) string {
+	if alias != "" {
+		return LabelPrefix + "auto_" + local + "_" + alias
+	}
+	return LabelPrefix + "auto_" + local
+}
+
+func (q Query) autoLabel() string { return autoLabel(q.Provider, q.Alias) }
 
 // AutoHCL renders the data sources that the queries with auto arguments
 // read their values from, or nil when there are none. They go into a .tf
@@ -379,12 +446,13 @@ func (p Plan) AutoHCL() []byte {
 		src   AutoSource
 		zones bool
 	}
-	needs := map[string]need{} // by local name
+	needs := map[[2]string]need{} // by local name and alias
 	for _, q := range p.Queries {
 		if q.auto() {
-			n := needs[q.Provider]
+			k := [2]string{q.Provider, q.Alias}
+			n := needs[k]
 			n.src, n.zones = AutoSources[family(q.Source)], n.zones || q.autoZones()
-			needs[q.Provider] = n
+			needs[k] = n
 		}
 	}
 	if len(needs) == 0 {
@@ -392,12 +460,14 @@ func (p Plan) AutoHCL() []byte {
 	}
 	var b strings.Builder
 	b.WriteString("# Generated by tforphans; removed after the run.\n")
-	for _, l := range slices.Sorted(maps.Keys(needs)) {
-		n, label := needs[l], autoLabel(l)
-		fmt.Fprintf(&b, "\ndata %q %q {\n  provider = %s\n}\n", n.src.Regions, label, l)
+	keys := slices.SortedFunc(maps.Keys(needs), func(a, b [2]string) int { return strings.Compare(a[0]+"\x00"+a[1], b[0]+"\x00"+b[1]) })
+	for _, k := range keys {
+		n, label := needs[k], autoLabel(k[0], k[1])
+		ref := (Query{Provider: k[0], Alias: k[1]}).Ref()
+		fmt.Fprintf(&b, "\ndata %q %q {\n  provider = %s\n}\n", n.src.Regions, label, ref)
 		if n.zones {
 			fmt.Fprintf(&b, "\ndata %q %q {\n  provider = %s\n  for_each = toset(data.%s.%s.%s)\n  %s = each.key\n}\n",
-				n.src.Zones, label, l, n.src.Regions, label, n.src.RegionsAttr, n.src.ZoneArg)
+				n.src.Zones, label, ref, n.src.Regions, label, n.src.RegionsAttr, n.src.ZoneArg)
 		}
 	}
 	return []byte(b.String())
@@ -405,7 +475,7 @@ func (p Plan) AutoHCL() []byte {
 
 // autoValues is the expression for every value of an auto argument of q.
 func (q Query) autoValues(name string) string {
-	src, label := AutoSources[family(q.Source)], autoLabel(q.Provider)
+	src, label := AutoSources[family(q.Source)], q.autoLabel()
 	if name == "region" {
 		return "data." + src.Regions + "." + label + "." + src.RegionsAttr
 	}
@@ -423,7 +493,7 @@ func (p Plan) AutoDependents(addr string) (deps []Query, ok bool) {
 		if !q.auto() {
 			continue
 		}
-		src, label := AutoSources[family(q.Source)], autoLabel(q.Provider)
+		src, label := AutoSources[family(q.Source)], q.autoLabel()
 		switch block {
 		case "data." + src.Regions + "." + label:
 			deps = append(deps, q)
@@ -452,7 +522,7 @@ func (p Plan) HCL(limit int) []byte {
 func (q Query) HCL(limit int) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "list %q %q {\n", q.Type, q.Label())
-	fmt.Fprintf(&b, "  provider = %s\n", q.Provider)
+	fmt.Fprintf(&b, "  provider = %s\n", q.Ref())
 	fmt.Fprintf(&b, "  limit    = %d\n", limit)
 	if q.IncludeResource {
 		b.WriteString("  include_resource = true\n")
@@ -550,7 +620,22 @@ func HCLString(s string) string {
 
 // Label is the block label: the provider is part of it, since two providers
 // (google and google-beta) can list the same resource type.
-func (q Query) Label() string { return LabelPrefix + q.Provider + "_" + q.Type }
+func (q Query) Label() string {
+	if q.Alias != "" {
+		// Local names have no underscore, so the alias stays apart from
+		// the provider; a type always starts with its provider's name.
+		return LabelPrefix + q.Provider + "_" + q.Alias + "_" + q.Type
+	}
+	return LabelPrefix + q.Provider + "_" + q.Type
+}
+
+// Ref is the provider configuration the block uses: aws, or aws.prod.
+func (q Query) Ref() string {
+	if q.Alias != "" {
+		return q.Provider + "." + q.Alias
+	}
+	return q.Provider
+}
 
 // Address is the list block's address, list.<type>.<label>.
 func (q Query) Address() string { return "list." + q.Type + "." + q.Label() }

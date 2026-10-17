@@ -54,19 +54,31 @@ module's constraint for each command with a temporary
 apply, and an override file of yours that sorts after it is an error, since
 it could set the constraint again).
 
-For anything more specific (provider aliases, other accounts, filters), put
-your own `list` blocks in a `*.tfquery.hcl` file in the root module. They run
-together with the generated ones and their results are checked the same way.
+For anything more specific (filters, accounts no provider block of the root
+reaches), put your own `list` blocks in a `*.tfquery.hcl` file in the root
+module. They run together with the generated ones and their results are
+checked the same way.
 
-Generated blocks always use the provider's default configuration. A root
-that configures a provider only with aliases (`provider "aws" { alias =
-"prod" }` and no block without an alias) gets no generated blocks for it,
-since the empty default configuration could reach another account through
-the environment; a note says so, and your own list blocks with `provider =
-aws.prod` cover it. Until they do, its types count as not checked in that
-root (coverage incomplete, an error with `-strict`); `-exclude-types`
-leaves them out on purpose. A provider with no provider block at all is queried
-(credentials from the environment, as for any run).
+Generated blocks list through the provider's default configuration and
+through each aliased one (`provider "aws" { alias = "prod" }` gets blocks
+with `provider = aws.prod`), since each may look at another account. Their
+results carry that configuration: import blocks from `adopt` name it, and
+coverage counts each configuration apart, so a type that one alias could
+not list (a missing argument) is a gap even when the default listed it.
+A root that configures a provider only with aliases is listed through the
+aliases alone: its default would be an empty configuration that could
+reach another account through the environment (a note says so).
+Two local names that require one provider source (terraform warns that a
+provider can only be required once) make terraform resolve its provider
+blocks unreliably (a run may give an alias an empty configuration), so
+generated blocks are not written for it: its types count as not checked
+and a note says to give the provider one local name.
+`-no-aliases` lists through default configurations only; every type of an
+alias then counts as not checked (coverage incomplete, an error with
+`-strict`). A provider with no provider block at all is queried
+(credentials from the environment, as for any run). Each configuration adds
+a full set of queries, so a root with three aliases of a provider takes
+about four times as long for it.
 
 ## Narrowing the scan
 
