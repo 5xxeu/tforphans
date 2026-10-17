@@ -786,6 +786,19 @@ func TestSourceTimeoutKeepsCause(t *testing.T) {
 	}
 }
 
+// TestSourceTimeoutAfterSuccess: a source that returns no error after its
+// deadline still timed out.
+func TestSourceTimeoutAfterSuccess(t *testing.T) {
+	o := &options{sourceTimeout: 50 * time.Millisecond}
+	_, err := withSource(context.Background(), o, func(ctx context.Context) (int, error) {
+		<-ctx.Done()
+		return 1, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "gave up after 50ms (-source-timeout)") {
+		t.Errorf("%v", err)
+	}
+}
+
 // TestRootStateFailures: with a terraform that hangs, -source-timeout makes
 // the root a failed source (not "not initialized"); with one workspace that
 // cannot be read, the other one still counts.

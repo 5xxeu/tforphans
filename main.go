@@ -9,6 +9,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -868,6 +869,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)", n, idx.Len()))
 	}
 
+	// -timeout means no report: matching a large set may outlast it.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	switch {
 	case o.adopt && len(sum.UnreadStates) > 0 && !o.allowIncomplete:
 		printSummary(stderr, o, sum)
@@ -906,6 +911,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, roots) })
 		if n > len(orphans) {
 			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
 	case o.format == "json":
@@ -1096,8 +1104,10 @@ func withSource[T any](ctx context.Context, o *options, f func(context.Context) 
 	srcCtx, cancel := context.WithTimeout(ctx, o.sourceTimeout)
 	defer cancel()
 	v, err := f(srcCtx)
-	if err != nil && ctx.Err() == nil && srcCtx.Err() != nil {
-		err = sourceTimeout{o.sourceTimeout, err}
+	// Also when f returned no error: work after its last command may not
+	// look at the context, and a result past the deadline is not complete.
+	if ctx.Err() == nil && srcCtx.Err() != nil {
+		err = sourceTimeout{o.sourceTimeout, cmp.Or(err, srcCtx.Err())}
 	}
 	return v, err
 }
