@@ -160,6 +160,7 @@ type options struct {
 	ignore                 *report.Ignore // loaded in execute
 	strict                 bool
 	verbose                bool
+	explain                bool
 	printQuery             bool
 	noQuery                bool
 	allowUnpinned          bool
@@ -270,6 +271,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
 	fs.BoolVar(&o.strictOwnership, "strict-ownership", false, "exit 1 for confirmed duplicate state ownership or duplicate addresses within a state; possible ownership does not fail")
 	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
+	fs.BoolVar(&o.explain, "explain", false, "say for every live object why it counts as managed, uncertain, ignored or unmanaged: the state address and where it was read, the ignore rule, or the closest state instances")
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
 	fs.BoolVar(&o.quiet, "quiet", false, "print no progress lines (by default printed on a terminal: roots read, roots queried, data source scans, -refresh)")
 	fs.BoolVar(&o.printQuery, "print-query", false, "print the temporary files a run would write into each root (provider override, auto data sources, list blocks), each under a \"# file\" header, and exit")
@@ -343,6 +345,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	if o.adopt && o.baselinePath != "" {
 		return nil, errors.New("-baseline is not supported with adopt")
+	}
+	if o.explain && (o.adopt || o.format == "summary") {
+		return nil, errors.New("-explain needs the text or json report (not adopt or -format summary)")
 	}
 	if len(o.environment) > 100 || report.Clean(o.environment) != o.environment {
 		return nil, errors.New("-environment must be one line of at most 100 bytes without control characters or extra spaces")
@@ -760,7 +765,21 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		// An ignore rule wins over an uncertain match, not over a
 		// confirmed one.
-		m := idx.Match(*r)
+		var m state.Match
+		var rejected []state.Rejection
+		var ofType int
+		if o.explain {
+			m, rejected, ofType = idx.Explain(*r, 3)
+		} else {
+			m = idx.Match(*r)
+		}
+		rule, ignored := "", false
+		if !m.Managed || !m.Verified {
+			rule, ignored = ignore.Rule(*r)
+		}
+		if o.explain {
+			sum.Explain = append(sum.Explain, explain(*r, m, rejected, ofType, rule, ignored))
+		}
 		switch {
 		case m.Managed && m.Verified:
 			sum.Managed++
@@ -770,7 +789,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			for _, tc := range counts {
 				tc.Managed++
 			}
-		case ignore.Match(*r):
+		case ignored:
 			sum.Ignored++
 			for _, tc := range counts {
 				tc.Ignored++
@@ -931,6 +950,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		err = report.SummaryTable(stdout, sum)
 	default:
 		err = report.Text(stdout, shown, uncertain)
+		if err == nil {
+			err = report.ExplainText(stdout, sum.Explain)
+		}
 	}
 	if err != nil {
 		return err
@@ -1136,3 +1158,68 @@ func (e sourceTimeout) Error() string {
 	return fmt.Sprintf("gave up after %s (-source-timeout)", e.after)
 }
 func (e sourceTimeout) Unwrap() error { return e.err }
+
+// explain says why a live object counts as it does (-explain); the order
+// of the cases is the one of the decision.
+func explain(r model.Resource, m state.Match, rejected []state.Rejection, ofType int, rule string, ignored bool) report.Explanation {
+	e := report.Explanation{Type: r.Type, Identity: r.Identity, DisplayName: r.DisplayName, Scope: r.ScopeName, Source: r.Source}
+	where := func(m state.Match) string {
+		s := m.Address
+		if m.Source != "" {
+			s += " in " + m.Source
+		}
+		switch m.Via {
+		case "identity":
+			s += ", by resource identity"
+		case "attributes":
+			s += ", by attributes (the state instance has no resource identity)"
+		case "owner":
+			s = "created and owned by " + s
+		}
+		if m.Type != "" {
+			s += ", as " + m.Type
+		}
+		return s
+	}
+	switch {
+	case m.Managed && m.Verified:
+		e.Status, e.Reason = "managed", where(m)
+	case ignored:
+		e.Status, e.Rule, e.Reason = "ignored", rule, "ignore rule "+rule
+		if m.Managed {
+			e.Reason += "; it also matches " + m.Address + " without confirmation"
+		}
+	case m.Managed:
+		e.Status, e.Reason = "uncertain", "matches "+where(m)+", but "
+		switch {
+		case m.ScopeUnknown:
+			e.Reason += "the state does not record the cluster or account (trust it with -proxmox-cluster-states or -plugin-cluster-states)"
+		case len(m.Unconfirmed) > 0:
+			e.Reason += "the state does not hold " + strings.Join(m.Unconfirmed, ", ") + " to confirm where the object lives"
+		default:
+			e.Reason += "the state cannot confirm where the object lives"
+		}
+	default:
+		e.Status = "unmanaged"
+		switch {
+		case ofType == 0:
+			e.Reason = "no state instance of " + r.Type + " was read"
+		case len(rejected) == 0:
+			e.Reason = fmt.Sprintf("none of the %d state instances of %s shares its identity", ofType, r.Type)
+		default:
+			var near []string
+			for _, x := range rejected {
+				s := x.Address
+				if x.Source != "" {
+					s += " in " + x.Source
+				}
+				near = append(near, s+": "+x.Why)
+			}
+			e.Reason = "closest: " + strings.Join(near, "; ")
+		}
+	}
+	if m.Managed {
+		e.StateAddress, e.StateSource = m.Address, m.Source
+	}
+	return e
+}

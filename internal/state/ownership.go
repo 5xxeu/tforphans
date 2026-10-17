@@ -31,7 +31,16 @@ func (ix *Index) AddSnapshots(snapshots []Snapshot) {
 		ix.snapshotKeys = map[string]int{}
 	}
 	for _, s := range snapshots {
-		ix.Add(s.Instances)
+		// Where each instance comes from, for -explain; the snapshot keeps
+		// its instances as read.
+		from := strings.Join(sortedSources(slices.Clone(s.Sources)), ", ")
+		instances := slices.Clone(s.Instances)
+		for i := range instances {
+			if instances[i].Source == "" {
+				instances[i].Source = from
+			}
+		}
+		ix.Add(instances)
 		rows := make([]string, 0, len(s.Instances))
 		for _, in := range s.Instances {
 			kind, value := objectKey(in)

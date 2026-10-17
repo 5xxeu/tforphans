@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -486,5 +488,32 @@ func TestResourceNameTag(t *testing.T) {
 	r.TagName = ""
 	if got := resourceName(r); got != "base" {
 		t.Errorf("without tag: %q", got)
+	}
+}
+
+// TestIgnoreRuleOrigin: -explain names the file and line, or the preset, of
+// the rule that ignored an object.
+func TestIgnoreRuleOrigin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".tforphans-ignore")
+	if err := os.WriteFile(path, []byte("# comment\n\nvault_policy:tmp-*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ig, err := LoadIgnore(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, err := Preset("aws-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ig.Merge(pr)
+	if rule, ok := ig.Rule(model.Resource{Type: "vault_policy", DisplayName: "tmp-1"}); !ok || rule != path+":3: vault_policy:tmp-*" {
+		t.Errorf("%q %v", rule, ok)
+	}
+	if rule, ok := ig.Rule(model.Resource{Type: "aws_default_security_group"}); !ok || !strings.HasPrefix(rule, "preset aws-system:") || !strings.HasSuffix(rule, ": aws_default_security_group") {
+		t.Errorf("%q %v", rule, ok)
+	}
+	if rule, ok := ig.Rule(model.Resource{Type: "vault_policy", DisplayName: "keep"}); ok {
+		t.Errorf("matched %q", rule)
 	}
 }
