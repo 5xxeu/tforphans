@@ -96,34 +96,35 @@ const (
 	NoLongerFound = "no_longer_found"
 )
 
-// seenAs finds r among the objects seen this run (same key, compatible
-// provider; the same listing when a location is unknown). Several matches give the least certain status: uncertain,
-// then managed, then ignored.
-func seenAs(r model.Resource, seen map[findingKey][]Seen, old, current map[[2]string]Listing) (Seen, bool) {
+// seenKey ties a seen object to the listing that returned it.
+type seenKey struct {
+	findingKey
+	source, address string
+}
+
+// seenAs finds r among the objects seen this run. Only the listing that
+// found r, run again unchanged (same source, address and fingerprint),
+// can say what became of it: equal keys from another root, plugin or
+// changed block may be another object (another Vault, another project),
+// as for resolution. Plugins never qualify. Several matches with a
+// compatible provider give the least certain status: uncertain, then
+// managed, then ignored.
+func seenAs(r model.Resource, seen map[seenKey][]Seen, old, current map[[2]string]Listing) (Seen, bool) {
 	k, ok := keyFinding(r)
-	if !ok {
+	if !ok || r.ListAddress == "" || pluginSource.MatchString(r.Source) {
+		return Seen{}, false
+	}
+	listing := [2]string{r.Source, r.ListAddress}
+	before, ok1 := old[listing]
+	now, ok2 := current[listing]
+	if !ok1 || !ok2 || before.Fingerprint == "" || before.Fingerprint != now.Fingerprint {
 		return Seen{}, false
 	}
 	rank := map[string]int{BecameUnsure: 0, "managed": 1, BecameIgnored: 2}
 	var best Seen
 	found := false
-	// With a location the listing left empty (project ""), equal keys of
-	// another source may be another object (as in dedupe): only the same
-	// listing, unchanged (its fingerprint), says what became of this one.
-	unknown := state.UnknownLocation(r.Identity)
-	if unknown {
-		key := [2]string{r.Source, r.ListAddress}
-		before, ok1 := old[key]
-		now, ok2 := current[key]
-		if r.ListAddress == "" || !ok1 || !ok2 || before.Fingerprint == "" || before.Fingerprint != now.Fingerprint {
-			return Seen{}, false
-		}
-	}
-	for _, s := range seen[k] {
+	for _, s := range seen[seenKey{k, r.Source, r.ListAddress}] {
 		if !model.SameProvider(r.ProviderSource, s.Resource.ProviderSource) {
-			continue
-		}
-		if unknown && (s.Resource.Source != r.Source || s.Resource.ListAddress != r.ListAddress) {
 			continue
 		}
 		if !found || rank[s.Status] < rank[best.Status] {
@@ -228,10 +229,11 @@ func CompareRun(old, current []model.Resource, oldSummary, currentSummary Summar
 }
 
 func compare(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen, live bool) ([]model.Resource, Baseline) {
-	seenIdx := map[findingKey][]Seen{}
+	seenIdx := map[seenKey][]Seen{}
 	for _, s := range seen {
 		if k, ok := keyFinding(s.Resource); ok {
-			seenIdx[k] = append(seenIdx[k], s)
+			sk := seenKey{k, s.Resource.Source, s.Resource.ListAddress}
+			seenIdx[sk] = append(seenIdx[sk], s)
 		}
 	}
 	before, now := indexFindings(old), indexFindings(current)

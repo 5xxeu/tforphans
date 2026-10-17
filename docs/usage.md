@@ -174,7 +174,9 @@ label: tforphans does not check that the credentials really point at that
 environment. An automatic `.tforphans.yaml` may set `environment: prod`.
 
 An absent finding may have been deleted, become managed, been ignored or
-become uncertain. The run sees every live object, so it tells these apart:
+become uncertain. When the listing that found it ran again unchanged, the
+run tells these apart (an object with the same ID from another root,
+plugin or changed block may be another one, so those do not count):
 the summary line reads, for example, `3 resolved (1 became managed, 1
 ignored, 1 no longer found)`, and JSON gives each finding a `transition`
 with the state address or ignore rule. A finding that is now uncertain is

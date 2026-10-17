@@ -118,8 +118,10 @@ current findings. The extra object is:
  "resolved_findings": [], "unverified_findings": []}
 ```
 
-During a run, which sees every live object, a missing finding that is
-still there says what became of it in `transition`: `became_managed`
+During a run, which sees every live object, a missing finding that the
+same listing returned again (same `source` and `list_address`, the same
+fingerprint in both reports; never for plugins) says what became of it in
+`transition`: `became_managed`
 (resolved, with the `state_address` that manages it now), `ignored`
 (resolved, with the ignore `rule`) or `uncertain` (unverified, reason
 `now uncertain`: state matches it without confirming the account or
