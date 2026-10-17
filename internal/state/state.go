@@ -851,6 +851,14 @@ func compare(r model.Resource, in *Instance) (ok, verified bool, why string, mis
 			}
 			continue
 		}
+		// A key the match must rest on (required with an identity in
+		// state, primary with attributes) that the object leaves empty
+		// cannot be confirmed: the rest, a location, alone is no match.
+		// The index finds no candidate then either; this keeps the rule
+		// independent of it.
+		if w == "" && (strict && isRequired[k] || !strict && isPrimary[k]) {
+			return false, false, k + " is empty here, which nothing can confirm", nil
+		}
 		got, ok := model.Canonical(src[k])
 		if !ok {
 			if strict && isRequired[k] {
