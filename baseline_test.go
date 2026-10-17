@@ -448,3 +448,20 @@ func TestBaselineEnvironmentRun(t *testing.T) {
 		t.Fatalf("automatic config: %+v, %v", o, err)
 	}
 }
+
+// TestBaselineTransitionsRun: plugins are named by position, so a plugin
+// object seen again proves nothing about the old finding: no transition.
+func TestBaselineTransitionsRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	st := `{"version":4,"lineage":"l","serial":1,"resources":[{"mode":"managed","type":"vault_policy","name":"adopted","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"identity":{"id":"adopted"},"attributes":{"id":"adopted"}}]}]}`
+	if err := os.WriteFile("state.json", []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"adopted"}}'`
+	saveReportTest(t, "baseline.json", []model.Resource{{Type: "vault_policy", Identity: map[string]any{"id": "adopted"}, Source: "plugin1"}}, report.Summary{})
+	code, stdout, stderr := runReportTest(t, "-no-config", "-no-query", "-state", "state.json", "-plugin", plugin, "-baseline", "baseline.json", "-format", "json")
+	if code != exitOK || !strings.Contains(stderr, "baseline: 0 new, 0 known (not shown), 0 resolved, 1 not verified") || strings.Contains(stdout, `"transition"`) {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}

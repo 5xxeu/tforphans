@@ -66,10 +66,72 @@ type Finding struct {
 	Source         string         `json:"source"`
 	ListAddress    string         `json:"list_address"`
 	Reason         string         `json:"reason,omitempty"`
+	// Transition says what became of a missing finding, when this run
+	// knows: became_managed (StateAddress), ignored (Rule), uncertain, or
+	// no_longer_found (its listing ran again without it).
+	Transition   string `json:"transition,omitempty"`
+	StateAddress string `json:"state_address,omitempty"`
+	Rule         string `json:"rule,omitempty"`
 }
 
 func finding(r model.Resource, reason string) Finding {
-	return Finding{r.Type, r.Identity, r.ScopeName, r.ProviderSource, r.DisplayName, r.ImportID, r.Source, r.ListAddress, reason}
+	return Finding{Type: r.Type, Identity: r.Identity, Scope: r.ScopeName, ProviderSource: r.ProviderSource, DisplayName: r.DisplayName,
+		ImportID: r.ImportID, Source: r.Source, ListAddress: r.ListAddress, Reason: reason}
+}
+
+// Seen is a live object of the current run that is no orphan: managed,
+// ignored or uncertain.
+type Seen struct {
+	Resource     model.Resource
+	Status       string
+	StateAddress string
+	Rule         string
+}
+
+// Transitions for missing findings.
+const (
+	BecameManaged = "became_managed"
+	BecameIgnored = "ignored"
+	BecameUnsure  = "uncertain"
+	NoLongerFound = "no_longer_found"
+)
+
+// seenKey ties a seen object to the listing that returned it.
+type seenKey struct {
+	findingKey
+	source, address string
+}
+
+// seenAs finds r among the objects seen this run. Only the listing that
+// found r, run again unchanged (same source, address and fingerprint),
+// can say what became of it: equal keys from another root, plugin or
+// changed block may be another object (another Vault, another project),
+// as for resolution. Plugins never qualify. Several matches with a
+// compatible provider give the least certain status: uncertain, then
+// managed, then ignored.
+func seenAs(r model.Resource, seen map[seenKey][]Seen, old, current map[[2]string]Listing) (Seen, bool) {
+	k, ok := keyFinding(r)
+	if !ok || r.ListAddress == "" || pluginSource.MatchString(r.Source) {
+		return Seen{}, false
+	}
+	listing := [2]string{r.Source, r.ListAddress}
+	before, ok1 := old[listing]
+	now, ok2 := current[listing]
+	if !ok1 || !ok2 || before.Fingerprint == "" || before.Fingerprint != now.Fingerprint {
+		return Seen{}, false
+	}
+	rank := map[string]int{BecameUnsure: 0, "managed": 1, BecameIgnored: 2}
+	var best Seen
+	found := false
+	for _, s := range seen[seenKey{k, r.Source, r.ListAddress}] {
+		if !model.SameProvider(r.ProviderSource, s.Resource.ProviderSource) {
+			continue
+		}
+		if !found || rank[s.Status] < rank[best.Status] {
+			best, found = s, true
+		}
+	}
+	return best, found
 }
 
 type findingKey struct {
@@ -156,6 +218,24 @@ const environmentChanged = "environment changed"
 // Compare marks current orphans and checks missing findings against listings.
 // An object without an identity or import ID can never be matched or resolved.
 func Compare(old, current []model.Resource, oldSummary, currentSummary Summary) ([]model.Resource, Baseline) {
+	return compare(old, current, oldSummary, currentSummary, nil, false)
+}
+
+// CompareRun is Compare during a run, which knows every live object: seen
+// are those that are no orphans, and a missing finding among them says
+// what became of it; one not among them was not found at all.
+func CompareRun(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen) ([]model.Resource, Baseline) {
+	return compare(old, current, oldSummary, currentSummary, seen, true)
+}
+
+func compare(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen, live bool) ([]model.Resource, Baseline) {
+	seenIdx := map[seenKey][]Seen{}
+	for _, s := range seen {
+		if k, ok := keyFinding(s.Resource); ok {
+			sk := seenKey{k, s.Resource.Source, s.Resource.ListAddress}
+			seenIdx[sk] = append(seenIdx[sk], s)
+		}
+	}
 	before, now := indexFindings(old), indexFindings(current)
 	marked := make([]model.Resource, len(current))
 	b := Baseline{ResolvedFindings: []Finding{}, UnverifiedFindings: []Finding{}}
@@ -187,9 +267,30 @@ func Compare(old, current []model.Resource, oldSummary, currentSummary Summary) 
 		if now.contains(r) {
 			continue
 		}
+		// Seen this run as something else: that is the answer, whatever
+		// the listings say.
+		if s, ok := seenAs(r, seenIdx, oldListings, newListings); ok {
+			f := finding(r, "")
+			switch s.Status {
+			case "managed":
+				f.Transition, f.StateAddress = BecameManaged, s.StateAddress
+				b.ResolvedFindings = append(b.ResolvedFindings, f)
+			case BecameIgnored:
+				f.Transition, f.Rule = BecameIgnored, s.Rule
+				b.ResolvedFindings = append(b.ResolvedFindings, f)
+			default:
+				f.Transition, f.StateAddress, f.Reason = BecameUnsure, s.StateAddress, "now uncertain"
+				b.UnverifiedFindings = append(b.UnverifiedFindings, f)
+			}
+			continue
+		}
 		reason := missingReason(r, oldListings, newListings)
 		if reason == "" {
-			b.ResolvedFindings = append(b.ResolvedFindings, finding(r, ""))
+			f := finding(r, "")
+			if live {
+				f.Transition = NoLongerFound
+			}
+			b.ResolvedFindings = append(b.ResolvedFindings, f)
 		} else {
 			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, reason))
 		}
