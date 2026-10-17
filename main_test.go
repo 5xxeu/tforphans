@@ -785,3 +785,58 @@ func TestSourceTimeoutKeepsCause(t *testing.T) {
 		t.Errorf("%v", err)
 	}
 }
+
+// TestRootStateFailures: with a terraform that hangs, -source-timeout makes
+// the root a failed source (not "not initialized"); with one workspace that
+// cannot be read, the other one still counts.
+func TestRootStateFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell terraform")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(filepath.Join(root, ".terraform"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := `{"version":4,"lineage":"l","serial":1,"resources":[{"mode":"managed","type":"vault_policy","name":"p","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"identity":{"id":"kept"},"attributes":{"id":"kept"}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(dir, "terraform")
+	script := `#!/bin/sh
+case "$1" in
+workspace) printf '* default\n  bad\n' ;;
+state) [ "$TF_WORKSPACE" = bad ] && { echo "Error: access denied" >&2; exit 1; }; cat "` + filepath.Join(dir, "state.json") + `" ;;
+esac
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"kept"}}'`
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-config", "-no-query", "-terraform", fake, "-plugin", plugin, "-format", "json", root}, &stdout, &stderr)
+	var out struct {
+		Orphans []model.Resource `json:"orphans"`
+		Summary struct {
+			Managed      int                  `json:"managed"`
+			UnreadStates []report.UnreadState `json:"unread_states"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil || code != exitOK || out.Summary.Managed != 1 || len(out.Orphans) != 0 ||
+		len(out.Summary.UnreadStates) != 1 || !strings.Contains(out.Summary.UnreadStates[0].Error, "workspace bad") {
+		t.Errorf("one workspace unread: exit %d, %v\n%s\n%s", code, err, &stdout, &stderr)
+	}
+
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".terraform")); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run(context.Background(), []string{"-no-config", "-no-query", "-terraform", fake, "-plugin", plugin, "-source-timeout", "300ms", root}, &stdout, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "gave up after 300ms (-source-timeout)") || strings.Contains(stderr.String(), "not initialized") {
+		t.Errorf("hanging terraform: exit %d\n%s", code, &stderr)
+	}
+}

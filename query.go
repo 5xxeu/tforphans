@@ -35,7 +35,8 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	// coverage and for -strict. (Without .terraform a root may still work:
 	// no providers, or providers from dev_overrides.)
 	uninitialized := func(err error) bool {
-		if initialized || o.init {
+		// A timeout or cancel is no sign of a missing init.
+		if initialized || o.init || ctx.Err() != nil {
 			return false
 		}
 		u := report.NewUnreadState(root, err)
@@ -49,14 +50,15 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if o.noQuery {
 		// Only the state is needed: no provider schemas or query files.
 		snapshots, n, err := pullRoot(ctx, o, root)
-		if err != nil {
-			if uninitialized(err) {
-				return nil, nil
-			}
-			return nil, err
-		}
+		// The workspaces that were read still count.
 		idx.AddSnapshots(snapshots)
 		sum.States += n
+		if err != nil && !uninitialized(err) {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
+		}
 		return nil, nil
 	}
 	schemas, err := r.ProvidersSchema(ctx)
@@ -98,14 +100,19 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 
 	snapshots, n, err := pullRoot(ctx, o, root)
+	// The workspaces that were read still count; an unread one is a gap,
+	// as with -state-roots, and the root is still queried.
+	idx.AddSnapshots(snapshots)
+	sum.States += n
 	if err != nil {
 		if uninitialized(err) {
 			return nil, nil
 		}
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(root, err))
 	}
-	idx.AddSnapshots(snapshots)
-	sum.States += n
 
 	// The user's own list blocks run too, even when nothing is generated.
 	userLists, err := tf.UserLists(root)

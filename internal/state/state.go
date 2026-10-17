@@ -215,7 +215,7 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 	scheme := strings.ToLower(urlScheme(src))
 	switch {
 	case src == "-":
-		return readContext(ctx, os.Stdin, maxSize)
+		return readContext(ctx, os.Stdin, "", maxSize)
 	case scheme == "https", scheme == "http":
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 		if err != nil {
@@ -263,26 +263,31 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 		// whole string, credentials included, in the error.
 		return nil, fmt.Errorf("unsupported state URL %s: use https, a file or -", Redact(src))
 	default:
-		f, err := os.Open(src)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		// A named pipe can block like stdin.
-		return readContext(ctx, f, maxSize)
+		// A named pipe blocks like stdin, already when it is opened.
+		return readContext(ctx, nil, src, maxSize)
 	}
 }
 
 // readContext is ReadLimited that gives up when ctx ends (-timeout): a
 // pipe left open by the writer would block it for ever. The reading
 // goroutine stays blocked until the process exits; nothing waits for it.
-func readContext(ctx context.Context, r io.Reader, maxSize int64) ([]byte, error) {
+// With path set it opens that file in the goroutine too.
+func readContext(ctx context.Context, r io.Reader, path string, maxSize int64) ([]byte, error) {
 	type result struct {
 		data []byte
 		err  error
 	}
 	done := make(chan result, 1)
 	go func() {
+		if path != "" {
+			f, err := os.Open(path)
+			if err != nil {
+				done <- result{nil, err}
+				return
+			}
+			defer f.Close()
+			r = f
+		}
 		data, err := ReadLimited(r, maxSize)
 		done <- result{data, err}
 	}()
