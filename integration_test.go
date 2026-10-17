@@ -848,28 +848,34 @@ func TestIntegrationRootThroughLink(t *testing.T) {
 	}
 }
 
-// TestIntegrationAPIOff: a listing whose API is not enabled (GCP) is no
-// gap, unless -strict-api.
+// TestIntegrationAPIOff: a listing whose API is not enabled (GCP) is a
+// gap unless -strict-api=false or -strict-ignore.
 func TestIntegrationAPIOff(t *testing.T) {
 	_, root := setup(t)
 	write(t, filepath.Join(root, "main.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\n")
 	t.Chdir(root)
 	t.Setenv("FAKE_FAIL", "thing:Compute Engine API has not been used in project p before or it is disabled. Enable it by visiting ...")
+	// One type listed, the other's API is off: a disabled API can still
+	// hold data, so -strict fails.
 	code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-format", "json")
-	if code != exitOK || !strings.Contains(stderr, "1 listings whose API is not enabled") {
+	if code != exitError || !strings.Contains(stderr, "1 listings failed because their API is not enabled") {
 		t.Errorf("exit %d\n%s", code, stderr)
 	}
-	if !strings.Contains(stdout, `"api_not_enabled": 1`) || !strings.Contains(stdout, `"reasons": [`) {
+	if !strings.Contains(stdout, `"api_not_enabled": 1`) || !strings.Contains(stdout, `"reasons": [`) || !strings.Contains(stdout, `"complete": false`) {
 		t.Errorf("json:\n%s", stdout)
 	}
-	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-strict-api"); code != exitError {
-		t.Errorf("-strict-api: exit %d\n%s", code, stderr)
+	// Exempted explicitly: by type, or every disabled API as before.
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-strict-ignore", "fake_thing"); code != exitOK {
+		t.Errorf("-strict-ignore: exit %d\n%s", code, stderr)
+	}
+	if code, _, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "zone=a", "-strict", "-strict-api=false"); code != exitOK || !strings.Contains(stderr, "1 listings whose API is not enabled (-strict-api=false left them out)") {
+		t.Errorf("-strict-api=false: exit %d\n%s", code, stderr)
 	}
 	// A provider with only an alias: the user's block with that alias meets
 	// the disabled API, which covers the alias-only skip of fake_thing.
 	write(t, "main.tf", "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\" }\n  }\n}\nprovider \"fake\" {\n  alias = \"second\"\n}\n")
 	write(t, "mine.tfquery.hcl", "list \"fake_thing\" \"mine\" {\n  provider = fake.second\n}\n")
-	if code, _, stderr := runTool("-types", "fake_thing", "-strict"); code != exitOK {
+	if code, _, stderr := runTool("-types", "fake_thing", "-strict", "-strict-api=false"); code != exitOK {
 		t.Errorf("aliased block with the API off: exit %d\n%s", code, stderr)
 	}
 }
@@ -945,14 +951,19 @@ func TestIntegrationAutoZones(t *testing.T) {
 		t.Errorf("temporary files left: %v", files)
 	}
 	// Zones that cannot be read: their queries fail, the others run. A
-	// disabled API holds nothing; any other error is a gap.
+	// disabled API is a gap too (it may still hold data), unless
+	// -strict-api=false takes it as empty.
 	t.Setenv("FAKE_FAIL", "record:Compute Engine API has not been used in project p before or it is disabled")
-	// Nothing else runs: the disabled API still is the check.
-	if code, stdout, stderr := runTool("-types", "fake_zoned", "-arg", "zone=auto", "-strict"); code != exitOK || !strings.Contains(stderr, "coverage: complete") {
+	if code, stdout, stderr := runTool("-types", "fake_zoned", "-arg", "zone=auto", "-strict"); code != exitError || strings.Contains(stderr, "coverage: complete") {
 		t.Errorf("only zones with the API off: exit %d\n%s\n%s", code, stdout, stderr)
 	}
-	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "coverage: complete") {
-		t.Errorf("zones with the API off: exit %d\n%s\n%s", code, stdout, stderr)
+	// Nothing else runs: with -strict-api=false the disabled API still is
+	// the check.
+	if code, stdout, stderr := runTool("-types", "fake_zoned", "-arg", "zone=auto", "-strict", "-strict-api=false"); code != exitOK || !strings.Contains(stderr, "coverage: complete") {
+		t.Errorf("only zones with the API off, -strict-api=false: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr := runTool("-types", "fake_thing,fake_zoned", "-arg", "fake_zoned:zone=auto", "-strict", "-strict-api=false"); code != exitOrphans || !strings.Contains(stdout, "fake_thing") || !strings.Contains(stderr, "coverage: complete") {
+		t.Errorf("zones with the API off, -strict-api=false: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	// A data source of the user's whose label looks like ours is not ours:
 	// its error stays fatal.

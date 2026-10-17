@@ -11,9 +11,12 @@
   put the rest in the ignore file, or add an opt-in preset.
 - An API that is not enabled in a GCP project fails its queries ("API not
   enabled"). Such listings stay in `failed_queries` and are counted in
-  `summary.api_not_enabled`, but they do not make coverage incomplete: a
-  disabled service shows and accepts no objects, and GCP refuses to disable
-  one that has some unless forced. `-strict-api` counts them as gaps.
+  `summary.api_not_enabled`, and they make coverage incomplete: a disabled
+  API proves nothing about objects (disabling Cloud Storage or BigQuery
+  keeps their data and its cost). If a project does not use some services,
+  name their types in `-strict-ignore` (`-strict-ignore 'google_bigquery_*'`);
+  they are still reported. `-strict-api=false` takes every disabled API as
+  holding no objects, as tforphans did up to 0.1.8.
 - The temporary files are written next to the configuration; there is no
   separate work directory, and a provider version cannot be overridden for
   the run (the root's installed providers are used).

@@ -350,7 +350,7 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 	return ""
 }
 
-// listingFailure follows coverage's API-disabled exception. -strict-ignore
+// listingFailure follows coverage's API-disabled exception (-strict-api=false). -strict-ignore
 // affects exit status, but cannot make a failed listing resolution evidence.
 func (o *options) listingFailure(f tf.Failure) bool {
 	f.Classify()

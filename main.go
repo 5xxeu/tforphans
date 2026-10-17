@@ -243,7 +243,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.BoolVar(&o.currentWS, "current-workspace", false, "read only the selected workspace of each root module instead of listing all workspaces")
 	fs.BoolVar(&o.anyVersion, "ignore-required-version", false, "lift the root modules' required_version with a temporary override file, so that a root pinned to an older Terraform can be queried (child modules' constraints still apply)")
 	fs.BoolVar(&o.refresh, "refresh", false, "read each root's state through terraform plan -refresh-only (no lock, nothing written) instead of state pull: state written before Terraform 1.12 gets resource identities, so matches are exact; slower, needs the root's credentials and variables")
-	fs.BoolVar(&o.strictAPI, "strict-api", false, "count listings that failed because the API is not enabled (GCP) as incomplete coverage; by default a disabled API is taken to hold no objects")
+	fs.BoolVar(&o.strictAPI, "strict-api", true, "count listings that failed because the API is not enabled (GCP) as incomplete coverage (the default: a disabled API can still hold data, Cloud Storage and BigQuery keep theirs); -strict-api=false takes it as holding no objects, -strict-ignore TYPE_GLOB exempts named types")
 	fs.Var(&strictIgnore, "strict-ignore", "types matching these globs do not make coverage incomplete when their listing fails or they are skipped for want of an argument (still listed when possible, and still reported), e.g. google_firebase_*")
 	fs.IntVar(&o.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules than this, before terraform runs in them (0: no limit)")
 	fs.BoolVar(&o.terragrunt, "terragrunt", false, "with -state-roots, also read Terragrunt units (directories with a terragrunt.hcl, except parents that units include) through terragrunt in PATH; terragrunt initializes them (.terragrunt-cache)")
@@ -858,8 +858,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
-	// A disabled API (GCP) can hold no objects: such listings stay in
-	// failed_queries but are no gap, unless -strict-api. Types named in
+	// A disabled API (GCP) is a gap: disabling Cloud Storage or BigQuery
+	// keeps their data, so the failure proves nothing about objects.
+	// -strict-api=false takes it as empty, as before; types named in
 	// -strict-ignore are no gap either, whatever went wrong.
 	counting, skipped, checks := sum.Failed, sum.Skipped, sum.Checks
 	for _, f := range sum.Failed {
@@ -896,6 +897,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 				counting = append(counting, f)
 			}
 		}
+	}
+	if sum.APIOff > 0 && o.strictAPI {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d listings failed because their API is not enabled: a disabled API can still hold data (Cloud Storage and BigQuery keep theirs), so they count as not checked; if the project does not use those types, name them in -strict-ignore", sum.APIOff))
 	}
 	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
 	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum)
