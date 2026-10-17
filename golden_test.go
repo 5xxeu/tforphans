@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -106,6 +107,15 @@ func checkReport(t *testing.T, data []byte, docs string) {
 	}
 	if sum != [5]int{s.Live, s.Managed, s.Uncertain, s.Ignored, s.Orphans} {
 		t.Errorf("by_type sums %v, summary %+v", sum, s)
+	}
+	// These reports have no scopes: one coverage row per type, every type.
+	var rows []string
+	for _, c := range s.Coverage {
+		rows = append(rows, c.Type)
+	}
+	slices.Sort(rows)
+	if types := slices.Sorted(maps.Keys(s.ByType)); !slices.Equal(rows, types) {
+		t.Errorf("coverage rows %v, by_type %v", rows, types)
 	}
 	for _, c := range s.Coverage {
 		if b := s.ByType[c.Type]; b.Live != c.Live || b.Managed != c.Managed || b.Uncertain != c.Uncertain || b.Ignored != c.Ignored || b.Orphans != c.Orphans {

@@ -98,36 +98,6 @@ func TestBinarySignal(t *testing.T) {
 	}
 }
 
-// start starts cmd and makes sure it does not outlive the test.
-func start(t *testing.T, cmd *exec.Cmd) {
-	t.Helper()
-	cmd.WaitDelay = 5 * time.Second
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
-}
-
-// waitFor waits for cmd at most limit, then kills it and fails: a stop
-// that does not work must not hang the test run.
-func waitFor(t *testing.T, cmd *exec.Cmd, limit time.Duration) error {
-	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(limit):
-		_ = cmd.Process.Kill()
-		<-done
-		t.Fatalf("still running %s after the signal", limit)
-		return nil
-	}
-}
-
 // killOnFailure kills a process the run should have stopped, when the test
 // fails before it is gone.
 func killOnFailure(t *testing.T, pid int) {

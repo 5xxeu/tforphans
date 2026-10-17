@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 // TestMain lets tests run the real main, with its signal handling and exit
@@ -35,9 +36,40 @@ func runBinary(t *testing.T, dir string, args ...string) (int, string, string) {
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	start(t, cmd)
+	err := waitFor(t, cmd, time.Minute)
 	if _, ok := err.(*exec.ExitError); err != nil && !ok {
 		t.Fatal(err)
 	}
 	return cmd.ProcessState.ExitCode(), stdout.String(), stderr.String()
+}
+
+// start starts cmd and makes sure it does not outlive the test.
+func start(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+}
+
+// waitFor waits for cmd at most limit, then kills it and fails: a run or
+// a stop that hangs must not hang the test run.
+func waitFor(t *testing.T, cmd *exec.Cmd, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("still running after %s", limit)
+		return nil
+	}
 }
