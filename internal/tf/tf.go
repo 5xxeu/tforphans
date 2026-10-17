@@ -387,13 +387,15 @@ func ProviderSourceConfigs(dir string) (map[string]SourceConfigs, error) {
 		}
 		out[addr] = c
 	}
+	// An entry without source is the implicit hashicorp/<name>.
 	for name, req := range mod.RequiredProviders {
+		addr := "registry.terraform.io/hashicorp/" + name
 		if req.Source != "" {
-			addr := NormalizeSource(req.Source)
-			c := out[addr]
-			c.LocalNames = append(c.LocalNames, name)
-			out[addr] = c
+			addr = NormalizeSource(req.Source)
 		}
+		c := out[addr]
+		c.LocalNames = append(c.LocalNames, name)
+		out[addr] = c
 	}
 	// A provider block of a name not in required_providers is the implicit
 	// hashicorp/<name>: one more name of that source.

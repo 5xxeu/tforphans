@@ -213,8 +213,23 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		// configuration), so a listing that ran proves nothing.
 		if !temporary && len(sc.LocalNames) > 1 {
 			names := strings.Join(sc.LocalNames, ", ")
+			// One gap per configuration, the default under every name: a
+			// user block through one of them covers that one only.
+			var refs []string
+			if sc.Plain || len(sc.Aliases) == 0 {
+				refs = append(refs, sc.LocalNames...)
+			}
+			for _, a := range sc.Aliases {
+				refs = append(refs, a.Ref())
+			}
 			for _, t := range types {
-				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + addr + " is required under several local names (" + names + ")", Provider: local})
+				if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
+					continue
+				}
+				for _, ref := range refs {
+					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + addr + " is required under several local names (" + names + ")", Provider: ref})
+				}
 			}
 			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is required under several local names (%s), and terraform resolves its configurations unreliably then: its %d list-capable types were not queried; give it one local name", addr, names, len(types)))
 			continue

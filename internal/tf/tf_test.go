@@ -1137,3 +1137,46 @@ provider "google" {
 		t.Errorf("%d gaps, notes %v", gaps, p.Notes)
 	}
 }
+
+// Each configuration of a source with several local names is a gap of its
+// own, and an entry without source counts as the implicit hashicorp/<name>.
+func TestPlanTwoLocalNamesConfigs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws   = { version = "~> 6.0" }
+    awseu = { source = "hashicorp/aws" }
+  }
+}
+provider "aws" {}
+provider "awseu" {
+  alias = "prod"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared, err := LocalNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs, err := ProviderSourceConfigs(dir)
+	if err != nil || !reflect.DeepEqual(configs["registry.terraform.io/hashicorp/aws"], SourceConfigs{Plain: true, Aliases: []ConfigRef{{"awseu", "prod"}}, LocalNames: []string{"aws", "awseu"}}) {
+		t.Fatalf("configs %+v %v", configs, err)
+	}
+	p := BuildPlan(schemas(t), declared, PlanOptions{Configs: configs})
+	byRef := map[string]int{}
+	for _, sk := range p.Skipped {
+		if !sk.Excluded && strings.Contains(sk.Reason, "several local names (aws, awseu)") {
+			byRef[sk.Provider]++
+		}
+	}
+	if n := byRef["awseu.prod"]; n == 0 || byRef["aws"] != n || byRef["awseu"] != n || len(byRef) != 3 {
+		t.Fatalf("gaps by configuration %v", byRef)
+	}
+	for _, q := range p.Queries {
+		if q.Source == "registry.terraform.io/hashicorp/aws" {
+			t.Errorf("aws queried: %+v", q)
+		}
+	}
+}
