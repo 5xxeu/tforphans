@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "orphans": [
+    {
+      "type": "vault_mount",
+      "identity": {
+        "n": 12345678901234567890,
+        "path": "secret"
+      },
+      "display_name": "secret",
+      "import_id": "",
+      "provider": "vault.other",
+      "provider_source": "",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1",
+      "baseline": "known"
+    },
+    {
+      "type": "vault_policy",
+      "identity": {
+        "id": "new"
+      },
+      "display_name": "new",
+      "import_id": "",
+      "provider": "",
+      "provider_source": "hashicorp/vault",
+      "undeclared_provider": "",
+      "list_address": "",
+      "source": "plugin1",
+      "baseline": "new"
+    }
+  ],
+  "uncertain": [],
+  "summary": {
+    "states": 1,
+    "duplicate_ownership": 0,
+    "possible_duplicate_ownership": 0,
+    "duplicate_in_state": 0,
+    "managed_by_identity": 1,
+    "live": 4,
+    "managed": 2,
+    "uncertain": 0,
+    "ignored": 0,
+    "orphans": 2,
+    "queried_types": 0,
+    "complete": true,
+    "states_complete": true,
+    "discovery_complete": true,
+    "notes": [
+      "1 of 3 state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)"
+    ],
+    "by_type": {
+      "vault_mount": {
+        "live": 1,
+        "managed": 0,
+        "uncertain": 0,
+        "ignored": 0,
+        "orphans": 1
+      },
+      "vault_policy": {
+        "live": 3,
+        "managed": 2,
+        "uncertain": 0,
+        "ignored": 0,
+        "orphans": 1
+      }
+    },
+    "coverage": [
+      {
+        "type": "vault_mount",
+        "status": "complete",
+        "live": 1,
+        "managed": 0,
+        "uncertain": 0,
+        "ignored": 0,
+        "orphans": 1
+      },
+      {
+        "type": "vault_policy",
+        "status": "complete",
+        "live": 3,
+        "managed": 2,
+        "uncertain": 0,
+        "ignored": 0,
+        "orphans": 1
+      }
+    ]
+  },
+  "baseline": {
+    "new": 1,
+    "known": 1,
+    "resolved": 0,
+    "unverified": 1,
+    "resolved_findings": [],
+    "unverified_findings": [
+      {
+        "type": "vault_policy",
+        "identity": {
+          "id": "ci"
+        },
+        "provider_source": "hashicorp/vault",
+        "display_name": "ci",
+        "import_id": "ci",
+        "source": "plugin1",
+        "list_address": "",
+        "reason": "plugin results cannot be verified"
+      }
+    ]
+  }
+}

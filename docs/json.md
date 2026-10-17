@@ -7,7 +7,9 @@ format it does not know; new fields do not change it.
 - `orphans`, `uncertain`: objects with `type`, `identity` (the keys state is
   matched on), `display_name`, `scope` (where it lives, `-scan` and some
   list resources), `import_id`, `provider` (local name in the root),
-  `provider_source`, `list_address`, `source` (root, `-scan NAME` or
+  `provider_source`, `undeclared_provider` (the provider address when
+  only child modules declare it, not the root module; empty otherwise),
+  `list_address`, `source` (root, `-scan NAME` or
   `pluginN`), `attributes` (only with `-include-attrs`); `uncertain` adds
   `state_address`, the state instance it matched.
 - `summary`: counters (`live`, `managed`, `managed_by_identity`,

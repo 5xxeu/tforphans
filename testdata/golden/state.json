@@ -1,0 +1,5 @@
+{"version":4,"terraform_version":"1.15.0","lineage":"golden","serial":3,"resources":[
+{"mode":"managed","type":"vault_policy","name":"kept","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"identity":{"id":"kept"},"attributes":{"id":"kept"}}]},
+{"mode":"managed","type":"vault_policy","name":"legacy","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"attributes":{"id":"legacy","name":"legacy"}}]},
+{"mode":"managed","type":"vault_mount","name":"kv","provider":"provider[\"registry.terraform.io/hashicorp/vault\"]","instances":[{"identity":{"path":"kv"},"attributes":{"id":"kv","path":"kv"}}]}
+]}

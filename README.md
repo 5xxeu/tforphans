@@ -203,6 +203,15 @@ and resource identity, and run the whole flow including the import round
 trip; the Proxmox test runs the real `bpg/proxmox` against a fake Proxmox VE
 API.
 
+Some tests run the binary itself (this test binary as `main`): exit codes,
+stdout and stderr, SIGTERM and SIGINT with plugin children, and (with
+`-tags integration`) a stop during `terraform query` that must leave no
+temporary file in the root. `testdata/golden` holds JSON reports of a fixed
+state and plugin output; after an intended change of the format, rewrite
+them with `TFORPHANS_UPDATE_GOLDEN=1 go test -run TestGoldenJSON .` and
+review the diff. Every key of these reports must be described in
+`docs/json.md`.
+
 Fuzz targets check that plugin output always becomes import blocks that
 parse as HCL with every id and identity value intact (`FuzzImportHCL`,
 `FuzzHCLString`), that no state crashes the parsers and every identity
