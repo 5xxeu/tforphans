@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -108,6 +109,11 @@ func TestBaselineMissingListing(t *testing.T) {
 		}},
 		{"unknown provider", "", func(_ *model.Resource, _, now *Summary) { now.Listings[0].Provider = "" }},
 		{"incomplete", "listing incomplete", func(_ *model.Resource, _, now *Summary) { now.Listings[0].Complete = false }},
+		// A root whose results were dropped (it timed out after its query)
+		// proves nothing, even with listings it recorded before.
+		{"failed source", "listing incomplete", func(_ *model.Resource, _, now *Summary) {
+			now.FailSource("infra", errors.New("gave up after 1s (-source-timeout)"))
+		}},
 		{"incomplete before fingerprint", "listing incomplete", func(_ *model.Resource, _, now *Summary) {
 			now.Listings[0].Complete = false
 			now.Listings[0].Fingerprint = "changed"

@@ -892,5 +892,12 @@ func (s *Summary) FailSource(source string, err error) {
 		msg = strings.ToValidUTF8(msg[:2000], "") + "..."
 	}
 	s.FailedSources = append(s.FailedSources, FailedSource{Source: source, Error: msg})
+	// Its results are dropped: listings it recorded before failing are no
+	// evidence that a baseline finding is gone.
+	for i := range s.Listings {
+		if s.Listings[i].Source == source {
+			s.Listings[i].Complete = false
+		}
+	}
 	s.Warnings = append(s.Warnings, source+" failed: "+msg)
 }
