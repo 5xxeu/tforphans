@@ -364,8 +364,24 @@ func TestBaselineTransitionUnknownLocation(t *testing.T) {
 	if res.Resolved != 0 || res.Unverified != 1 || res.UnverifiedFindings[0].Transition != "" {
 		t.Errorf("another root's object resolved the finding: %+v", res)
 	}
-	_, res = CompareRun([]model.Resource{a}, nil, Summary{}, Summary{}, []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
+	l := Listing{Source: "root-a", Address: "list.x.a", Type: "google_compute_instance", Complete: true, Fingerprint: "f1"}
+	same := Summary{Listings: []Listing{l}}
+	_, res = CompareRun([]model.Resource{a}, nil, same, same, []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
 	if res.Resolved != 1 || res.ResolvedFindings[0].Transition != BecameIgnored {
-		t.Errorf("the same listing's object: %+v", res)
+		t.Errorf("the same, unchanged listing's object: %+v", res)
+	}
+	// The block now points elsewhere (another project): its object with
+	// the same name says nothing about the old one.
+	changed := l
+	changed.Fingerprint = "f2"
+	for name, sums := range map[string][2]Summary{
+		"changed listing":       {same, {Listings: []Listing{changed}}},
+		"no listing evidence":   {{}, {}},
+		"listing not run again": {same, {}},
+	} {
+		_, res = CompareRun([]model.Resource{a}, nil, sums[0], sums[1], []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
+		if res.Resolved != 0 || res.UnverifiedFindings[0].Transition != "" {
+			t.Errorf("%s: %+v", name, res)
+		}
 	}
 }

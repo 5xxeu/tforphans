@@ -99,7 +99,7 @@ const (
 // seenAs finds r among the objects seen this run (same key, compatible
 // provider; the same listing when a location is unknown). Several matches give the least certain status: uncertain,
 // then managed, then ignored.
-func seenAs(r model.Resource, seen map[findingKey][]Seen) (Seen, bool) {
+func seenAs(r model.Resource, seen map[findingKey][]Seen, old, current map[[2]string]Listing) (Seen, bool) {
 	k, ok := keyFinding(r)
 	if !ok {
 		return Seen{}, false
@@ -109,8 +109,16 @@ func seenAs(r model.Resource, seen map[findingKey][]Seen) (Seen, bool) {
 	found := false
 	// With a location the listing left empty (project ""), equal keys of
 	// another source may be another object (as in dedupe): only the same
-	// listing says what became of this one.
+	// listing, unchanged (its fingerprint), says what became of this one.
 	unknown := state.UnknownLocation(r.Identity)
+	if unknown {
+		key := [2]string{r.Source, r.ListAddress}
+		before, ok1 := old[key]
+		now, ok2 := current[key]
+		if r.ListAddress == "" || !ok1 || !ok2 || before.Fingerprint == "" || before.Fingerprint != now.Fingerprint {
+			return Seen{}, false
+		}
+	}
 	for _, s := range seen[k] {
 		if !model.SameProvider(r.ProviderSource, s.Resource.ProviderSource) {
 			continue
@@ -259,7 +267,7 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 		}
 		// Seen this run as something else: that is the answer, whatever
 		// the listings say.
-		if s, ok := seenAs(r, seenIdx); ok {
+		if s, ok := seenAs(r, seenIdx, oldListings, newListings); ok {
 			f := finding(r, "")
 			switch s.Status {
 			case "managed":
