@@ -76,23 +76,19 @@ func TestBinarySignal(t *testing.T) {
 			dir := t.TempDir()
 			pidFile := filepath.Join(dir, "child")
 			// The plugin's child sleeps with its own copy of stdout.
-			plugin := `sleep 300 & echo $! > ` + pidFile + `.tmp && mv ` + pidFile + `.tmp ` + pidFile + `; wait`
+			plugin := `sleep 300 & echo $! > "$TFO_PIDFILE.tmp" && mv "$TFO_PIDFILE.tmp" "$TFO_PIDFILE"; wait`
 			cmd := tool(t, "-no-config", "-no-query", "-format", "json", "-plugin", plugin)
 			cmd.Dir = dir
+			cmd.Env = append(cmd.Env, "TFO_PIDFILE="+pidFile)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
+			start(t, cmd)
 			child := waitPid(t, pidFile)
-			start := time.Now()
+			killOnFailure(t, child)
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
-			err := cmd.Wait()
-			if took := time.Since(start); took > 15*time.Second {
-				t.Errorf("stopped after %s", took)
-			}
+			err := waitFor(t, cmd, 15*time.Second)
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != exitError || stdout.Len() != 0 || !strings.Contains(stderr.String(), "error:") {
 				t.Errorf("%v\nstdout:\n%s\nstderr:\n%s", err, &stdout, &stderr)
@@ -100,6 +96,46 @@ func TestBinarySignal(t *testing.T) {
 			waitGone(t, child)
 		})
 	}
+}
+
+// start starts cmd and makes sure it does not outlive the test.
+func start(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+}
+
+// waitFor waits for cmd at most limit, then kills it and fails: a stop
+// that does not work must not hang the test run.
+func waitFor(t *testing.T, cmd *exec.Cmd, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("still running %s after the signal", limit)
+		return nil
+	}
+}
+
+// killOnFailure kills a process the run should have stopped, when the test
+// fails before it is gone.
+func killOnFailure(t *testing.T, pid int) {
+	t.Cleanup(func() {
+		if t.Failed() {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
 }
 
 // waitPid reads a pid that a child writes once it runs.

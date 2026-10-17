@@ -36,21 +36,16 @@ resource "fake_thing" "a" {
 	cmd := tool(t, "-no-config", "-format", "json", "-exclude-types", "fake_broken", root)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	start(t, cmd)
 	provider := waitPid(t, filepath.Join(data, "hanging"))
+	killOnFailure(t, provider)
 	if left, _ := filepath.Glob(filepath.Join(root, "zz_tforphans_*")); len(left) == 0 {
 		t.Error("no query file while terraform query runs")
 	}
-	start := time.Now()
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	err := cmd.Wait()
-	if took := time.Since(start); took > 20*time.Second {
-		t.Errorf("stopped after %s", took)
-	}
+	err := waitFor(t, cmd, 20*time.Second)
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != exitError || stdout.Len() != 0 || !strings.Contains(stderr.String(), "error:") {
 		t.Errorf("%v\nstdout:\n%s\nstderr:\n%s", err, &stdout, &stderr)
