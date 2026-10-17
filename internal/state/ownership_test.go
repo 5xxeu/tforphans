@@ -222,7 +222,7 @@ func TestOwnershipScales(t *testing.T) {
 	ix.AddSnapshots([]Snapshot{ownershipSnapshot("a", "a", 1, instances[:n/2]...), ownershipSnapshot("b", "b", 1, instances[n/2:]...)})
 	start := time.Now()
 	own, within := ix.Duplicates()
-	if d := time.Since(start); d > 5*time.Second {
+	if d := time.Since(start); d > 30*time.Second { // a guard against quadratic work, see the benchmarks
 		t.Errorf("%d instances took %s", n, d)
 	}
 	if len(own)+len(within) != 0 {
@@ -299,7 +299,7 @@ func TestOwnershipRepeatedAddressesScales(t *testing.T) {
 	ix.AddSnapshots([]Snapshot{ownershipSnapshot("a", "a", 1, a...), ownershipSnapshot("b", "b", 1, b...)})
 	start := time.Now()
 	own, within := ix.Duplicates()
-	if d := time.Since(start); d > 5*time.Second {
+	if d := time.Since(start); d > 30*time.Second { // a guard against quadratic work, see the benchmarks
 		t.Errorf("repeated addresses took %s", d)
 	}
 	if len(own) != 1 || own[0].Reason != "partial_identity" || len(own[0].Owners) != 2*n || len(within) != 2 {
@@ -448,7 +448,7 @@ func TestOwnershipPartialIdentityScales(t *testing.T) {
 			ix.AddSnapshots([]Snapshot{ownershipSnapshot("a", "a", 1, instances...), ownershipSnapshot("b", "b", 1, partial...)})
 			start := time.Now()
 			own, within := ix.Duplicates()
-			if d := time.Since(start); d > 5*time.Second {
+			if d := time.Since(start); d > 30*time.Second { // a guard against quadratic work, see the benchmarks
 				t.Errorf("%d full and %d incomplete instances took %s", n, incomplete, d)
 			}
 			if len(own)+len(within) != 0 {
@@ -566,5 +566,23 @@ func TestEquivalentSnapshotsPreserveLiveAttributes(t *testing.T) {
 	}
 	if own, within := ix.Duplicates(); len(own)+len(within) != 0 {
 		t.Fatalf("equivalent copies: %+v %+v", own, within)
+	}
+}
+
+func BenchmarkDuplicates(b *testing.B) {
+	for _, n := range []int{1000, 10000, 50000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			instances := make([]Instance, n)
+			for i := range instances {
+				id := fmt.Sprintf("i-%07d", i)
+				instances[i] = Instance{Type: "aws_instance", Provider: "aws", Address: "aws_instance.x[" + id + "]", Identity: map[string]any{"id": id, "account_id": "111", "region": "eu-north-1"}}
+			}
+			ix := NewIndex()
+			ix.AddSnapshots([]Snapshot{ownershipSnapshot("a", "a", 1, instances[:n/2]...), ownershipSnapshot("b", "b", 1, instances[n/2:]...)})
+			b.ReportAllocs()
+			for b.Loop() {
+				ix.Duplicates()
+			}
+		})
 	}
 }

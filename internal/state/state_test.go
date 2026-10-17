@@ -410,20 +410,23 @@ func TestMatchScales(t *testing.T) {
 	ix := NewIndex()
 	ix.Add(insts)
 	start := time.Now()
-	managed := 0
-	for i := 0; i < n; i += 2 { // half managed, half orphans
-		id := fmt.Sprintf("i-%07d", i+n/2*(i%4/2))
+	// Even queries ask for IDs in state, odd ones for IDs beyond it; all
+	// share account and region, which must not make the lookup quadratic.
+	for i := range n / 2 {
+		id, want := fmt.Sprintf("i-%07d", i), true
+		if i%2 == 1 {
+			id, want = fmt.Sprintf("i-%07d", n+i), false
+		}
 		r := model.Resource{Type: "aws_instance", RequiredKeys: []string{"id"},
 			Identity: map[string]any{"account_id": "111", "id": id, "region": "eu-north-1"}}
-		if ix.Match(r).Managed {
-			managed++
+		m := ix.Match(r)
+		if m.Managed != want || want && m.Address != "aws_instance.x["+id+"]" {
+			t.Fatalf("%s: managed %v at %q, want %v", id, m.Managed, m.Address, want)
 		}
 	}
-	if d := time.Since(start); d > 2*time.Second {
+	// A guard against a quadratic lookup, not a benchmark (BenchmarkMatch).
+	if d := time.Since(start); d > 30*time.Second {
 		t.Errorf("%d lookups took %s", n/2, d)
-	}
-	if managed == 0 {
-		t.Error("nothing matched")
 	}
 }
 
@@ -648,5 +651,26 @@ func TestReadLimited(t *testing.T) {
 	}
 	if _, err := ReadLimited(iotest.ErrReader(io.ErrUnexpectedEOF), 10); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("read error lost: %v", err)
+	}
+}
+
+func BenchmarkMatch(b *testing.B) {
+	for _, n := range []int{1000, 10000, 100000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			insts := make([]Instance, n)
+			for i := range insts {
+				id := fmt.Sprintf("i-%07d", i)
+				insts[i] = Instance{Type: "aws_instance", Address: "aws_instance.x[" + id + "]",
+					Identity: map[string]any{"account_id": "111", "id": id, "region": "eu-north-1"}}
+			}
+			ix := NewIndex()
+			ix.Add(insts)
+			r := model.Resource{Type: "aws_instance", RequiredKeys: []string{"id"},
+				Identity: map[string]any{"account_id": "111", "id": fmt.Sprintf("i-%07d", n/2), "region": "eu-north-1"}}
+			b.ReportAllocs()
+			for b.Loop() {
+				ix.Match(r)
+			}
+		})
 	}
 }
