@@ -39,18 +39,20 @@ func TestGoldenJSON(t *testing.T) {
 		code   int
 	}{
 		{"report.json", []string{"-plugin", "cat plugin.jsonl", "-plugin", "exit 3"}, exitError},
-		// The earlier report as the baseline of a later run.
+		// The earlier report (its golden file) as the baseline of a later
+		// run.
 		{"report-baseline.json", []string{"-plugin", "cat plugin-later.jsonl", "-baseline", "report.json"}, exitOrphans},
 	}
 	for _, r := range runs {
 		t.Run(r.golden, func(t *testing.T) {
+			if old, err := os.ReadFile(filepath.Join("testdata", "golden", "report.json")); err != nil {
+				t.Fatal(err)
+			} else if err := os.WriteFile(filepath.Join(dir, "report.json"), old, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			code, stdout, stderr := runBinary(t, dir, append(slices.Clone(base), r.args...)...)
 			if code != r.code {
 				t.Fatalf("exit %d\n%s", code, stderr)
-			}
-			// The next run reads this one as its baseline.
-			if err := os.WriteFile(filepath.Join(dir, r.golden), []byte(stdout), 0o600); err != nil {
-				t.Fatal(err)
 			}
 			path := filepath.Join("testdata", "golden", r.golden)
 			if os.Getenv("TFORPHANS_UPDATE_GOLDEN") == "1" {
