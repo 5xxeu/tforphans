@@ -309,6 +309,26 @@ func TestPlanAliases(t *testing.T) {
 	if refs["aws"] == 0 || refs["aws"] != refs["aws.prod"] || len(p.Notes) != 0 {
 		t.Errorf("queries per configuration %v, notes %v", refs, p.Notes)
 	}
+	// A type skipped for both configurations keeps the kind of reason
+	// first (missing argument), so that hints still recognize it.
+	defaults := map[string]string{}
+	for _, sk := range p.Skipped {
+		if sk.Provider == "aws" {
+			defaults[sk.Type] = sk.Reason
+		}
+	}
+	checked := 0
+	for _, sk := range p.Skipped {
+		if sk.Provider == "aws.prod" {
+			checked++
+			if sk.Reason != defaults[sk.Type]+" (provider aws.prod)" {
+				t.Errorf("alias skip %q, default %q", sk.Reason, defaults[sk.Type])
+			}
+		}
+	}
+	if checked == 0 || !slices.ContainsFunc(p.Skipped, func(sk Skip) bool { return strings.HasPrefix(sk.Reason, MissingArgs) && sk.Provider == "aws.prod" }) {
+		t.Errorf("no missing-argument skip for aws.prod: %+v", p.Skipped)
+	}
 	// -no-aliases: the default only, each alias type a gap.
 	p = BuildPlan(schemas(t), nil, PlanOptions{Aliases: map[string][]string{"aws": {"prod"}}, NoAliases: true})
 	for _, q := range p.Queries {
@@ -978,6 +998,33 @@ func TestAutoArg(t *testing.T) {
 	}
 	if deps, _ := both.AutoDependents("data.google_compute_regions.tfo_auto_google"); len(deps) != 2 {
 		t.Errorf("regions dependents %v", deps)
+	}
+	// Each provider configuration reads its own zones: the alias's data
+	// sources use the alias, and their errors concern only its queries.
+	prod := zonal
+	prod.Alias = "prod"
+	aliased := Plan{Queries: []Query{zonal, prod}}
+	data = string(aliased.AutoHCL())
+	for _, want := range []string{
+		"data \"google_compute_regions\" \"tfo_auto_google\" {\n  provider = google\n}",
+		"data \"google_compute_regions\" \"tfo_auto_google_prod\" {\n  provider = google.prod\n}",
+		"data \"google_compute_zones\" \"tfo_auto_google_prod\" {\n  provider = google.prod\n",
+	} {
+		if !strings.Contains(data, want) {
+			t.Errorf("aliased auto HCL lacks %q:\n%s", want, data)
+		}
+	}
+	if !strings.Contains(string(prod.HCL(10)), "data.google_compute_zones.tfo_auto_google_prod") {
+		t.Errorf("aliased query reads another configuration's zones:\n%s", prod.HCL(10))
+	}
+	if deps, _ := aliased.AutoDependents(`data.google_compute_zones.tfo_auto_google["r"]`); len(deps) != 1 || deps[0].Alias != "" {
+		t.Errorf("default zones dependents %+v", deps)
+	}
+	if deps, _ := aliased.AutoDependents(`data.google_compute_zones.tfo_auto_google_prod["r"]`); len(deps) != 1 || deps[0].Alias != "prod" {
+		t.Errorf("alias zones dependents %+v", deps)
+	}
+	if only := (Plan{Queries: []Query{prod}}).AutoHCL(); strings.Contains(string(only), "provider = google\n") {
+		t.Errorf("alias-only plan reads zones through the default:\n%s", only)
 	}
 	if got := (Plan{}).AutoHCL(); got != nil {
 		t.Errorf("no auto arguments: %q", got)
