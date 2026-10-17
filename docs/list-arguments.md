@@ -68,6 +68,10 @@ not list (a missing argument) is a gap even when the default listed it.
 A root that configures a provider only with aliases is listed through the
 aliases alone: its default would be an empty configuration that could
 reach another account through the environment (a note says so).
+Two local names that require one provider source (terraform warns that a
+provider can only be required once) share its configurations: each alias
+is listed through the name it is declared under, but terraform itself
+resolves such configurations unreliably, so give each provider one name.
 `-no-aliases` lists through default configurations only; every type of an
 alias then counts as not checked (coverage incomplete, an error with
 `-strict`). A provider with no provider block at all is queried
