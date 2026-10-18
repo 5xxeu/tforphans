@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -70,13 +71,15 @@ type Resource struct {
 	Baseline string `json:"baseline,omitempty"`
 }
 
-// Key identifies a resource for de-duplication across sources.
+// Key identifies a resource for de-duplication across sources. Names and
+// values are quoted: a value from an API or a plugin may hold any byte,
+// and must not pass for another key.
 func (r Resource) Key() string {
 	var b strings.Builder
-	b.WriteString(r.Type)
+	b.WriteString(strconv.Quote(r.Type))
 	for _, k := range SortedKeys(r.Identity) {
 		if v, ok := Canonical(r.Identity[k]); ok {
-			b.WriteString("\x00" + k + "=" + v)
+			b.WriteString(" " + strconv.Quote(k) + "=" + strconv.Quote(v))
 		}
 	}
 	return b.String()

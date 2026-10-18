@@ -742,14 +742,6 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	scopes := slices.Clone(live) // every source's results, for -v
 	// Every listing that returned an object, also those whose copy dedupe
 	// drops: -baseline looks a finding up under its own listing.
-	// Keyed as dedupe's slots: with an unknown location, only the same
-	// listing is the same object.
-	originKey := func(r model.Resource) string {
-		if state.UnknownLocation(r.Identity) {
-			return r.Key() + "\x00" + r.Source + "\x00" + r.ListAddress
-		}
-		return r.Key()
-	}
 	origins := map[string][]model.Resource{}
 	if previous != nil {
 		for _, r := range scopes {
@@ -757,92 +749,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 	}
 	live = dedupe(live)
-	var orphans []model.Resource
-	var uncertain []report.Uncertain
-	var seen []report.Seen // live objects that are no orphans, for -baseline
-	addSeen := func(r model.Resource, status, address, rule string) {
-		for _, o := range origins[originKey(r)] {
-			if !model.SameProvider(o.ProviderSource, r.ProviderSource) {
-				continue
-			}
-			c := r
-			c.Source, c.ListAddress = o.Source, o.ListAddress
-			seen = append(seen, report.Seen{Resource: c, Status: status, StateAddress: address, Rule: rule})
-		}
-	}
-	sum.ByType = map[string]*report.TypeCount{}
-	byScope := map[string]*report.TypeCount{}
-	byTypeScope := map[[2]string]*report.TypeCount{}
-	for i := range live {
-		r := &live[i]
-		if r.ScopeName == "" {
-			r.ScopeName = scopeName(r.Identity)
-		}
-		where := r.ScopeName
-		if where == "" {
-			where = "unknown"
-		}
-		counts := []*report.TypeCount{sum.ByType[r.Type], byScope[where], byTypeScope[[2]string{r.Type, r.ScopeName}]}
-		for i, tc := range counts {
-			if tc == nil {
-				counts[i] = &report.TypeCount{}
-			}
-		}
-		sum.ByType[r.Type], byScope[where], byTypeScope[[2]string{r.Type, r.ScopeName}] = counts[0], counts[1], counts[2]
-		for _, tc := range counts {
-			tc.Live++
-		}
-		// An ignore rule wins over an uncertain match, not over a
-		// confirmed one.
-		var m state.Match
-		var rejected []state.Rejection
-		var ofType int
-		if o.explain {
-			m, rejected, ofType = idx.Explain(*r, 3)
-		} else {
-			m = idx.Match(*r)
-		}
-		rule, ignored := "", false
-		if !m.Managed || !m.Verified {
-			rule, ignored = ignore.Rule(*r)
-		}
-		if o.explain {
-			sum.Explain = append(sum.Explain, explain(*r, m, rejected, ofType, rule, ignored))
-		}
-		switch {
-		case m.Managed && m.Verified:
-			addSeen(*r, "managed", m.Address, "")
-			sum.Managed++
-			if m.ByIdentity {
-				sum.ManagedByIdentity++
-			}
-			for _, tc := range counts {
-				tc.Managed++
-			}
-		case ignored:
-			addSeen(*r, report.BecameIgnored, "", rule)
-			sum.Ignored++
-			for _, tc := range counts {
-				tc.Ignored++
-			}
-		case m.Managed:
-			addSeen(*r, report.BecameUnsure, m.Address, "")
-			sum.Uncertain++
-			uncertain = append(uncertain, report.Uncertain{Resource: *r, StateAddress: m.Address})
-			for _, tc := range counts {
-				tc.Uncertain++
-			}
-		default:
-			orphans = append(orphans, *r)
-			for _, tc := range counts {
-				tc.Orphans++
-			}
-		}
-	}
-	// Scopes are worth a breakdown when there are several.
-	if len(byScope) > 1 || len(byScope) == 1 && byScope["unknown"] == nil {
-		sum.ByScope = byScope
-	}
+	c := classify(o, idx, live, origins, &sum)
+	orphans, uncertain := c.orphans, c.uncertain
 	sortResources(orphans)
 	sum.Notes = append(sum.Notes, presetHints(orphans, o.presets)...)
 	sum.Notes = append(sum.Notes, ignoreHints(orphans)...)
@@ -860,50 +768,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
-	// A disabled API (GCP) is a gap: disabling Cloud Storage or BigQuery
-	// keeps their data, so the failure proves nothing about objects.
-	// -strict-api=false takes it as empty, as before; types named in
-	// -strict-ignore are no gap either, whatever went wrong.
-	counting, skipped, checks := sum.Failed, sum.Skipped, sum.Checks
-	for _, f := range sum.Failed {
-		if f.Category == tf.FailAPIOff {
-			sum.APIOff++
-		}
-	}
-	// A skip that -strict-ignore lets pass says so in skipped_types too.
-	for i, sk := range sum.Skipped {
-		if !sk.Excluded && o.strictIgnore.Match(sk.Type) {
-			sum.Skipped[i].Excluded = true
-			sum.Skipped[i].Reason = report.StrictIgnored + sk.Reason
-			sum.StrictIgnored++
-		}
-	}
-	if !o.strictAPI || len(o.strictIgnore) > 0 {
-		counting = nil
-		skipped = slices.Clone(sum.Skipped)
-		checks = slices.Clone(sum.Checks)
-		for _, f := range sum.Failed {
-			switch {
-			case f.Category == tf.FailAPIOff && !o.strictAPI:
-				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
-				// The listing ran far enough to learn there is nothing:
-				// it stands for the check (an aliased block of the user's
-				// covers the alias-only skip of its provider).
-				if f.Root != "" {
-					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
-				}
-			case o.strictIgnore.Match(f.Type):
-				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: report.StrictIgnored + f.Category, Excluded: true, Root: f.Root})
-				sum.StrictIgnored++
-			default:
-				counting = append(counting, f)
-			}
-		}
-	}
+	counting, skipped, checks := coverageInputs(o, &sum)
 	if sum.APIOff > 0 && o.strictAPI {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d listings failed because their API is not enabled: a disabled API can still hold data (Cloud Storage and BigQuery keep theirs), so they count as not checked; if the project does not use those types, name them in -strict-ignore", sum.APIOff))
 	}
-	sum.Coverage = report.BuildCoverage(byTypeScope, checks, skipped, counting)
+	sum.Coverage = report.BuildCoverage(c.byTypeScope, checks, skipped, counting)
 	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum)
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
@@ -917,7 +786,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	shown := orphans
 	if previous != nil {
 		var b report.Baseline
-		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, sum, seen)
+		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, sum, c.seen)
 		baseline = &b
 		if b.EnvironmentChanged {
 			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.environment))
@@ -1119,6 +988,164 @@ func dedupe(rs []model.Resource) []model.Resource {
 		res[i] = s.r
 	}
 	return res
+}
+
+// originKey keys the listings of an object as dedupe's slots: with an
+// unknown location, only the same listing is the same object.
+func originKey(r model.Resource) string {
+	if state.UnknownLocation(r.Identity) {
+		return r.Key() + "\x00" + r.Source + "\x00" + r.ListAddress
+	}
+	return r.Key()
+}
+
+// classified is what classify sorts the live objects into.
+type classified struct {
+	orphans   []model.Resource
+	uncertain []report.Uncertain
+	// seen are the live objects that are no orphans, once per listing
+	// that returned them (origins), for -baseline.
+	seen []report.Seen
+	// byTypeScope counts per type and scope name, for coverage.
+	byTypeScope map[[2]string]*report.TypeCount
+}
+
+// classify matches each live object against the states and the ignore
+// rules and counts it in sum (managed, ignored, uncertain, orphans; per
+// type and scope). It fills in the scope names of live.
+func classify(o *options, idx *state.Index, live []model.Resource, origins map[string][]model.Resource, sum *report.Summary) classified {
+	c := classified{byTypeScope: map[[2]string]*report.TypeCount{}}
+	addSeen := func(r model.Resource, status, address, rule string) {
+		for _, origin := range origins[originKey(r)] {
+			if !model.SameProvider(origin.ProviderSource, r.ProviderSource) {
+				continue
+			}
+			cp := r
+			cp.Source, cp.ListAddress = origin.Source, origin.ListAddress
+			c.seen = append(c.seen, report.Seen{Resource: cp, Status: status, StateAddress: address, Rule: rule})
+		}
+	}
+	sum.ByType = map[string]*report.TypeCount{}
+	byScope := map[string]*report.TypeCount{}
+	for i := range live {
+		r := &live[i]
+		if r.ScopeName == "" {
+			r.ScopeName = scopeName(r.Identity)
+		}
+		where := r.ScopeName
+		if where == "" {
+			where = "unknown"
+		}
+		counts := []*report.TypeCount{sum.ByType[r.Type], byScope[where], c.byTypeScope[[2]string{r.Type, r.ScopeName}]}
+		for i, tc := range counts {
+			if tc == nil {
+				counts[i] = &report.TypeCount{}
+			}
+		}
+		sum.ByType[r.Type], byScope[where], c.byTypeScope[[2]string{r.Type, r.ScopeName}] = counts[0], counts[1], counts[2]
+		for _, tc := range counts {
+			tc.Live++
+		}
+		// An ignore rule wins over an uncertain match, not over a
+		// confirmed one.
+		var m state.Match
+		var rejected []state.Rejection
+		var ofType int
+		if o.explain {
+			m, rejected, ofType = idx.Explain(*r, 3)
+		} else {
+			m = idx.Match(*r)
+		}
+		rule, ignored := "", false
+		if !m.Managed || !m.Verified {
+			rule, ignored = o.ignore.Rule(*r)
+		}
+		if o.explain {
+			sum.Explain = append(sum.Explain, explain(*r, m, rejected, ofType, rule, ignored))
+		}
+		switch {
+		case m.Managed && m.Verified:
+			addSeen(*r, "managed", m.Address, "")
+			sum.Managed++
+			if m.ByIdentity {
+				sum.ManagedByIdentity++
+			}
+			for _, tc := range counts {
+				tc.Managed++
+			}
+		case ignored:
+			addSeen(*r, report.BecameIgnored, "", rule)
+			sum.Ignored++
+			for _, tc := range counts {
+				tc.Ignored++
+			}
+		case m.Managed:
+			addSeen(*r, report.BecameUnsure, m.Address, "")
+			sum.Uncertain++
+			c.uncertain = append(c.uncertain, report.Uncertain{Resource: *r, StateAddress: m.Address})
+			for _, tc := range counts {
+				tc.Uncertain++
+			}
+		default:
+			c.orphans = append(c.orphans, *r)
+			for _, tc := range counts {
+				tc.Orphans++
+			}
+		}
+	}
+	// Scopes are worth a breakdown when there are several.
+	if len(byScope) > 1 || len(byScope) == 1 && byScope["unknown"] == nil {
+		sum.ByScope = byScope
+	}
+	return c
+}
+
+// coverageInputs returns the failed listings that count as gaps, and the
+// skips and checks coverage is built from, after -strict-api and
+// -strict-ignore. It counts disabled APIs and strict-ignored listings in
+// sum and marks the skips -strict-ignore lets pass.
+func coverageInputs(o *options, sum *report.Summary) (counting []tf.Failure, skipped []tf.Skip, checks []tf.Check) {
+	// A disabled API (GCP) is a gap: disabling Cloud Storage or BigQuery
+	// keeps their data, so the failure proves nothing about objects.
+	// -strict-api=false takes it as empty, as before; types named in
+	// -strict-ignore are no gap either, whatever went wrong.
+	counting, skipped, checks = sum.Failed, sum.Skipped, sum.Checks
+	for _, f := range sum.Failed {
+		if f.Category == tf.FailAPIOff {
+			sum.APIOff++
+		}
+	}
+	// A skip that -strict-ignore lets pass says so in skipped_types too.
+	for i, sk := range sum.Skipped {
+		if !sk.Excluded && o.strictIgnore.Match(sk.Type) {
+			sum.Skipped[i].Excluded = true
+			sum.Skipped[i].Reason = report.StrictIgnored + sk.Reason
+			sum.StrictIgnored++
+		}
+	}
+	if !o.strictAPI || len(o.strictIgnore) > 0 {
+		counting = nil
+		skipped = slices.Clone(sum.Skipped)
+		checks = slices.Clone(sum.Checks)
+		for _, f := range sum.Failed {
+			switch {
+			case f.Category == tf.FailAPIOff && !o.strictAPI:
+				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
+				// The listing ran far enough to learn there is nothing:
+				// it stands for the check (an aliased block of the user's
+				// covers the alias-only skip of its provider).
+				if f.Root != "" {
+					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
+				}
+			case o.strictIgnore.Match(f.Type):
+				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: report.StrictIgnored + f.Category, Excluded: true, Root: f.Root})
+				sum.StrictIgnored++
+			default:
+				counting = append(counting, f)
+			}
+		}
+	}
+	return counting, skipped, checks
 }
 
 // mergeResult adds what a duplicate result knows to the kept one.

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/hashicorp/hcl/v2"
@@ -318,8 +319,28 @@ func DataDir(dir string) string {
 	return filepath.Join(dir, d)
 }
 
-// Init runs terraform init without prompting.
+// SharedDataDir returns TF_DATA_DIR when it is an absolute path, so that
+// every root module uses the same data directory, and "" otherwise.
+// Terraform keeps a root's backend settings there: with a partial backend
+// configuration (backend "s3" {} and -backend-config at init) another root
+// with the same block reads that root's state, without an error (checked
+// with the local backend).
+func SharedDataDir() string {
+	if d := os.Getenv("TF_DATA_DIR"); filepath.IsAbs(d) {
+		return d
+	}
+	return ""
+}
+
+// initMu serializes terraform init: roots are read in parallel, and
+// terraform does not promise that a shared plugin cache (TF_PLUGIN_CACHE_DIR
+// or plugin_cache_dir in the CLI config) survives concurrent installs.
+var initMu sync.Mutex
+
+// Init runs terraform init without prompting, one root at a time.
 func (r Runner) Init(ctx context.Context) error {
+	initMu.Lock()
+	defer initMu.Unlock()
 	args := []string{"init", "-input=false", "-no-color"}
 	if _, stderr, err := r.run(ctx, args...); err != nil {
 		return cmdError(args, stderr, err)

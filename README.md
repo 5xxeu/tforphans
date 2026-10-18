@@ -223,11 +223,13 @@ seeds; CI fuzzes each for a minute every night. Locally:
 go test -run '^$' -fuzz '^FuzzImportHCL$' -fuzztime 5m ./internal/report/
 ```
 
-A `v*` tag builds the release with GoReleaser (`.goreleaser.yaml`) as a
-draft, with checksums, SBOMs and a build provenance attestation, and pushes
-the Homebrew cask to `5xxeu/homebrew-tap` (secret `HOMEBREW_TAP_TOKEN`: a
-fine-grained token with contents write on that repository only). The cask
-points at the release files, so publish the draft soon after.
+A `v*` tag on a commit of main waits for that commit's `ci` run to pass,
+then builds the release with GoReleaser (`.goreleaser.yaml`) as a draft,
+with checksums, SBOMs and a build provenance attestation. Publishing the
+draft writes the Homebrew cask (`scripts/cask.sh`) to `5xxeu/homebrew-tap`
+(secret `HOMEBREW_TAP_TOKEN`: a fine-grained token with contents write on
+that repository only); the `cask` workflow can also be run by hand for a
+tag.
 
 ## License
 

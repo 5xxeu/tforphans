@@ -30,27 +30,5 @@ release:
 changelog:
   use: github
 
-# brew install 5xxeu/tap/tforphans. Needs HOMEBREW_TAP_TOKEN (contents
-# write on 5xxeu/homebrew-tap only); without it the cask is not pushed and
-# the rest of the release goes on.
-homebrew_casks:
-  - name: tforphans
-    repository:
-      owner: 5xxeu
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}'
-    homepage: https://github.com/5xxeu/tforphans
-    description: Find cloud resources that no Terraform state manages
-    license: MIT
-    commit_author:
-      name: NikitaPuglachenko
-      email: 41295566+NikitaPuglachenko@users.noreply.github.com
-    hooks:
-      post:
-        # The binaries are not notarized: drop the quarantine flag that
-        # brew sets on downloads, or macOS refuses to run them.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tforphans"]
-          end
+# brew install 5xxeu/tap/tforphans: the cask is written by the cask
+# workflow (scripts/cask.sh) once the release is published.

@@ -22,7 +22,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.27.1" # what releases are built with (release.yml)
+      - name: one Go version in all workflows
+        run: |
+          test "$(grep -hoE 'go-version: "[0-9.]+"' .github/workflows/*.yml | sort -u | wc -l)" = 1
+      - name: cask
+        run: scripts/cask.sh 0.1.10 testdata/cask/checksums.txt | diff -u testdata/cask/tforphans.rb -
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet -tags integration ./...
@@ -46,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.27.1"
       - run: go test -race ./...
 
   fuzz:
@@ -58,7 +63,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.27.1"
       # A failing input lands in testdata/fuzz; it is uploaded to be added
       # to the package as a regression case.
       - name: fuzz
@@ -88,7 +93,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.27.1"
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ matrix.terraform }}

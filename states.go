@@ -161,6 +161,9 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	if o.maxRoots > 0 && len(dirs) > o.maxRoots {
 		return nil, fmt.Errorf("-state-roots found %d root modules under %s, more than -max-roots %d: check the paths (relative paths of a config file are relative to the file), or raise -max-roots", len(dirs), strings.Join(o.stateRoots, ", "), o.maxRoots)
 	}
+	if d := tf.SharedDataDir(); d != "" && len(o.roots)+len(dirs) > 1 {
+		return nil, fmt.Errorf("TF_DATA_DIR=%s is one directory for all %d root modules: terraform could read one root's state for another; unset it or set a relative path (.terraform-x)", d, len(o.roots)+len(dirs))
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, o.stateParallelism)
