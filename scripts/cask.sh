@@ -20,10 +20,14 @@ esac
 sha() {
 	file="tforphans_${version}_$1.tar.gz"
 	s=$(awk -v f="$file" '$2 == f { print $1 }' "$sums")
-	case $s in
-	[0-9a-f]*) ;;
-	*)
+	if [ -z "$s" ]; then
 		echo "$0: no checksum for $file" >&2
+		exit 1
+	fi
+	# The value goes into Ruby: only 64 hex digits, one line.
+	case $s in
+	*[!0-9a-f]*)
+		echo "$0: bad checksum for $file" >&2
 		exit 1
 		;;
 	esac
