@@ -289,3 +289,11 @@ func TestRunReturnsAfterParentExit(t *testing.T) {
 		t.Errorf("returned after %v", time.Since(start))
 	}
 }
+
+// TestParseNullIdentity: jq gives null for a missing field; such a line is
+// an error, not an object named by its other keys.
+func TestParseNullIdentity(t *testing.T) {
+	if _, _, err := Parse([]byte(`{"type":"t","identity":{"account_id":"1","id":null}}`), "plugin1"); err == nil || !strings.Contains(err.Error(), `"id" is null`) {
+		t.Errorf("%v", err)
+	}
+}

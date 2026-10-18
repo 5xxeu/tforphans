@@ -5,6 +5,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -53,6 +54,9 @@ func referenceCompare(r model.Resource, in Instance, required, primary []string)
 	for k, v := range r.Identity {
 		want, known := model.Canonical(v)
 		if !known {
+			if slices.Contains(r.RequiredKeys, k) {
+				return false, false
+			}
 			continue
 		}
 		isPrimary := slices.Contains(primary, k)
@@ -136,9 +140,9 @@ func propResource(rng *rand.Rand) model.Resource {
 		r.AttributeKeys = r.RequiredKeys[:1]
 	}
 	// Sources always give the keys they require (an empty location is
-	// tested on its own).
+	// tested on its own); a plugin may give one as null.
 	for _, k := range r.RequiredKeys {
-		r.Identity[k] = pick(rng, []any{"a", "b"})
+		r.Identity[k] = pick(rng, []any{"a", "b", "a", "b", nil})
 	}
 	return r
 }
@@ -231,5 +235,20 @@ func TestMatchEmptyOwnID(t *testing.T) {
 		if m := ix.Match(r); m.Managed {
 			t.Errorf("%s manages an object with an empty id: %+v", in.Address, m)
 		}
+	}
+}
+
+// TestMatchNullRequiredKey: a key the source requires but gives as null
+// (a plugin's "id": null) confirms nothing; the account alone is no match.
+func TestMatchNullRequiredKey(t *testing.T) {
+	r := model.Resource{Type: "t", Identity: map[string]any{"account_id": "1", "id": nil}, RequiredKeys: []string{"account_id", "id"}}
+	in := Instance{Type: "t", Address: "t.x", Identity: map[string]any{"account_id": "1", "id": "a"}}
+	if ok, _, why, _ := compare(r, &in); ok || !strings.Contains(why, "id is null") {
+		t.Errorf("compare: %v %q", ok, why)
+	}
+	ix := NewIndex()
+	ix.Add([]Instance{in})
+	if m := ix.Match(r); m.Managed {
+		t.Errorf("managed: %+v", m)
 	}
 }

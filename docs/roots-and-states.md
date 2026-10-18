@@ -42,7 +42,9 @@ root with the line of the error that says why, and so does
 `summary.unread_states` (`[{"root": ..., "error": ...}]`). A workspace that
 fails does not drop the others: their states still count, and the warning
 names the workspace. Directories that cannot be read are skipped with a
-warning. More than `-max-roots` root modules (200 by default) stop the run
+warning, and so is a directory without a backend found where a `.tf` or
+`.tf.json` file cannot be read or parsed (a broken symlink, a stray `}`):
+it may be a root, so it counts as an unread state. More than `-max-roots` root modules (200 by default) stop the run
 before terraform starts in any of them: a wrong path (`..` relative to a
 config file somewhere else) can otherwise reach a whole home directory. `-init` runs `terraform init` in
 uninitialized roots first; it creates `.terraform` there and may write a

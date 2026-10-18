@@ -222,6 +222,50 @@ func TestFindRootsUnreadable(t *testing.T) {
 	}
 }
 
+// A configuration file that cannot be read or parsed may hold the backend
+// block: its directory is unread, not silently no root. Where a backend is
+// found anyway the directory is a root.
+func TestFindRootsBrokenConfig(t *testing.T) {
+	dir := t.TempDir()
+	backend := "terraform {\n  backend \"s3\" {}\n}\n"
+	files := map[string]string{
+		"stray/main.tf":       "locals {\n  a = 1\n}\n}\n" + backend,
+		"json/main.tf.json":   `{"terraform": {"backend": {"s3": {}}}`,
+		"after/main.tf":       backend + "}\n",
+		"other/main.tf":       backend,
+		"other/broken.tf":     "resource \"x\" {\n",
+		"module/main.tf":      "variable \"a\" {}\n",
+		"link/main.tf":        "variable \"a\" {}\n",
+		"subdir/root/main.tf": backend,
+		"subdir/bad.tf":       "}\n",
+	}
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing.tf"), filepath.Join(dir, "link", "backend.tf")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	roots, unread, _, err := FindRoots(".", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"after", "other", filepath.Join("subdir", "root")}; !reflect.DeepEqual(roots, want) {
+		t.Errorf("roots %v", roots)
+	}
+	var paths []string
+	for _, u := range unread {
+		paths = append(paths, u.Path)
+		if !strings.HasPrefix(u.Reason, "configuration could not be read: ") || !strings.Contains(u.Reason, u.Path+string(filepath.Separator)) {
+			t.Errorf("%s: %s", u.Path, u.Reason)
+		}
+	}
+	if want := []string{"json", "link", "stray", "subdir"}; !reflect.DeepEqual(paths, want) {
+		t.Errorf("unread %v", unread)
+	}
+}
+
 // Parents are the terragrunt.hcl files units include; any other one is a
 // unit, even with units below it or with all its configuration generated.
 func TestTerragruntParents(t *testing.T) {

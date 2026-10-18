@@ -19,7 +19,9 @@ position (`plugin1`, `plugin2`), never its command line.
 - `identity`: attributes to match. Against state without resource identity
   they are compared with the instance's attributes, so `{"id": ...}` with the
   value the provider stores as `id` is usually enough. All keys must match.
-  A number Terraform cannot read (such as `1e7000000000`) fails the plugin.
+  A number Terraform cannot read (such as `1e7000000000`) fails the plugin,
+  and so does a `null` value (`jq` gives one for a missing field): the other
+  keys, such as an account, alone would match.
 - `import_id`: optional; import blocks then use `id = ...`.
 - `provider`: optional provider configuration for the import block
   (`vault.other`); `provider_source`: optional provider address

@@ -139,6 +139,13 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, error
 		if !typeName.MatchString(l.Type) || l.Provider != "" && !providerRef.MatchString(l.Provider) {
 			return nil, nil, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"type" or "provider" is not a valid name`))
 		}
+		for _, k := range model.SortedKeys(l.Identity) {
+			// jq gives null for a missing field; that key would then
+			// confirm nothing and the rest (an account) would match alone.
+			if l.Identity[k] == nil {
+				return nil, nil, fmt.Errorf("%s line %d: identity key %q is null", source, n, k)
+			}
+		}
 		if num := badNumber(l.Identity); num != "" {
 			return nil, nil, fmt.Errorf("%s line %d: identity number %.40s is out of range for Terraform", source, n, num)
 		}
