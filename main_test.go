@@ -246,6 +246,20 @@ func TestDedupeKeepsAttributes(t *testing.T) {
 	}
 }
 
+// TestDedupeJoinsScope: an unverified copy keeps the object unverified,
+// whatever the order of the sources.
+func TestDedupeJoinsScope(t *testing.T) {
+	id := map[string]any{"id": "1"}
+	plain := model.Resource{Type: "t", Identity: id}
+	marked := model.Resource{Type: "t", Identity: id, Scope: &model.Scope{Unverifiable: true}}
+	for _, order := range [][]model.Resource{{plain, marked}, {marked, plain}} {
+		got := dedupe(slices.Clone(order))
+		if len(got) != 1 || got[0].Scope == nil || !got[0].Scope.Unverifiable {
+			t.Errorf("got %+v", got)
+		}
+	}
+}
+
 // TestDedupeUnknownLocation: objects with an empty project from two roots
 // may be in two projects; they are not merged, nor are their attributes.
 func TestDedupeUnknownLocation(t *testing.T) {

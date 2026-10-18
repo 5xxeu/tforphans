@@ -205,4 +205,22 @@ type Scope struct {
 	// since node names repeat across clusters. Without Trusted, matches are
 	// unverified.
 	Trusted bool
+	// Also is the scope of another copy of the same object (JoinScope):
+	// both must hold.
+	Also *Scope
+}
+
+// JoinScope returns the scope of an object listed twice: an instance must
+// pass both scopes, and a match is verified only if both say so. The order
+// of the copies does not matter, and neither scope is changed.
+func JoinScope(a, b *Scope) *Scope {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	joined := *b
+	joined.Also = a
+	return &joined
 }

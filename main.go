@@ -1128,6 +1128,9 @@ func mergeResult(kept *model.Resource, r model.Resource) {
 	if kept.TagName == "" {
 		kept.TagName = r.TagName
 	}
+	// A copy whose place is unknown or restricted must not be forgotten
+	// because the other copy came first.
+	kept.Scope = model.JoinScope(kept.Scope, r.Scope)
 	for a, v := range r.Attributes {
 		if kept.Attributes == nil {
 			kept.Attributes = map[string]any{}

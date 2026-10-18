@@ -1,5 +1,6 @@
 // Package glob implements shell-style patterns where "*" matches any run of
-// characters (including "/" and ".") and "?" matches one character.
+// characters (including "/", "." and newlines) and "?" matches one
+// character.
 package glob
 
 import (
@@ -14,7 +15,7 @@ type Pattern struct {
 
 func Compile(p string) Pattern {
 	var b strings.Builder
-	b.WriteString("^")
+	b.WriteString("(?s)^")
 	for _, r := range p {
 		switch r {
 		case '*':
