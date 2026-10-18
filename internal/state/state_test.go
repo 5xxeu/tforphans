@@ -381,6 +381,37 @@ func TestMatchScope(t *testing.T) {
 	}
 }
 
+// TestMatchJoinedScope: an object listed twice must pass the scopes of
+// both copies, whichever came first.
+func TestMatchJoinedScope(t *testing.T) {
+	ix := NewIndex()
+	ix.Add([]Instance{{Type: "proxmox_virtual_environment_vm", Address: "vm.a", Attributes: map[string]any{"vm_id": json.Number("100"), "node_name": "pve1"}}})
+	attrs := map[string]string{"proxmox_virtual_environment_vm": "node_name"}
+	trusted := &model.Scope{Attrs: attrs, Values: map[string]bool{"pve1": true}, Trusted: true}
+	other := &model.Scope{Attrs: attrs, Values: map[string]bool{"b1": true}, Trusted: true}
+	unverifiable := &model.Scope{Unverifiable: true}
+	for _, c := range []struct {
+		name            string
+		a, b            *model.Scope
+		managed, verify bool
+	}{
+		{"both trusted", trusted, trusted, true, true},
+		{"one unverified", trusted, unverifiable, true, false},
+		{"one without scope", trusted, nil, true, true},
+		{"node only one cluster has", trusted, other, false, false},
+	} {
+		for _, pair := range [][2]*model.Scope{{c.a, c.b}, {c.b, c.a}} {
+			vm := model.Resource{Type: "proxmox_virtual_environment_vm", Identity: map[string]any{"vm_id": json.Number("100")}, Scope: model.JoinScope(pair[0], pair[1])}
+			if m := ix.Match(vm); m.Managed != c.managed || m.Verified != c.verify {
+				t.Errorf("%s: got %+v", c.name, m)
+			}
+		}
+	}
+	if trusted.Also != nil || unverifiable.Also != nil || other.Also != nil {
+		t.Error("JoinScope changed a scope")
+	}
+}
+
 func TestMatchListOnlyIdentity(t *testing.T) {
 	ix := NewIndex()
 	ix.Add([]Instance{{Type: "x_thing", Address: "x_thing.a", Identity: map[string]any{"ids": []any{"x"}}}})

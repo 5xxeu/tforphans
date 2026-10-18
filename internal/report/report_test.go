@@ -165,6 +165,23 @@ func TestTextStripsControlCharacters(t *testing.T) {
 	}
 }
 
+func TestClean(t *testing.T) {
+	for in, want := range map[string]string{
+		"a\x1b[31mb\n c":    "a [31mb c",
+		"evil\u202Etxt.exe": `evil\u202Etxt.exe`,
+		"id\u200b":          `id\u200B`,
+		"\ufeffname\u2066x": `\uFEFFname\u2066x`,
+		"кириллица и 漢字 😀":  "кириллица и 漢字 😀",
+	} {
+		if got := Clean(in); got != want {
+			t.Errorf("Clean(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := CleanLines("a\u202Eb\nc"); got != `a\u202Eb`+"\nc" {
+		t.Errorf("CleanLines: got %q", got)
+	}
+}
+
 func TestCleanLines(t *testing.T) {
 	if got := CleanLines("a\x1b[31mb\n\tc\x07"); got != "a[31mb\n\tc" {
 		t.Errorf("got %q", got)

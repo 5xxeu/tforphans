@@ -246,6 +246,20 @@ func TestDedupeKeepsAttributes(t *testing.T) {
 	}
 }
 
+// TestDedupeJoinsScope: an unverified copy keeps the object unverified,
+// whatever the order of the sources.
+func TestDedupeJoinsScope(t *testing.T) {
+	id := map[string]any{"id": "1"}
+	plain := model.Resource{Type: "t", Identity: id}
+	marked := model.Resource{Type: "t", Identity: id, Scope: &model.Scope{Unverifiable: true}}
+	for _, order := range [][]model.Resource{{plain, marked}, {marked, plain}} {
+		got := dedupe(slices.Clone(order))
+		if len(got) != 1 || got[0].Scope == nil || !got[0].Scope.Unverifiable {
+			t.Errorf("got %+v", got)
+		}
+	}
+}
+
 // TestDedupeUnknownLocation: objects with an empty project from two roots
 // may be in two projects; they are not merged, nor are their attributes.
 func TestDedupeUnknownLocation(t *testing.T) {
@@ -851,5 +865,187 @@ esac
 	code = run(context.Background(), []string{"-no-config", "-no-query", "-terraform", fake, "-plugin", plugin, "-source-timeout", "300ms", root}, &stdout, &stderr)
 	if code != exitError || !strings.Contains(stderr.String(), "gave up after 300ms (-source-timeout)") || strings.Contains(stderr.String(), "not initialized") {
 		t.Errorf("hanging terraform: exit %d\n%s", code, &stderr)
+	}
+}
+
+// TestSharedDataDir: roots that share a data directory share a backend
+// cache, so one could read the other's state; the run stops before
+// terraform starts.
+func TestSharedDataDir(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "tree")
+	for _, d := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(tree, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tree, d, "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read := func(roots ...string) error {
+		o := &options{stateRoots: roots, stateParallelism: 1, terraformBin: "/nonexistent/terraform"}
+		var sum report.Summary
+		_, err := readStateRoots(context.Background(), o, state.NewIndex(), &sum)
+		return err
+	}
+	shared := func(err error) bool { return err != nil && strings.Contains(err.Error(), "share the data directory") }
+	for _, c := range []struct {
+		dataDir string
+		roots   []string
+		want    bool
+	}{
+		{filepath.Join(dir, "data"), []string{tree}, true},
+		{"../shared", []string{tree}, true},
+		{"../../tree/shared", []string{tree}, true},
+		// One root has the directory to itself.
+		{filepath.Join(dir, "data"), []string{filepath.Join(tree, "a")}, false},
+		{".tfdata", []string{tree}, false},
+		{"", []string{tree}, false},
+	} {
+		t.Setenv("TF_DATA_DIR", c.dataDir)
+		if err := read(c.roots...); shared(err) != c.want {
+			t.Errorf("TF_DATA_DIR=%q %v: got %v", c.dataDir, c.roots, err)
+		}
+	}
+}
+
+func TestClassify(t *testing.T) {
+	idx := state.NewIndex()
+	idx.Add([]state.Instance{
+		{Type: "x_thing", Address: "x_thing.managed", Identity: map[string]any{"id": "managed"}},
+		{Type: "x_thing", Address: "x_thing.unsure", Identity: map[string]any{"id": "unsure"}},
+		{Type: "x_thing", Address: "x_thing.unsure_ignored", Identity: map[string]any{"id": "unsure-ignored"}},
+		{Type: "x_thing", Address: "x_thing.managed_ignored", Identity: map[string]any{"id": "managed-ignored"}},
+	})
+	ignore, err := report.ParseIgnore(strings.NewReader("x_thing id=*-ignored\ny_thing\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsure := &model.Scope{Unverifiable: true}
+	res := func(typ, id, project string, sc *model.Scope) model.Resource {
+		r := model.Resource{Type: typ, Identity: map[string]any{"id": id}, Scope: sc, Source: "root"}
+		if project != "" {
+			r.Identity["project"] = project
+		}
+		return r
+	}
+	live := []model.Resource{
+		res("x_thing", "managed", "", nil),
+		res("x_thing", "unsure", "", unsure),
+		// An ignore rule wins over an uncertain match, not over a
+		// confirmed one.
+		res("x_thing", "unsure-ignored", "", unsure),
+		res("x_thing", "managed-ignored", "", nil),
+		res("y_thing", "ignored", "p1", nil),
+		res("x_thing", "orphan", "p1", nil),
+		res("x_thing", "other-orphan", "p2", nil),
+	}
+	origins := map[string][]model.Resource{}
+	for _, r := range live {
+		origins[originKey(r)] = append(origins[originKey(r)], r)
+	}
+	o := &options{ignore: ignore}
+	var sum report.Summary
+	c := classify(o, idx, live, origins, &sum)
+
+	ids := func(rs []model.Resource) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.Identity["id"].(string))
+		}
+		return out
+	}
+	if got := ids(c.orphans); !slices.Equal(got, []string{"orphan", "other-orphan"}) {
+		t.Errorf("orphans %v", got)
+	}
+	if len(c.uncertain) != 1 || c.uncertain[0].StateAddress != "x_thing.unsure" {
+		t.Errorf("uncertain %+v", c.uncertain)
+	}
+	if sum.Managed != 2 || sum.ManagedByIdentity != 2 || sum.Ignored != 2 || sum.Uncertain != 1 {
+		t.Errorf("summary %+v", sum)
+	}
+	if x := sum.ByType["x_thing"]; x == nil || *x != (report.TypeCount{Live: 6, Managed: 2, Uncertain: 1, Ignored: 1, Orphans: 2}) {
+		t.Errorf("x_thing %+v", x)
+	}
+	if p := sum.ByScope["project p1"]; p == nil || p.Live != 2 || p.Orphans != 1 || p.Ignored != 1 || sum.ByScope["unknown"].Live != 4 {
+		t.Errorf("by scope %+v", sum.ByScope)
+	}
+	if tc := c.byTypeScope[[2]string{"x_thing", "project p2"}]; tc == nil || tc.Orphans != 1 {
+		t.Errorf("by type and scope %+v", c.byTypeScope)
+	}
+	if live[5].ScopeName != "project p1" {
+		t.Errorf("scope name not filled in: %q", live[5].ScopeName)
+	}
+	var statuses []string
+	for _, s := range c.seen {
+		statuses = append(statuses, s.Status+" "+s.Resource.Identity["id"].(string))
+	}
+	want := []string{"managed managed", report.BecameUnsure + " unsure", report.BecameIgnored + " unsure-ignored", "managed managed-ignored", report.BecameIgnored + " ignored"}
+	if !slices.Equal(statuses, want) {
+		t.Errorf("seen %v, want %v", statuses, want)
+	}
+	// Every object of unknown place: no breakdown.
+	sum = report.Summary{}
+	classify(o, idx, live[:2], origins, &sum)
+	if sum.ByScope != nil {
+		t.Errorf("unknown scope only: %+v", sum.ByScope)
+	}
+}
+
+func TestCoverageInputs(t *testing.T) {
+	apiOff := tf.Failure{Type: "google_x", Root: "r", Provider: "google", Category: tf.FailAPIOff}
+	other := tf.Failure{Type: "google_y", Root: "r", Category: "permission"}
+	firebase := tf.Failure{Type: "google_firebase_app", Root: "r", Category: "permission"}
+	needsArg := tf.Skip{Type: "google_firebase_web_app", Reason: "needs argument project", Root: "r"}
+	for _, c := range []struct {
+		name         string
+		strictAPI    bool
+		strictIgnore []string
+		counting     []string
+		skipped      []string
+		checks       int
+		apiOff       int
+		ignored      int
+	}{
+		{name: "defaults", strictAPI: true, counting: []string{"google_x", "google_y", "google_firebase_app"}, skipped: []string{"google_firebase_web_app"}, apiOff: 1},
+		{name: "-strict-api=false", counting: []string{"google_y", "google_firebase_app"}, skipped: []string{"google_firebase_web_app", "google_x"}, checks: 1, apiOff: 1},
+		{name: "-strict-ignore", strictAPI: true, strictIgnore: []string{"google_firebase_*"}, counting: []string{"google_x", "google_y"}, skipped: []string{"google_firebase_web_app", "google_firebase_app"}, apiOff: 1, ignored: 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sum := report.Summary{Failed: []tf.Failure{apiOff, other, firebase}, Skipped: []tf.Skip{needsArg}}
+			o := &options{strictAPI: c.strictAPI, strictIgnore: glob.CompileList(c.strictIgnore)}
+			counting, skipped, checks := coverageInputs(o, &sum)
+			var got []string
+			for _, f := range counting {
+				got = append(got, f.Type)
+			}
+			if !slices.Equal(got, c.counting) {
+				t.Errorf("counting %v, want %v", got, c.counting)
+			}
+			got = nil
+			for _, s := range skipped {
+				got = append(got, s.Type)
+				if s.Type != "google_firebase_web_app" && !s.Excluded {
+					t.Errorf("%s not excluded", s.Type)
+				}
+			}
+			if !slices.Equal(got, c.skipped) {
+				t.Errorf("skipped %v, want %v", got, c.skipped)
+			}
+			if len(checks) != c.checks || c.checks > 0 && (checks[0].Type != "google_x" || checks[0].Root != "r") {
+				t.Errorf("checks %+v", checks)
+			}
+			if sum.APIOff != c.apiOff || sum.StrictIgnored != c.ignored {
+				t.Errorf("api off %d, strict ignored %d", sum.APIOff, sum.StrictIgnored)
+			}
+			// A skip -strict-ignore lets pass says so in skipped_types.
+			if c.ignored > 0 && (!sum.Skipped[0].Excluded || !strings.HasPrefix(sum.Skipped[0].Reason, report.StrictIgnored)) {
+				t.Errorf("skipped_types %+v", sum.Skipped)
+			}
+			if c.ignored == 0 && sum.Skipped[0].Excluded {
+				t.Error("skip excluded without -strict-ignore")
+			}
+		})
 	}
 }

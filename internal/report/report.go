@@ -833,26 +833,36 @@ func resourceName(r model.Resource) string {
 
 // Clean flattens s to one line and drops control characters, since names
 // and error messages come from APIs and could carry terminal escape
-// sequences.
+// sequences. Format characters (bidi overrides, zero-width spaces) are
+// shown as \uXXXX: they could reorder or hide text, and dropping them
+// would make two different IDs look the same.
 func Clean(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, s)
-	return strings.Join(strings.Fields(s), " ")
+	return strings.Join(strings.Fields(clean(s, " ", func(rune) bool { return false })), " ")
 }
 
 // CleanLines drops control characters except newlines and tabs, for
 // multi-line messages such as errors with provider diagnostics.
 func CleanLines(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			return -1
+	return clean(s, "", func(r rune) bool { return r == '\n' || r == '\t' })
+}
+
+// clean replaces control characters other than keep with ctrl and
+// spells out format characters.
+func clean(s, ctrl string, keep func(rune) bool) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case keep(r):
+			b.WriteRune(r)
+		case unicode.IsControl(r):
+			b.WriteString(ctrl)
+		case unicode.Is(unicode.Cf, r):
+			fmt.Fprintf(&b, "\\u%04X", r)
+		default:
+			b.WriteRune(r)
 		}
-		return r
-	}, s)
+	}
+	return b.String()
 }
 
 // hclValue renders a JSON value as an HCL expression: strings quoted

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/hashicorp/hcl/v2"
@@ -318,8 +319,57 @@ func DataDir(dir string) string {
 	return filepath.Join(dir, d)
 }
 
-// Init runs terraform init without prompting.
+// SharedDataDir reports two of the root modules whose data directories
+// (TF_DATA_DIR, see DataDir) are one directory: an absolute TF_DATA_DIR, or
+// a relative one such as ../shared for sibling roots. Terraform keeps a
+// root's backend settings there: with a partial backend configuration
+// (backend "s3" {} and -backend-config at init) another root with the same
+// block reads that root's state, without an error (checked with the local
+// backend). It returns the shared directory and the two roots, or "".
+func SharedDataDir(roots []string) (dir, a, b string) {
+	type use struct{ root, real string }
+	seen := map[string]use{}
+	for _, root := range roots {
+		// The root first: the OS takes .. in a relative TF_DATA_DIR from
+		// the directory a symlink leads to.
+		real := resolvePath(root)
+		d := resolvePath(DataDir(real))
+		if first, ok := seen[d]; ok && first.real != real {
+			return d, first.root, root
+		}
+		seen[d] = use{root, real}
+	}
+	return "", "", ""
+}
+
+// resolvePath makes p absolute and resolves symlinks in the longest part
+// of it that exists.
+func resolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	rest := ""
+	for d := abs; ; d = filepath.Dir(d) {
+		if r, err := filepath.EvalSymlinks(d); err == nil {
+			return filepath.Join(r, rest)
+		}
+		if filepath.Dir(d) == d {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(d), rest)
+	}
+}
+
+// initMu serializes terraform init: roots are read in parallel, and
+// terraform does not promise that a shared plugin cache (TF_PLUGIN_CACHE_DIR
+// or plugin_cache_dir in the CLI config) survives concurrent installs.
+var initMu sync.Mutex
+
+// Init runs terraform init without prompting, one root at a time.
 func (r Runner) Init(ctx context.Context) error {
+	initMu.Lock()
+	defer initMu.Unlock()
 	args := []string{"init", "-input=false", "-no-color"}
 	if _, stderr, err := r.run(ctx, args...); err != nil {
 		return cmdError(args, stderr, err)

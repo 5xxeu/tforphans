@@ -118,7 +118,7 @@ func adoptHeader(sum *report.Summary) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Objects that none of the %d states read manages.\n", sum.States)
 	if sum.Uncertain > 0 {
-		fmt.Fprintf(&b, "# Not included: %d uncertain objects (matched to state by ID only).\n", sum.Uncertain)
+		fmt.Fprintf(&b, "# Not included: %d uncertain objects (matched to state, but the state cannot confirm the account or cluster).\n", sum.Uncertain)
 	}
 	var gaps []string
 	for _, c := range sum.Coverage {

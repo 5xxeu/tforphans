@@ -48,7 +48,16 @@ it may be a root, so it counts as an unread state. More than `-max-roots` root m
 before terraform starts in any of them: a wrong path (`..` relative to a
 config file somewhere else) can otherwise reach a whole home directory. `-init` runs `terraform init` in
 uninitialized roots first; it creates `.terraform` there and may write a
-lock file, so it is opt-in. A shared `TF_PLUGIN_CACHE_DIR` makes it fast.
+lock file, so it is opt-in. A shared `TF_PLUGIN_CACHE_DIR` makes it fast; terraform does not promise
+that the cache is safe for parallel installs, so tforphans runs one `init`
+at a time, also while it reads states in parallel.
+Terraform keeps a root's backend settings in its data directory: with a
+partial backend configuration (`backend "s3" {}` and `-backend-config` at
+init) a root that shares it with another would silently read the other's
+state. When two roots end up in one data directory (an absolute
+`TF_DATA_DIR`, or a relative one such as `../shared` for sibling roots),
+the run stops before terraform starts; a path inside each root
+(`.terraform-x`) works.
 Reading a root needs working credentials for its backend (S3, GCS, ...);
 a root whose backend rejects them is skipped with a warning.
 

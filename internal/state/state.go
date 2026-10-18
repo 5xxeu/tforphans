@@ -1002,14 +1002,18 @@ func keySets(r model.Resource) (required, primary []string) {
 // has proves nothing (node names repeat across clusters), so only the
 // user's statement (Trusted) makes the match verified.
 func scopeCheck(sc *model.Scope, typ string, in *Instance) (inScope, known bool) {
-	if !sc.Unverifiable {
-		if attr, ok := sc.Attrs[typ]; ok {
-			if v, ok := model.Scalar(in.Attributes[attr]); ok && !sc.Values[v] {
-				return false, false
+	known = true
+	for ; sc != nil; sc = sc.Also {
+		if !sc.Unverifiable {
+			if attr, ok := sc.Attrs[typ]; ok {
+				if v, ok := model.Scalar(in.Attributes[attr]); ok && !sc.Values[v] {
+					return false, false
+				}
 			}
 		}
+		known = known && sc.Trusted
 	}
-	return true, sc.Trusted
+	return true, known
 }
 
 // TypeKey is a resource type with the provider family that manages it.

@@ -12,16 +12,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # the draft release
+      actions: read # the ci run of the tagged commit
       id-token: write # signing the provenance
       attestations: write
     steps:
+      # A tag is put on a commit of main: its ci run (push to main) must
+      # have passed, integration tests included. It may still be running
+      # when the tag is pushed right after a merge.
+      - name: Wait for ci on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 60); do
+            run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --event push --limit 1 --json status,conclusion,url --jq '.[0] // empty | [.status, .conclusion, .url] | join(" ")')
+            set -- $run
+            case "${1:-}/${2:-}" in
+            completed/success) echo "ci passed: $3"; exit 0 ;;
+            completed/*) echo "ci did not pass ($2): $3" >&2; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "no finished ci run for $GITHUB_SHA after 30 minutes (is the tag on a commit of main?)" >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.1" # exact, so that a tag builds the same binaries again
+          go-version: "1.27.2" # exact, so that a tag builds the same binaries again; the same in ci.yml
       - run: go test ./...
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
