@@ -838,6 +838,12 @@ func compare(r model.Resource, in *Instance) (ok, verified bool, why string, mis
 	for k, want := range r.Identity {
 		w, ok := model.Canonical(want)
 		if !ok {
+			// A null the source itself requires (a plugin's "id": null
+			// from jq on a missing field) leaves the object unnamed: the
+			// rest, a location, alone is no match.
+			if slices.Contains(r.RequiredKeys, k) {
+				return false, false, k + " is null here, which nothing can confirm", nil
+			}
 			continue
 		}
 		// An empty location (google lists some objects with project "")

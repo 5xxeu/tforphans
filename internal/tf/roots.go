@@ -35,11 +35,13 @@ import (
 // With units, a Terragrunt unit (see TerragruntKind) counts as a root too;
 // its .terragrunt-cache is hidden and not walked into.
 //
-// Directories below dir that cannot be read (permission denied), and with
-// units a terragrunt.hcl that cannot be read or parsed, are returned as
-// unread instead of failing the walk: a tree such as a home directory has
-// some, and a root there may manage what is found. parents are the
-// terragrunt.hcl files taken for shared configuration (see TerragruntKind).
+// Directories below dir that cannot be read (permission denied), those
+// without a backend found where a configuration file cannot be read or
+// parsed, and with units a terragrunt.hcl that cannot be read or parsed,
+// are returned as unread instead of failing the walk: a tree such as a
+// home directory has some, and a root there may manage what is found.
+// parents are the terragrunt.hcl files taken for shared configuration (see
+// TerragruntKind).
 func FindRoots(dir string, units bool) (roots []string, unread []Unread, parents []Parent, err error) {
 	var maybe, tg []string            // candidate parents, every directory with a terragrunt.hcl
 	includedBy := map[string]string{} // absolute directory of an included terragrunt.hcl: a unit including it
@@ -58,7 +60,7 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, parents
 		if path != dir && (strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "testdata" || d.Name() == "terraform.tfstate.d") {
 			return filepath.SkipDir
 		}
-		ok, err := isRoot(path)
+		ok, unsure, err := isRoot(path)
 		if err != nil {
 			if path != dir && errors.Is(err, fs.ErrPermission) {
 				unread = append(unread, Unread{path, "directory could not be read (permission denied)"})
@@ -97,6 +99,8 @@ func FindRoots(dir string, units bool) (roots []string, unread []Unread, parents
 		}
 		if ok {
 			roots = append(roots, path)
+		} else if unsure != "" {
+			unread = append(unread, Unread{path, unsure})
 		}
 		return nil
 	})
@@ -231,31 +235,38 @@ func HasConfig(dir string) bool {
 	return false
 }
 
-func isRoot(dir string) (bool, error) {
+// isRoot reports whether dir is a root module. Without a backend found,
+// unsure says why that is not known: a configuration file that cannot be
+// read or parsed (a broken symlink, a stray "}") may hold the backend
+// block, and a root left out silently would look checked.
+func isRoot(dir string) (ok bool, unsure string, err error) {
 	for _, local := range []string{"terraform.tfstate", "terraform.tfstate.d"} {
 		if _, err := os.Stat(filepath.Join(dir, local)); err == nil {
-			return true, nil
+			return true, "", nil
 		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	p := hclparse.NewParser()
 	for _, e := range entries {
 		name := e.Name()
 		var f *hcl.File
+		var diags hcl.Diagnostics
 		switch {
 		case e.IsDir() || IgnoredFile(name):
 			continue
 		case strings.HasSuffix(name, ".tf"):
-			f, _ = p.ParseHCLFile(filepath.Join(dir, name))
+			f, diags = p.ParseHCLFile(filepath.Join(dir, name))
 		case strings.HasSuffix(name, ".tf.json"):
-			f, _ = p.ParseJSONFile(filepath.Join(dir, name))
+			f, diags = p.ParseJSONFile(filepath.Join(dir, name))
 		default:
 			continue
 		}
-		// Files that do not parse are left for terraform to report.
+		if diags.HasErrors() && unsure == "" {
+			unsure = "configuration could not be read: " + firstError(diags)
+		}
 		if f == nil {
 			continue
 		}
@@ -263,11 +274,29 @@ func isRoot(dir string) (bool, error) {
 		for _, tb := range content.Blocks {
 			inner, _, _ := tb.Body.PartialContent(backendSchema)
 			if len(inner.Blocks) > 0 {
-				return true, nil
+				return true, "", nil
 			}
 		}
 	}
-	return false, nil
+	return false, unsure, nil
+}
+
+// firstError is the first error of diags with its file and line.
+func firstError(diags hcl.Diagnostics) string {
+	for _, d := range diags {
+		if d.Severity != hcl.DiagError {
+			continue
+		}
+		msg := d.Summary
+		if d.Detail != "" {
+			msg += "; " + d.Detail
+		}
+		if d.Subject != nil {
+			msg = fmt.Sprintf("%s:%d: %s", d.Subject.Filename, d.Subject.Start.Line, msg)
+		}
+		return msg
+	}
+	return diags.Error()
 }
 
 // Initialized reports whether terraform init has run in the module.
