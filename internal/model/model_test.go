@@ -114,3 +114,35 @@ func TestJoinScope(t *testing.T) {
 		t.Errorf("joined %+v from %+v and %+v", j, a, b)
 	}
 }
+
+// TestJoinScopeChain: joining an already joined scope keeps every link.
+func TestJoinScopeChain(t *testing.T) {
+	a, b, c := &Scope{Trusted: true}, &Scope{Unverifiable: true}, &Scope{Values: map[string]bool{"n": true}}
+	for _, j := range []*Scope{JoinScope(a, JoinScope(b, c)), JoinScope(JoinScope(a, b), c), JoinScope(JoinScope(c, a), b)} {
+		var got []*Scope
+		for s := j; s != nil; s = s.Also {
+			got = append(got, s)
+		}
+		if len(got) != 3 {
+			t.Fatalf("chain of %d", len(got))
+		}
+		trusted, unverifiable, values := 0, 0, 0
+		for _, s := range got {
+			if s.Trusted {
+				trusted++
+			}
+			if s.Unverifiable {
+				unverifiable++
+			}
+			if s.Values["n"] {
+				values++
+			}
+		}
+		if trusted != 1 || unverifiable != 1 || values != 1 {
+			t.Errorf("chain %+v", got)
+		}
+	}
+	if a.Also != nil || b.Also != nil || c.Also != nil {
+		t.Error("JoinScope changed a scope")
+	}
+}

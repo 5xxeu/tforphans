@@ -319,17 +319,46 @@ func DataDir(dir string) string {
 	return filepath.Join(dir, d)
 }
 
-// SharedDataDir returns TF_DATA_DIR when it is an absolute path, so that
-// every root module uses the same data directory, and "" otherwise.
-// Terraform keeps a root's backend settings there: with a partial backend
-// configuration (backend "s3" {} and -backend-config at init) another root
-// with the same block reads that root's state, without an error (checked
-// with the local backend).
-func SharedDataDir() string {
-	if d := os.Getenv("TF_DATA_DIR"); filepath.IsAbs(d) {
-		return d
+// SharedDataDir reports two of the root modules whose data directories
+// (TF_DATA_DIR, see DataDir) are one directory: an absolute TF_DATA_DIR, or
+// a relative one such as ../shared for sibling roots. Terraform keeps a
+// root's backend settings there: with a partial backend configuration
+// (backend "s3" {} and -backend-config at init) another root with the same
+// block reads that root's state, without an error (checked with the local
+// backend). It returns the shared directory and the two roots, or "".
+func SharedDataDir(roots []string) (dir, a, b string) {
+	type use struct{ root, real string }
+	seen := map[string]use{}
+	for _, root := range roots {
+		// The root first: the OS takes .. in a relative TF_DATA_DIR from
+		// the directory a symlink leads to.
+		real := resolvePath(root)
+		d := resolvePath(DataDir(real))
+		if first, ok := seen[d]; ok && first.real != real {
+			return d, first.root, root
+		}
+		seen[d] = use{root, real}
 	}
-	return ""
+	return "", "", ""
+}
+
+// resolvePath makes p absolute and resolves symlinks in the longest part
+// of it that exists.
+func resolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	rest := ""
+	for d := abs; ; d = filepath.Dir(d) {
+		if r, err := filepath.EvalSymlinks(d); err == nil {
+			return filepath.Join(r, rest)
+		}
+		if filepath.Dir(d) == d {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(d), rest)
+	}
 }
 
 // initMu serializes terraform init: roots are read in parallel, and

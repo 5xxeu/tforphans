@@ -223,7 +223,14 @@ func JoinScope(a, b *Scope) *Scope {
 	if b == nil {
 		return a
 	}
+	// A copy of b's chain, ending in a.
 	joined := *b
-	joined.Also = a
+	last := &joined
+	for last.Also != nil {
+		next := *last.Also
+		last.Also = &next
+		last = &next
+	}
+	last.Also = a
 	return &joined
 }

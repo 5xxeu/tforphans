@@ -868,9 +868,9 @@ esac
 	}
 }
 
-// TestSharedDataDir: an absolute TF_DATA_DIR is one backend cache for all
-// roots, so a second root could read the first one's state; the run stops
-// before terraform starts.
+// TestSharedDataDir: roots that share a data directory share a backend
+// cache, so one could read the other's state; the run stops before
+// terraform starts.
 func TestSharedDataDir(t *testing.T) {
 	dir := t.TempDir()
 	tree := filepath.Join(dir, "tree")
@@ -882,23 +882,31 @@ func TestSharedDataDir(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("TF_DATA_DIR", filepath.Join(dir, "data"))
-	o := &options{stateRoots: listFlag{tree}, stateParallelism: 1, terraformBin: "/nonexistent/terraform"}
-	var sum report.Summary
-	_, err := readStateRoots(context.Background(), o, state.NewIndex(), &sum)
-	if err == nil || !strings.Contains(err.Error(), "TF_DATA_DIR") {
-		t.Fatalf("got %v", err)
+
+	read := func(roots ...string) error {
+		o := &options{stateRoots: roots, stateParallelism: 1, terraformBin: "/nonexistent/terraform"}
+		var sum report.Summary
+		_, err := readStateRoots(context.Background(), o, state.NewIndex(), &sum)
+		return err
 	}
-	// One root has the directory to itself.
-	o.stateRoots = listFlag{filepath.Join(tree, "a")}
-	if _, err := readStateRoots(context.Background(), o, state.NewIndex(), &sum); err != nil && strings.Contains(err.Error(), "TF_DATA_DIR") {
-		t.Fatalf("one root: %v", err)
-	}
-	// A relative TF_DATA_DIR is per root.
-	t.Setenv("TF_DATA_DIR", ".tfdata")
-	o.stateRoots = listFlag{tree}
-	if _, err := readStateRoots(context.Background(), o, state.NewIndex(), &sum); err != nil && strings.Contains(err.Error(), "TF_DATA_DIR") {
-		t.Fatalf("relative: %v", err)
+	shared := func(err error) bool { return err != nil && strings.Contains(err.Error(), "share the data directory") }
+	for _, c := range []struct {
+		dataDir string
+		roots   []string
+		want    bool
+	}{
+		{filepath.Join(dir, "data"), []string{tree}, true},
+		{"../shared", []string{tree}, true},
+		{"../../tree/shared", []string{tree}, true},
+		// One root has the directory to itself.
+		{filepath.Join(dir, "data"), []string{filepath.Join(tree, "a")}, false},
+		{".tfdata", []string{tree}, false},
+		{"", []string{tree}, false},
+	} {
+		t.Setenv("TF_DATA_DIR", c.dataDir)
+		if err := read(c.roots...); shared(err) != c.want {
+			t.Errorf("TF_DATA_DIR=%q %v: got %v", c.dataDir, c.roots, err)
+		}
 	}
 }
 

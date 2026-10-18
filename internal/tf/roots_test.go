@@ -350,3 +350,35 @@ func TestTerragruntUnits(t *testing.T) {
 		t.Errorf("generated unit, dangling link: %v %v %v", got, unread, err)
 	}
 }
+
+// TestSharedDataDirLinks: roots named through symlinks are compared where
+// the links lead; .. in TF_DATA_DIR is taken from there, as the OS does.
+func TestSharedDataDirLinks(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"tree/a", "tree/b", "other"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := filepath.Join(dir, "tree", "a"), filepath.Join(dir, "tree", "b")
+	linkA, linkB := filepath.Join(dir, "link-a"), filepath.Join(dir, "other", "b")
+	for target, link := range map[string]string{a: linkA, b: linkB} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TF_DATA_DIR", "../shared")
+	if d, x, y := SharedDataDir([]string{a, linkB}); d != filepath.Join(dir, "tree", "shared") || x != a || y != linkB {
+		t.Errorf("sibling through a link: %q %q %q", d, x, y)
+	}
+	if d, _, _ := SharedDataDir([]string{a, linkA}); d != "" {
+		t.Errorf("one root under two names: %q", d)
+	}
+	t.Setenv("TF_DATA_DIR", ".terraform")
+	if d, _, _ := SharedDataDir([]string{a, b, linkB}); d != "" {
+		t.Errorf("per-root data directory: %q", d)
+	}
+}
