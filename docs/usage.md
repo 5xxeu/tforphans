@@ -167,6 +167,9 @@ unverified. A failed identity read also leaves them unverified and adds a note.
 Opt-in types `google_project` and `google_folder` also leave missing findings
 unverified, since provider identity does not describe what the credentials can see.
 
+User list blocks that reference evaluated values outside `each.key`, `count.index`
+or `each.value` over a reference-free `for_each` also leave missing findings unverified.
+
 Older reports without scope leave missing findings unverified once when used
 as a baseline. Save a new report to establish confirmed scope. Fingerprints
 do not include evaluated variables, locals, data sources or provider bodies;

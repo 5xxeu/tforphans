@@ -316,18 +316,21 @@ func withoutTransitions(fs []report.Finding) []report.Finding {
 	return out
 }
 
-func TestOptInListingScope(t *testing.T) {
+func TestQueryListingScope(t *testing.T) {
 	for _, c := range []struct {
-		name        string
-		user, optIn bool
+		name                          string
+		user, optIn, dynamic, limited bool
 	}{
 		{name: "generated"},
 		{name: "user", user: true},
 		{name: "generated opt-in", optIn: true},
 		{name: "user opt-in", user: true, optIn: true},
+		{name: "user variable project", user: true, dynamic: true},
+		{name: "identity state limit", limited: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir, bin := queryListingSetup(t)
+			unverified := c.optIn || c.dynamic || c.limited
 			t.Setenv("FAKE_ACCOUNT", "acct-1")
 			savedSource, hadSource := tf.IdentitySources["hashicorp/foo"]
 			tf.IdentitySources["hashicorp/foo"] = []tf.IdentityRead{{DataSource: "foo_whoami", Attrs: map[string][]string{"account": {"account"}}}}
@@ -358,9 +361,17 @@ func TestOptInListingScope(t *testing.T) {
 			address := "list.foo_thing.tfo_foo_foo_thing"
 			if c.user {
 				address = "list.foo_thing.mine"
-				writeListingFile(t, "plugin-infra/user.tfquery.hcl", "list \"foo_thing\" \"mine\" {\n  provider = foo\n}\n", 0600)
+				config := ""
+				if c.dynamic {
+					config = "  config { project = var.target_project }\n"
+				}
+				writeListingFile(t, "plugin-infra/user.tfquery.hcl", "list \"foo_thing\" \"mine\" {\n  provider = foo\n"+config+"}\n", 0600)
 			}
 			args := []string{"-no-config", "-terraform", bin, "-current-workspace", "-format", "json", "-types", "foo_thing", "plugin-infra"}
+			if c.limited {
+				args = append(args, "-max-state-size", "128")
+			}
+			t.Setenv("TF_VAR_target_project", "A")
 			writeListingFile(t, "plugin-infra/query.json", listingStream(t, address, []string{"gone"}, false), 0600)
 			code, baseline, stderr := runReportTest(t, args...)
 			if code != exitOrphans {
@@ -371,9 +382,13 @@ func TestOptInListingScope(t *testing.T) {
 				t.Fatal(baseline)
 			}
 			scope := before.Summary.Listings[0].Scope
-			if c.optIn && scope != nil || !c.optIn && scope["account"] != "acct-1" {
+			if unverified && scope != nil || !unverified && scope["account"] != "acct-1" {
 				t.Fatalf("wrong scope: %s", baseline)
 			}
+			if c.limited && !strings.Contains(strings.Join(before.Summary.Notes, "\n"), "state is larger than 128 bytes") {
+				t.Fatalf("identity limit was not reported: %s", baseline)
+			}
+			t.Setenv("TF_VAR_target_project", "B")
 			baselinePath := filepath.Join(dir, "baseline.json")
 			writeListingFile(t, baselinePath, baseline, 0600)
 			writeListingFile(t, "plugin-infra/query.json", listingStream(t, address, nil, false), 0600)
@@ -386,7 +401,7 @@ func TestOptInListingScope(t *testing.T) {
 				t.Fatalf("listing changed: %s", output)
 			}
 			b := current.Baseline
-			if c.optIn {
+			if unverified {
 				if b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Reason != "listing scope not confirmed" {
 					t.Fatal(output)
 				}

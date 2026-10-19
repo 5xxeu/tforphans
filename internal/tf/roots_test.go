@@ -112,14 +112,14 @@ list "aws_vpc" "dyn" {
 		t.Fatal(err)
 	}
 	want := map[string]UserList{
-		"list.aws_instance.other": {Provider: "aws.other_account", Limit: 5000, Configuration: `list "aws_instance" "other" {
+		"list.aws_instance.other": {Provider: "aws.other_account", Static: true, Limit: 5000, Configuration: `list "aws_instance" "other" {
   provider = aws.other_account
   limit    = 5000
   config {
     region = "us-east-1"
   }
 }`},
-		"list.aws_s3_bucket.main": {Provider: "aws", Limit: DefaultListLimit, Configuration: `list "aws_s3_bucket" "main" {
+		"list.aws_s3_bucket.main": {Provider: "aws", Static: true, Limit: DefaultListLimit, Configuration: `list "aws_s3_bucket" "main" {
   provider = aws
 }`},
 		"list.aws_vpc.dyn": {Provider: "aws", Limit: 0, Configuration: `list "aws_vpc" "dyn" {
@@ -380,5 +380,54 @@ func TestSharedDataDirLinks(t *testing.T) {
 	t.Setenv("TF_DATA_DIR", ".terraform")
 	if d, _, _ := SharedDataDir([]string{a, b, linkB}); d != "" {
 		t.Errorf("per-root data directory: %q", d)
+	}
+}
+
+func TestUserListStatic(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		static     bool
+	}{
+		{"literal", `config { project = "p" }`, true},
+		{"provider excluded", "provider = aws.prod\nconfig { project = \"p\" }", true},
+		{"variable config", `config { project = var.target_project }`, false},
+		{"local limit", `limit = local.limit`, false},
+		{"variable function", `config { project = lower(var.target_project) }`, false},
+		{"dynamic values", "for_each = var.projects\nconfig { project = each.value }", false},
+		{"literal values", "for_each = { p = { project = \"p\" } }\nconfig { project = each.value.project }", true},
+		{"each key", "for_each = toset([\"p\"])\nconfig { project = each.key }", true},
+		{"count index", "count = 2\nconfig { index = count.index }", true},
+		{"dynamic count", "count = var.n\nconfig { index = count.index }", false},
+		{"dynamic include", `include_resource = local.include`, false},
+		{"nested block", "config {\n filter { value = data.target.name }\n}", false},
+		{"nested provider", "config {\n filter { provider = var.target }\n}", false},
+		{"module", `config { project = module.target.project }`, false},
+		{"workspace", `config { project = terraform.workspace }`, false},
+		{"path", `config { project = path.root }`, false},
+		{"resource", `config { project = google_project.target.project_id }`, false},
+		{"bare each", `config { project = each }`, false},
+		{"value without for_each", `config { project = each.value }`, false},
+		{"invalid text", `config { project =`, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			text := "list \"google_compute_instance\" \"test\" {\n" + c.body + "\n}\n"
+			if err := os.WriteFile(filepath.Join(dir, "mine.tfquery.hcl"), []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			lists, err := UserLists(dir)
+			if c.name == "invalid text" {
+				if err == nil {
+					t.Fatal("invalid configuration accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, ok := lists["list.google_compute_instance.test"]; !ok || l.Static != c.static {
+				t.Fatalf("want Static %t, got %+v", c.static, lists)
+			}
+		})
 	}
 }
