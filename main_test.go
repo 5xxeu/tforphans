@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -471,8 +472,8 @@ func TestIgnoreHints(t *testing.T) {
 	}
 }
 
-// TestSortBaseName: guests named alike keep their listed order whatever
-// node the display name adds, so import addresses keep their suffixes.
+// TestSortBaseName: guests sort by their own name, then import ID,
+// whatever node the display name adds.
 func TestSortBaseName(t *testing.T) {
 	rs := []model.Resource{
 		{Type: "vm", DisplayName: "tmpl (pve2)", BaseName: "tmpl", ImportID: "pve2/100"},
@@ -484,8 +485,52 @@ func TestSortBaseName(t *testing.T) {
 	for _, r := range rs {
 		got = append(got, r.ImportID)
 	}
-	if want := []string{"pve3/300", "pve2/100", "pve1/200"}; !slices.Equal(got, want) {
+	if want := []string{"pve3/300", "pve1/200", "pve2/100"}; !slices.Equal(got, want) {
 		t.Errorf("order %v, want %v", got, want)
+	}
+}
+
+func TestSortImportStable(t *testing.T) {
+	rs := []model.Resource{
+		{Source: ".", Provider: "aws", ProviderSource: "registry.terraform.io/hashicorp/aws", Identity: map[string]any{"id": "a"}},
+		{Source: ".", Provider: "aws", ProviderSource: "registry.terraform.io/hashicorp/aws", Identity: map[string]any{"id": "b"}},
+		{Source: ".", Provider: "aws", ProviderSource: "registry.terraform.io/hashicorp/aws", Identity: map[string]any{"id": "a"}, ImportID: "i-a"},
+		{Source: ".", Provider: "aws", ProviderSource: "registry.terraform.io/hashicorp/aws", Identity: map[string]any{"id": "a"}, ImportID: "i-b"},
+		{Source: ".", Provider: "aws.prod", ProviderSource: "example.com/custom/aws", Identity: map[string]any{"id": "a"}},
+		{Source: ".", Provider: "aws.prod", ProviderSource: "registry.terraform.io/hashicorp/aws", Identity: map[string]any{"id": "a"}},
+		{Source: "plugin", Provider: "aws", Identity: map[string]any{"a": "b", "c": "d"}},
+		{Source: "plugin", Provider: "aws", Identity: map[string]any{"a": "b, c=d"}},
+		{Source: "root", Provider: "aws", Identity: map[string]any{"id": "a"}},
+	}
+	for i := range rs {
+		rs[i].ScopeName = "account test"
+		rs[i].Type = "aws_instance"
+		rs[i].DisplayName = "web"
+	}
+	for i := 1; i < len(rs); i++ {
+		if compareResources(rs[i-1], rs[i]) >= 0 {
+			t.Fatalf("resources %d and %d are not in distinct ascending order", i-1, i)
+		}
+	}
+	var want bytes.Buffer
+	if n, err := report.Import(&want, rs, nil); err != nil || n != len(rs) {
+		t.Fatalf("import: %d blocks, %v", n, err)
+	}
+	rng := rand.New(rand.NewSource(200))
+	for i := range 200 {
+		shuffled := slices.Clone(rs)
+		rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		sortResources(shuffled)
+		if !reflect.DeepEqual(shuffled, rs) {
+			t.Fatalf("permutation %d: resource order changed", i)
+		}
+		var got bytes.Buffer
+		if n, err := report.Import(&got, shuffled, nil); err != nil || n != len(rs) {
+			t.Fatalf("permutation %d: %d blocks, %v", i, n, err)
+		}
+		if !bytes.Equal(got.Bytes(), want.Bytes()) {
+			t.Fatalf("permutation %d: import output changed:\n%s\nwant:\n%s", i, &got, &want)
+		}
 	}
 }
 

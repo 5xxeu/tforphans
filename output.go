@@ -79,10 +79,29 @@ func compareResources(a, b model.Resource) int {
 	if c := strings.Compare(a.Type, b.Type); c != 0 {
 		return c
 	}
-	// The bare name, so that objects named alike keep their listed order
-	// whatever the display name adds (the node of a guest): import
-	// addresses get their _2, _3 suffixes in this order.
-	return strings.Compare(baseName(a), baseName(b))
+	// The bare name ignores display details such as a guest's node.
+	// Break ties by source, provider and identity so import suffixes
+	// _2, _3 do not depend on the API's listing order.
+	if c := strings.Compare(baseName(a), baseName(b)); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.Source, b.Source); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.Provider, b.Provider); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.ProviderSource, b.ProviderSource); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.ImportID, b.ImportID); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.IdentityString(), b.IdentityString()); c != 0 {
+		return c
+	}
+	// Quoted keys and values distinguish identities with separators in them.
+	return strings.Compare(a.Key(), b.Key())
 }
 
 func baseName(r model.Resource) string {
