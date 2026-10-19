@@ -13,6 +13,7 @@ import (
 	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 type listingReport struct {
@@ -313,4 +314,85 @@ func withoutTransitions(fs []report.Finding) []report.Finding {
 		out[i] = f
 	}
 	return out
+}
+
+func TestOptInListingScope(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		user, optIn bool
+	}{
+		{name: "generated"},
+		{name: "user", user: true},
+		{name: "generated opt-in", optIn: true},
+		{name: "user opt-in", user: true, optIn: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir, bin := queryListingSetup(t)
+			t.Setenv("FAKE_ACCOUNT", "acct-1")
+			savedSource, hadSource := tf.IdentitySources["hashicorp/foo"]
+			tf.IdentitySources["hashicorp/foo"] = []tf.IdentityRead{{DataSource: "foo_whoami", Attrs: map[string][]string{"account": {"account"}}}}
+			savedOptIn, hadOptIn := tf.OptIn["foo_thing"]
+			if c.optIn {
+				tf.OptIn["foo_thing"] = "lists everything the credentials can see"
+			}
+			t.Cleanup(func() {
+				if hadSource {
+					tf.IdentitySources["hashicorp/foo"] = savedSource
+				} else {
+					delete(tf.IdentitySources, "hashicorp/foo")
+				}
+				if hadOptIn {
+					tf.OptIn["foo_thing"] = savedOptIn
+				} else {
+					delete(tf.OptIn, "foo_thing")
+				}
+			})
+			script, err := os.ReadFile(bin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := ` plan) exit 0 ;;
+ show) printf '{"prior_state":{"values":{"root_module":{"resources":[{"mode":"data","address":"data.foo_whoami.tfo_id_0_0","values":{"account":"%s"}}]}}}}\n' "$FAKE_ACCOUNT" ;;
+`
+			writeListingFile(t, bin, strings.Replace(string(script), " query)", identity+" query)", 1), 0700)
+			address := "list.foo_thing.tfo_foo_foo_thing"
+			if c.user {
+				address = "list.foo_thing.mine"
+				writeListingFile(t, "plugin-infra/user.tfquery.hcl", "list \"foo_thing\" \"mine\" {\n  provider = foo\n}\n", 0600)
+			}
+			args := []string{"-no-config", "-terraform", bin, "-current-workspace", "-format", "json", "-types", "foo_thing", "plugin-infra"}
+			writeListingFile(t, "plugin-infra/query.json", listingStream(t, address, []string{"gone"}, false), 0600)
+			code, baseline, stderr := runReportTest(t, args...)
+			if code != exitOrphans {
+				t.Fatalf("baseline exit %d: %s%s", code, baseline, stderr)
+			}
+			before := decodeListingReport(t, baseline)
+			if len(before.Summary.Listings) != 1 {
+				t.Fatal(baseline)
+			}
+			scope := before.Summary.Listings[0].Scope
+			if c.optIn && scope != nil || !c.optIn && scope["account"] != "acct-1" {
+				t.Fatalf("wrong scope: %s", baseline)
+			}
+			baselinePath := filepath.Join(dir, "baseline.json")
+			writeListingFile(t, baselinePath, baseline, 0600)
+			writeListingFile(t, "plugin-infra/query.json", listingStream(t, address, nil, false), 0600)
+			code, output, stderr := runReportTest(t, append(args, "-baseline", baselinePath)...)
+			if code != exitOK {
+				t.Fatalf("current exit %d: %s%s", code, output, stderr)
+			}
+			current := decodeListingReport(t, output)
+			if !reflect.DeepEqual(before.Summary.Listings, current.Summary.Listings) {
+				t.Fatalf("listing changed: %s", output)
+			}
+			b := current.Baseline
+			if c.optIn {
+				if b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Reason != "listing scope not confirmed" {
+					t.Fatal(output)
+				}
+			} else if b.Resolved != 1 || b.Unverified != 0 {
+				t.Fatal(output)
+			}
+		})
+	}
 }

@@ -158,7 +158,8 @@ type PlanOptions struct {
 
 // OptIn are list-capable types whose lists reach far beyond what a root
 // module manages (every project the credentials can see); they are queried
-// only when -types names them exactly.
+// only when -types names them exactly. Baseline cannot confirm these listings
+// from provider identity, since it does not describe credential visibility.
 var OptIn = map[string]string{
 	"google_project": "lists every project the credentials can see, not only this root's",
 	"google_folder":  "lists folders across the organization, not only this root's",

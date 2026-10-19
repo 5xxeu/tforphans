@@ -250,8 +250,14 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 				complete = false
 			}
 		}
+		scope := scopes[providerOf(q.Address, q.Type)]
+		if _, optIn := tf.OptIn[q.Type]; optIn {
+			// These listings follow credential visibility, which provider
+			// identity data sources do not describe.
+			scope = nil
+		}
 		sum.AddListing(report.Listing{Source: root, Address: q.Address, Provider: source, Type: q.Type,
-			Complete: complete, Scope: scopes[providerOf(q.Address, q.Type)], Fingerprint: report.ListingFingerprint(config, key, provider, "", workspace)})
+			Complete: complete, Scope: scope, Fingerprint: report.ListingFingerprint(config, key, provider, "", workspace)})
 	}
 	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with
