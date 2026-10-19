@@ -223,6 +223,18 @@ seeds; CI fuzzes each for a minute every night. Locally:
 go test -run '^$' -fuzz '^FuzzImportHCL$' -fuzztime 5m ./internal/report/
 ```
 
+The `e2e` workflow scans the DNS records of a real Cloudflare zone every
+night (and by hand, never on pull requests) against the local state in
+`testdata/e2e/cloudflare`, which holds some of them, and checks the exact
+unmanaged record IDs, that the state's records are managed and that records
+Cloudflare creates (Email Routing, Workers) are not reported. The token (it
+only needs to read that zone's DNS) and the zone ID live in the
+`cloudflare-e2e` environment. Locally:
+
+```sh
+CLOUDFLARE_API_TOKEN=... E2E_ZONE_ID=... go test -tags e2e -run '^TestE2E' -v .
+```
+
 A `v*` tag on a commit of main waits for that commit's `ci` run to pass,
 then builds the release with GoReleaser (`.goreleaser.yaml`) as a draft,
 with checksums, SBOMs and a build provenance attestation. Publishing the

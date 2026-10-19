@@ -285,6 +285,14 @@ func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *dat
 		if os.Getenv("FAKE_MIXED") == zone.ValueString() && typ.IsNull() {
 			panic("inconsistent list element types")
 		}
+		// FAKE_PANIC_ONCE=<file> crashes the read of records that creates
+		// file, like a crash that does not repeat.
+		if f := os.Getenv("FAKE_PANIC_ONCE"); f != "" {
+			if w, err := os.OpenFile(f, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
+				w.Close()
+				panic("fake provider crash")
+			}
+		}
 	}
 	// FAKE_FAIL=<kind>:<message> makes reading that data source fail.
 	if kind, msg, ok := strings.Cut(os.Getenv("FAKE_FAIL"), ":"); ok && kind == p.kind {
