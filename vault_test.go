@@ -13,18 +13,21 @@ import (
 
 // fakeVault answers the calls of vault.sh; VAULT_MODE breaks it:
 // warn adds a warning on stderr to every answer, garbage gives text
-// instead of JSON for policies, denied fails sys/mounts.
+// instead of JSON for policies, denied fails sys/mounts, empty finds no objects.
 const fakeVault = `#!/bin/sh
 [ "${VAULT_MODE:-}" = warn ] && echo "WARNING! VAULT_ADDR and -address unset" >&2
 case "$*" in
 "read -format=json sys/auth")
+	if [ "${VAULT_MODE:-}" = empty ]; then echo '{"data":{"token/":{"type":"token"}}}'; exit 0; fi
 	echo '{"data":{"token/":{"type":"token"},"approle/":{"type":"approle"},"gh/":{"type":"github"}}}' ;;
 "list -format=json auth/approle/role")
 	echo '["ci"]' ;;
 "read -format=json sys/mounts")
+	if [ "${VAULT_MODE:-}" = empty ]; then echo '{"data":{}}'; exit 0; fi
 	if [ "${VAULT_MODE:-}" = denied ]; then echo "Code: 403. permission denied" >&2; exit 2; fi
 	echo '{"data":{"sys/":{"type":"system"},"kv/":{"type":"kv"}}}' ;;
 "policy list -format=json")
+	if [ "${VAULT_MODE:-}" = empty ]; then echo '["default","root"]'; exit 0; fi
 	if [ "${VAULT_MODE:-}" = garbage ]; then echo 'not json'; exit 0; fi
 	echo '["default","root","ops"]' ;;
 *)
@@ -57,6 +60,7 @@ func TestVaultPlugin(t *testing.T) {
 	}{
 		{"", all, ""},
 		{"warn", all, ""},
+		{"empty", nil, ""},
 		{"garbage", []string{"approle", "auth/approle/role/ci", "gh", "kv"}, "list policies: unexpected output"},
 		{"denied", []string{"approle", "auth/approle/role/ci", "gh", "ops"}, "read sys/mounts: Code: 403"},
 	} {
@@ -64,6 +68,9 @@ func TestVaultPlugin(t *testing.T) {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"-no-query", "-state", state, "-plugin", "sh examples/plugins/vault.sh", "-format", "json", "-strict"}, &out, &errb)
 		var rep struct {
+			Summary struct {
+				Complete bool `json:"complete"`
+			} `json:"summary"`
 			Orphans []struct {
 				Identity map[string]any `json:"identity"`
 			} `json:"orphans"`
@@ -79,8 +86,15 @@ func TestVaultPlugin(t *testing.T) {
 		if !slices.Equal(ids, tc.ids) {
 			t.Errorf("%q: ids %v, want %v", tc.mode, ids, tc.ids)
 		}
+		wantCode := exitOrphans
+		if tc.mode == "empty" {
+			wantCode = exitOK
+		}
+		if rep.Summary.Complete != (tc.failure == "") {
+			t.Errorf("%q: coverage: %s", tc.mode, &out)
+		}
 		incomplete := bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE"))
-		if tc.failure == "" && (code != exitOrphans || incomplete) || tc.failure != "" && (code != exitError || !incomplete || !bytes.Contains(errb.Bytes(), []byte(tc.failure))) {
+		if tc.failure == "" && (code != wantCode || incomplete) || tc.failure != "" && (code != exitError || !incomplete || !bytes.Contains(errb.Bytes(), []byte(tc.failure))) {
 			t.Errorf("%q: exit %d\n%s", tc.mode, code, errb.String())
 		}
 	}

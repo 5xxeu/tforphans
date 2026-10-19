@@ -54,7 +54,7 @@ func TestStrictOwnership(t *testing.T) {
 		{"quiet warnings", []string{a, b}, []string{"-quiet"}, exitOK, 1, 0, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			args := []string{"-no-config", "-no-query", "-plugin", "true", "-format", "json"}
+			args := []string{"-no-config", "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-format", "json"}
 			for _, path := range c.paths {
 				args = append(args, "-state", path)
 			}
@@ -140,7 +140,7 @@ func TestAdoptStrictOwnershipDiagnostics(t *testing.T) {
 		{"none", []string{a}, true, exitOK, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			args := []string{"adopt", "-no-config", "-no-query", "-plugin", "true"}
+			args := []string{"adopt", "-no-config", "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`}
 			for _, path := range c.paths {
 				args = append(args, "-state", path)
 			}

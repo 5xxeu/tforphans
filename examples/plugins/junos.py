@@ -193,6 +193,7 @@ def main():
         return 0
     for line in OUT:
         print(line)
+    print(json.dumps({"done": True}))
     return 0
 
 if __name__ == "__main__":

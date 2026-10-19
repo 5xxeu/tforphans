@@ -102,3 +102,5 @@ if out=$(vault policy list -format=json 2>"$err"); then
 else
 	fail "list policies: $(cat "$err")"
 fi
+
+printf '%s\n' '{"done": true}'

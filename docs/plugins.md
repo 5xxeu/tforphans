@@ -5,6 +5,7 @@ A plugin is any command that prints one JSON object per line:
 ```json
 {"type": "vault_policy", "identity": {"id": "ci"}, "display_name": "ci", "import_id": "ci"}
 {"error": "sys/auth: permission denied"}
+{"done": true}
 ```
 
 Output is parsed while the command runs. Each run may return at most
@@ -29,11 +30,21 @@ position (`plugin1`, `plugin2`), never its command line.
   provider with a type of the same name does not match. A `type` or
   `provider` that is not a valid name makes the plugin fail.
 - `error` lines are reported as warnings (errors with `-strict`).
+- `{"done": true}` confirms that the check finished, including when it found
+  no objects. This object must contain only `done`, with the value `true`.
+  It may appear anywhere in the output and may be repeated.
 - `unverified`: optional, `true` when state cannot confirm where the object
   lives (Vault state does not record the Vault address, so a policy `ci`
   in state of another Vault would match). Such objects match only as
   uncertain (an error with `-strict`) unless `-plugin-cluster-states`
   states that every state given belongs to the cluster the plugins scan.
+
+A command that exits successfully without resources, `error` lines or
+`done` leaves a coverage gap: `summary.failed_sources` records `pluginN`,
+`complete` and `discovery_complete` are false, and the run exits 1 with or
+without `-strict`. Blank lines do not count as output. Resources
+without `done` remain valid, and `error` lines without `done` remain
+warnings. This check uses the raw output, before type filtering.
 
 `-types` and `-exclude-types` narrow plugin results and the results of your
 own list blocks too.

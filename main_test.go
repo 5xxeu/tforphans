@@ -76,7 +76,7 @@ func TestMaxStateSizeCallSites(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-no-config", "-max-state-size", "1", "-state", path, "-no-query", "-plugin", "true"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"-no-config", "-max-state-size", "1", "-state", path, "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`}, &stdout, &stderr)
 	if code != exitError || !strings.Contains(stderr.String(), "state is larger than 1 bytes; raise -max-state-size") {
 		t.Errorf("extra state: exit %d, %s", code, &stderr)
 	}
@@ -307,7 +307,7 @@ func TestMaxRoots(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, d, "main.tf"), []byte("terraform {\n  backend \"s3\" {}\n}\n"), 0o644)
 	}
 	var stderr bytes.Buffer
-	code := run(context.Background(), []string{"-no-query", "-plugin", "true", "-state-roots", dir, "-max-roots", "2", "-terraform", "/nonexistent/terraform"}, io.Discard, &stderr)
+	code := run(context.Background(), []string{"-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-state-roots", dir, "-max-roots", "2", "-terraform", "/nonexistent/terraform"}, io.Discard, &stderr)
 	if code != exitError || !strings.Contains(stderr.String(), "more than -max-roots 2") {
 		t.Errorf("exit %d\n%s", code, stderr.String())
 	}
@@ -355,7 +355,7 @@ func TestTerragruntUnitAsRoot(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "app"), 0o755)
 	os.WriteFile(filepath.Join(dir, "app", "terragrunt.hcl"), []byte("terraform {\n  source = \"../m\"\n}\n"), 0o644)
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-no-query", "-plugin", "true", "-state-roots", dir, "-terragrunt", filepath.Join(dir, "app")}, &stdout, &stderr)
+	code := run(context.Background(), []string{"-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-state-roots", dir, "-terragrunt", filepath.Join(dir, "app")}, &stdout, &stderr)
 	if code != exitError || !strings.Contains(stderr.String(), "is a Terragrunt unit") {
 		t.Errorf("exit %d\n%s", code, stderr.String())
 	}
@@ -378,7 +378,7 @@ func TestTerragruntUnitOverride(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "app", "db", "terragrunt.hcl"), []byte("include \"app\" {\n  path = \"../terragrunt.hcl\"\n}\n"), 0o644)
 	tool := func(args ...string) (int, string) {
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), append([]string{"-no-query", "-plugin", "true", "-state-roots", dir, "-terragrunt"}, args...), &stdout, &stderr)
+		code := run(context.Background(), append([]string{"-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-state-roots", dir, "-terragrunt"}, args...), &stdout, &stderr)
 		return code, stderr.String()
 	}
 	if code, stderr := tool(); code != exitOK || !strings.Contains(stderr, "1 states read") || !strings.Contains(stderr, "note: 1 terragrunt.hcl taken for shared configuration") || !strings.Contains(stderr, filepath.Join(dir, "app")+" (by ") {
@@ -1047,6 +1047,54 @@ func TestCoverageInputs(t *testing.T) {
 			}
 			if c.ignored == 0 && sum.Skipped[0].Excluded {
 				t.Error("skip excluded without -strict-ignore")
+			}
+		})
+	}
+}
+
+func TestPluginEmptyCoverage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	resource := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"ci"}}'`
+	for _, c := range []struct {
+		name, command string
+		args          []string
+		code          int
+		complete      bool
+		failed        bool
+	}{
+		{"empty", "true", nil, exitError, false, true},
+		{"empty strict", "true", []string{"-strict"}, exitError, false, true},
+		{"blank", "printf ' \\n\\n'", nil, exitError, false, true},
+		{"done", `printf '%s\n' '{"done":true}'`, nil, exitOK, true, false},
+		{"done strict", `printf '%s\n' '{"done":true}'`, []string{"-strict"}, exitOK, true, false},
+		{"resource", resource, []string{"-strict"}, exitOrphans, true, false},
+		{"filtered resource", resource, []string{"-strict", "-types", "vault_mount"}, exitOK, true, false},
+		{"warning", `printf '%s\n' '{"error":"denied"}'`, []string{"-strict"}, exitError, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := append([]string{"-no-config", "-no-query", "-format", "json", "-plugin", c.command}, c.args...)
+			var stdout, stderr bytes.Buffer
+			if code := run(context.Background(), args, &stdout, &stderr); code != c.code {
+				t.Fatalf("exit %d, want %d: %s", code, c.code, &stderr)
+			}
+			var out struct {
+				Summary report.Summary `json:"summary"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+				t.Fatalf("%v: %s", err, &stdout)
+			}
+			if out.Summary.Complete != c.complete || out.Summary.DiscoveryComplete != c.complete {
+				t.Errorf("coverage: %s", &stdout)
+			}
+			if c.failed {
+				if len(out.Summary.FailedSources) != 1 || out.Summary.FailedSources[0].Source != "plugin1" ||
+					!strings.Contains(out.Summary.FailedSources[0].Error, `print {"done": true}`) {
+					t.Errorf("failed sources: %+v", out.Summary.FailedSources)
+				}
+			} else if len(out.Summary.FailedSources) != 0 {
+				t.Errorf("failed sources: %+v", out.Summary.FailedSources)
 			}
 		})
 	}

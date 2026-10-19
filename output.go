@@ -132,7 +132,7 @@ func printScopes(w io.Writer, live []model.Resource) {
 // query or data source scan listed a type, and no plugin ran. To a CI job exit 0 would mean that
 // nothing is unmanaged.
 func nothingChecked(o *options, s report.Summary) bool {
-	// A plugin is a check of its own.
+	// Empty plugin answers without done are recorded as failed sources.
 	return s.Ran == 0 && len(o.plugins) == 0 && !o.printQuery
 }
 

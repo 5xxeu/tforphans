@@ -272,7 +272,7 @@ esac
 				args = append(args, filepath.Join(dir, c.failedRoot))
 			}
 			if c.noQuery {
-				args = append(args, "-no-query", "-plugin", "true")
+				args = append(args, "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`)
 			}
 			old := []model.Resource{{Type: "foo_thing", Identity: map[string]any{"id": "gone"}, ProviderSource: "hashicorp/foo", Source: good, ListAddress: evidence[0].Address}}
 			if c.failedRoot != "" {
@@ -340,7 +340,7 @@ func TestBaselineVerboseUnverified(t *testing.T) {
 	path := filepath.Join(dir, "baseline.json")
 	saveReportTest(t, path, rs, report.Summary{})
 	for _, verbose := range []bool{false, true} {
-		args := []string{"-no-config", "-no-query", "-plugin", "true", "-baseline", path}
+		args := []string{"-no-config", "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-baseline", path}
 		if verbose {
 			args = append(args, "-v")
 		}
@@ -367,7 +367,7 @@ func TestSplitCompleteness(t *testing.T) {
 		{"unread state", []string{"-terraform", "/nonexistent/terraform", root}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			args := append([]string{"-no-config", "-no-query", "-plugin", "true", "-format", "json"}, c.args...)
+			args := append([]string{"-no-config", "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-format", "json"}, c.args...)
 			code, stdout, stderr := runReportTest(t, args...)
 			if code != exitOK {
 				t.Fatalf("exit %d: %s", code, stderr)
