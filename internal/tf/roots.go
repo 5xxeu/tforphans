@@ -863,13 +863,23 @@ func TerragruntKind(dir string) (int, error) {
 // which renders the backend and runs terraform (init included: it fetches
 // the module and providers into .terragrunt-cache). tfBin is the terraform
 // it runs, through tforphans itself, so that terragrunt's inits take turns
-// with all others (see initTurn).
+// with all others (see initTurn and wrapTerragrunt).
 func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string, maxSize int64) ([]byte, error) {
-	wrap, done, err := wrapperEnv(ctx, tfBin)
-	if err != nil {
-		return nil, err
+	wrap := []string{"TG_TF_PATH=" + tfBin, "TERRAGRUNT_TFPATH=" + tfBin}
+	if wrapTerragrunt {
+		var done func()
+		var err error
+		if wrap, done, err = wrapperEnv(ctx, tfBin); err != nil {
+			return nil, err
+		}
+		defer done()
+	} else {
+		unlock, err := lockInit(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
 	}
-	defer done()
 	r := Runner{Bin: bin, Dir: dir, Env: append([]string{
 		// Current and older names of the same settings.
 		"TG_NON_INTERACTIVE=true", "TERRAGRUNT_NON_INTERACTIVE=true",

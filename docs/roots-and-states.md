@@ -100,7 +100,8 @@ at a time, together with the inits of `-init` (a shared plugin cache is not
 safe for concurrent installs): tforphans gives itself to terragrunt as its
 terraform (`TG_TF_PATH`), runs the terraform of `-terraform` for it, and
 waits for the turn before `init`. Time spent waiting for that turn does not
-count against `-source-timeout`. Terragrunt
+count against `-source-timeout`. On Windows, where a cancel cannot stop
+the processes terragrunt starts, units are read one at a time. Terragrunt
 also evaluates the units' HCL, which can run commands (`run_cmd`, hooks):
 the flag is opt-in and accepted only on the command line, like `-plugin`. It runs the terraform of
 `-terraform`. A `terragrunt.hcl` that cannot be read or parsed is an
