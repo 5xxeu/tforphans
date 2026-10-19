@@ -441,6 +441,7 @@ type UserList struct {
 	Configuration string
 	// Static means expressions outside provider depend only on literals,
 	// each.key, count.index, or each.value with a reference-free for_each.
+	// Function calls are excluded, including in for_each.
 	// Other dependencies can change the listing scope without changing its text.
 	Static bool
 	// Provider is the source text of the provider argument, such as "aws"
@@ -494,16 +495,32 @@ func UserLists(dir string) (map[string]UserList, error) {
 	return out, nil
 }
 
+// staticUserList rejects function calls and references outside the instance key
+// or a value from a reference-free, function-free for_each. The provider argument
+// is checked separately when reading identity.
 func staticUserList(body *hclsyntax.Body) bool {
+	hasCalls := func(expr hclsyntax.Expression) bool {
+		found := false
+		hclsyntax.VisitAll(expr, func(node hclsyntax.Node) hcl.Diagnostics {
+			if _, ok := node.(*hclsyntax.FunctionCallExpr); ok {
+				found = true
+			}
+			return nil
+		})
+		return found
+	}
 	forEachStatic := false
 	if attr := body.Attributes["for_each"]; attr != nil {
-		forEachStatic = len(attr.Expr.Variables()) == 0
+		forEachStatic = len(attr.Expr.Variables()) == 0 && !hasCalls(attr.Expr)
 	}
 	var staticBody func(*hclsyntax.Body, bool) bool
 	staticBody = func(body *hclsyntax.Body, top bool) bool {
 		for name, attr := range body.Attributes {
 			if top && name == "provider" {
 				continue
+			}
+			if hasCalls(attr.Expr) {
+				return false
 			}
 			for _, ref := range attr.Expr.Variables() {
 				if len(ref) < 2 {
