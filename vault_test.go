@@ -99,3 +99,68 @@ func TestVaultPlugin(t *testing.T) {
 		}
 	}
 }
+
+func TestVaultPluginDependencies(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not in PATH")
+	}
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not in PATH")
+	}
+	utilities := make(map[string]string)
+	for _, name := range []string{"mktemp", "cat", "rm"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		utilities[name] = path
+	}
+	for _, c := range []struct {
+		name, jq, mode, message string
+		vault                   bool
+	}{
+		{"missing jq", "", "", "jq not found in PATH", true},
+		{"missing vault", "#!/bin/sh\nexit 0\n", "", "vault not found in PATH", false},
+		{"broken jq", "#!/bin/sh\nexit 126\n", "", "", true},
+		{"resource failure", "#!/bin/sh\nif [ \"$1\" = -nc ] && [ \"$3\" = t ]; then exit 126; fi\nexec \"$VAULT_TEST_JQ\" \"$@\"\n", "", "", true},
+		{"warning failure", "#!/bin/sh\nif [ \"$1\" = -nc ] && [ \"$3\" = e ]; then exit 126; fi\nexec \"$VAULT_TEST_JQ\" \"$@\"\n", "denied", "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, path := range utilities {
+				if err := os.Symlink(path, filepath.Join(dir, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.vault {
+				if err := os.WriteFile(filepath.Join(dir, "vault"), []byte(fakeVault), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.jq != "" {
+				if err := os.WriteFile(filepath.Join(dir, "jq"), []byte(c.jq), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", dir)
+			t.Setenv("VAULT_MODE", c.mode)
+			t.Setenv("VAULT_TEST_JQ", jq)
+			var out, errb bytes.Buffer
+			cmd := exec.Command(sh, "examples/plugins/vault.sh")
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			if err := cmd.Run(); err == nil {
+				t.Fatalf("successful exit: %s", &out)
+			} else if _, ok := err.(*exec.ExitError); !ok {
+				t.Fatal(err)
+			}
+			if bytes.Contains(out.Bytes(), []byte(`"done"`)) {
+				t.Errorf("done after failure: %s", &out)
+			}
+			if c.message != "" && (out.Len() != 0 || !bytes.Contains(errb.Bytes(), []byte(c.message))) {
+				t.Errorf("stdout: %s\nstderr: %s", &out, &errb)
+			}
+		})
+	}
+}

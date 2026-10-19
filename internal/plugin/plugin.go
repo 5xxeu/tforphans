@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/proc"
@@ -36,7 +37,8 @@ import (
 
 type line struct {
 	model.Resource
-	Error string `json:"error"`
+	Error string          `json:"error"`
+	Done  json.RawMessage `json:"done"`
 	// Unverified says that state cannot confirm the object's cluster or
 	// account (Vault state does not record the Vault address).
 	Unverified bool `json:"unverified"`
@@ -127,10 +129,19 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, bool,
 		if len(b) == 0 {
 			continue
 		}
-		if bytes.Contains(b, []byte(`"done"`)) {
+		var l line
+		if err := model.DecodeJSON(b, &l); err != nil {
+			return nil, nil, false, fmt.Errorf("%s line %d: %w", source, n, err)
+		}
+		if l.Done != nil || bytes.ContainsRune(b, '\\') {
 			var fields map[string]json.RawMessage
 			if err := model.DecodeJSON(b, &fields); err != nil {
 				return nil, nil, false, fmt.Errorf("%s line %d: %w", source, n, err)
+			}
+			for key := range fields {
+				if key != "done" && strings.EqualFold(key, "done") {
+					return nil, nil, false, fmt.Errorf(`%s line %d: "done" must be lowercase`, source, n)
+				}
 			}
 			if value, ok := fields["done"]; ok {
 				if len(fields) != 1 || !bytes.Equal(value, []byte("true")) {
@@ -139,10 +150,6 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, bool,
 				done = true
 				continue
 			}
-		}
-		var l line
-		if err := model.DecodeJSON(b, &l); err != nil {
-			return nil, nil, false, fmt.Errorf("%s line %d: %w", source, n, err)
 		}
 		if len(res)+len(warns) >= maxResources {
 			return nil, nil, false, fmt.Errorf("%s: output exceeds %d resource limit", source, maxResources)
