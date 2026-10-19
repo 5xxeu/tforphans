@@ -6,11 +6,14 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 // TestMain lets tests run the real main, with its signal handling and exit
 // codes, as a child process of this test binary.
 func TestMain(m *testing.M) {
+	tf.RunWrapper()
 	if os.Getenv("TFORPHANS_TEST_MAIN") == "1" {
 		main()
 	}

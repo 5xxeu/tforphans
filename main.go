@@ -209,9 +209,12 @@ func buildVersion() string {
 }
 
 func main() {
+	// Started by terragrunt as its terraform (see tf.TerragruntStatePull).
+	tf.RunWrapper()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
+	tf.CloseTurns()
 	os.Exit(code)
 }
 
@@ -1211,7 +1214,8 @@ func withSource[T any](ctx context.Context, o *options, f func(context.Context) 
 	if o.sourceTimeout <= 0 {
 		return f(ctx)
 	}
-	srcCtx, cancel := context.WithTimeout(ctx, o.sourceTimeout)
+	// Waiting for the turn to run terraform init does not count.
+	srcCtx, cancel := tf.WithBudget(ctx, o.sourceTimeout)
 	defer cancel()
 	v, err := f(srcCtx)
 	// Also when f returned no error: work after its last command may not

@@ -95,9 +95,16 @@ with 1.1.6), which renders the backend the unit's configuration describes,
 so remote state blocks, `generate` and includes all work. Terragrunt
 initializes a unit before reading it: it fetches the module source and
 providers into `.terragrunt-cache` next to `terragrunt.hcl`, as any
-terragrunt command does. Terragrunt also evaluates the units' HCL, which
-can run commands (`run_cmd`, hooks): the flag is opt-in and accepted only
-on the command line, like `-plugin`. It runs the terraform of
+terragrunt command does. Units are read in parallel, but their inits run one
+at a time, together with the inits of `-init` (a shared plugin cache is not
+safe for concurrent installs): tforphans gives itself to terragrunt as its
+terraform (`TG_TF_PATH`), runs the terraform of `-terraform` for it, and
+waits for the turn before `init`. Time spent waiting for that turn does not
+count against `-source-timeout`. On Windows, where a cancel cannot stop
+the processes terragrunt starts, units are read one at a time, and once a
+unit is stopped (`-source-timeout`), no further init runs in that run. Terragrunt
+also evaluates the units' HCL, which can run commands (`run_cmd`, hooks):
+the flag is opt-in and accepted only on the command line, like `-plugin`. It runs the terraform of
 `-terraform`. A `terragrunt.hcl` that cannot be read or parsed is an
 unread state (coverage incomplete, `adopt` refuses), not a missing unit. A
 unit cannot be a root argument as well: terraform query would read the
