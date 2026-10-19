@@ -702,7 +702,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	for i, p := range o.plugins {
 		var warns []error
 		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
-			found, w, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
+			found, w, done, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
+			if err == nil && len(found) == 0 && len(w) == 0 && !done {
+				err = errors.New(`printed nothing: an empty answer cannot be told from a check that did not run; print {"done": true} when the check finished`)
+			}
 			warns = w
 			return found, err
 		})

@@ -1018,15 +1018,15 @@ func TestIntegrationTerragrunt(t *testing.T) {
 		t.Fatalf("terragrunt apply: %v\n%s", err, tail(string(out)))
 	}
 	// -strict: nothing unread, coverage complete; adopt writes.
-	code, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live, "-terragrunt", "-strict")
+	code, _, stderr := runTool("-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-state-roots", live, "-terragrunt", "-strict")
 	if code != exitOK || !strings.Contains(stderr, "1 states read") || strings.Contains(stderr, "not read") {
 		t.Errorf("exit %d\n%s", code, stderr)
 	}
-	if code, _, stderr := runTool("adopt", "-no-query", "-plugin", "true", "-state-roots", live, "-terragrunt"); code != exitOK || strings.Contains(stderr, "not writing") {
+	if code, _, stderr := runTool("adopt", "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-state-roots", live, "-terragrunt"); code != exitOK || strings.Contains(stderr, "not writing") {
 		t.Errorf("adopt: exit %d\n%s", code, stderr)
 	}
 	// Without -terragrunt the unit is no root: nothing to read.
-	if _, _, stderr := runTool("-no-query", "-plugin", "true", "-state-roots", live); !strings.Contains(stderr, "0 states read") {
+	if _, _, stderr := runTool("-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-state-roots", live); !strings.Contains(stderr, "0 states read") {
 		t.Errorf("without -terragrunt:\n%s", stderr)
 	}
 }

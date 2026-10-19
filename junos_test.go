@@ -77,3 +77,30 @@ func TestJunosPlugin(t *testing.T) {
 		t.Errorf("types %v", types)
 	}
 }
+
+func TestJunosPluginEmptyConfiguration(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not in PATH")
+	}
+	conf := filepath.Join(t.TempDir(), "conf.json")
+	if err := os.WriteFile(conf, []byte(`{"configuration":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "python3 examples/plugins/junos.py '" + conf + "'", "-strict", "-format", "json"}, &out, &errb)
+	if code != exitOK {
+		t.Fatalf("exit %d: %s", code, &errb)
+	}
+	var rep struct {
+		Summary struct {
+			Complete          bool `json:"complete"`
+			DiscoveryComplete bool `json:"discovery_complete"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("%v: %s", err, &out)
+	}
+	if !rep.Summary.Complete || !rep.Summary.DiscoveryComplete {
+		t.Errorf("coverage: %s", &out)
+	}
+}

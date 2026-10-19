@@ -27,7 +27,7 @@ func FuzzImportHCL(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		found, _, err := plugin.Parse(data, "plugin1")
+		found, _, _, err := plugin.Parse(data, "plugin1")
 		if err != nil {
 			return
 		}

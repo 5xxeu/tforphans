@@ -19,7 +19,8 @@ format it does not know; new fields do not change it.
   `states_complete`, `discovery_complete`, `unread_states`
   (`[{root, error}]`), `failed_sources` (`[{source, error}]`: a root,
   `-scan NAME` or `pluginN` that failed as a whole; the run exits 1 and
-  its `listings` are marked incomplete),
+  its `listings` are marked incomplete; this includes a plugin that
+  prints no resources, `error` lines or `{"done": true}`),
   `failed_queries` (`address`, `type`, `scope`,
   `root`, `category`, `message`), `skipped_types` (`type`, `reason`,
   `root`, `excluded`: left out on purpose or without any listing),

@@ -12,7 +12,14 @@
 #
 # Names come from Vault and are treated as data: every JSON line is built by
 # jq from --arg values, never by the shell or sed.
-set -u
+set -eu
+
+for dependency in jq vault; do
+	if ! command -v "$dependency" >/dev/null 2>&1; then
+		printf '%s\n' "vault plugin: $dependency not found in PATH" >&2
+		exit 127
+	fi
+done
 
 # vault stderr goes to a file of its own: mixed into stdout, a warning would
 # make the JSON unreadable.
@@ -102,3 +109,5 @@ if out=$(vault policy list -format=json 2>"$err"); then
 else
 	fail "list policies: $(cat "$err")"
 fi
+
+printf '%s\n' '{"done": true}'

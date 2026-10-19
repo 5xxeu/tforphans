@@ -121,7 +121,7 @@ func TestOwnershipPartialIdentitySummaryCount(t *testing.T) {
 		if reverse {
 			slices.Reverse(paths)
 		}
-		args := []string{"-no-config", "-no-query", "-plugin", "true", "-format", "json"}
+		args := []string{"-no-config", "-no-query", "-plugin", `printf '%s\n' '{"done":true}'`, "-format", "json"}
 		for _, path := range paths {
 			args = append(args, "-state", path)
 		}
