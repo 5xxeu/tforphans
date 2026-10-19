@@ -501,7 +501,8 @@ func UserLists(dir string) (map[string]UserList, error) {
 func staticUserList(body *hclsyntax.Body) bool {
 	hasCalls := func(expr hclsyntax.Expression) bool {
 		found := false
-		hclsyntax.VisitAll(expr, func(node hclsyntax.Node) hcl.Diagnostics {
+		// No diagnostics: the callback always returns nil.
+		_ = hclsyntax.VisitAll(expr, func(node hclsyntax.Node) hcl.Diagnostics {
 			if _, ok := node.(*hclsyntax.FunctionCallExpr); ok {
 				found = true
 			}
