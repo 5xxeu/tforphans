@@ -361,7 +361,8 @@ func resolvePath(p string) string {
 	}
 }
 
-// initMu serializes terraform init: roots are read in parallel, and
+// initMu serializes terraform init (and terragrunt's own init of a new
+// unit, see TerragruntStatePull): roots are read in parallel, and
 // terraform does not promise that a shared plugin cache (TF_PLUGIN_CACHE_DIR
 // or plugin_cache_dir in the CLI config) survives concurrent installs.
 var initMu sync.Mutex
@@ -865,8 +866,14 @@ func TerragruntKind(dir string) (int, error) {
 // TerragruntStatePull reads the state of a Terragrunt unit with terragrunt,
 // which renders the backend and runs terraform (init included: it fetches
 // the module and providers into .terragrunt-cache). tfBin is the terraform
-// it runs.
+// it runs. A unit without .terragrunt-cache is initialized first, so its
+// pull waits for initMu like Init; a cache elsewhere (download_dir,
+// TG_DOWNLOAD_DIR) is not looked for, and such a unit always waits.
 func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string, maxSize int64) ([]byte, error) {
+	if _, err := os.Stat(filepath.Join(dir, ".terragrunt-cache")); err != nil {
+		initMu.Lock()
+		defer initMu.Unlock()
+	}
 	r := Runner{Bin: bin, Dir: dir, Env: []string{
 		// Current and older names of the same settings.
 		"TG_NON_INTERACTIVE=true", "TERRAGRUNT_NON_INTERACTIVE=true",
