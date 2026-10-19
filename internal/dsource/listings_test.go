@@ -1,6 +1,7 @@
 package dsource
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/tf"
@@ -26,5 +27,39 @@ func TestScanListingInstances(t *testing.T) {
 	got = scanListings(a, nil, []block{b}, nil, failed, nil)
 	if len(got) != 0 {
 		t.Fatalf("unstarted child listing recorded: %+v", got)
+	}
+}
+
+func TestScanListingScopes(t *testing.T) {
+	a := Adapter{Name: "test", Provider: "hashicorp/foo"}
+	for _, c := range []struct {
+		name, key string
+		scope     *Scope
+		split     *split
+		want      string
+	}{
+		{name: "parent", key: "Z1", scope: &Scope{Arg: "zone_id"}, want: "Z1"},
+		{name: "split", key: "Z1/A", scope: &Scope{Arg: "zone_id"}, split: &split{attr: "type"}, want: "Z1"},
+		{name: "no parent", key: ""},
+		{name: "empty key", scope: &Scope{Arg: "zone_id"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := block{dsType: "foo_things", label: "all", scope: c.scope, split: c.split, listings: []listing{{resourceType: "foo_thing"}}}
+			got := scanListings(a, []block{b}, []block{b}, map[string][]string{b.addr(): {c.key}}, nil, nil)
+			if len(got) != 1 {
+				t.Fatal(got)
+			}
+			if c.want == "" {
+				if got[0].Scope != nil {
+					t.Fatal(got)
+				}
+			} else if got[0].Scope["zone_id"] != c.want {
+				t.Fatal(got)
+			}
+			failed := scanListings(a, nil, []block{b}, nil, []tf.Failure{{Address: got[0].Address, Type: "foo_thing"}}, nil)
+			if len(failed) != 1 || !reflect.DeepEqual(got[0].Scope, failed[0].Scope) {
+				t.Fatal(failed)
+			}
+		})
 	}
 }

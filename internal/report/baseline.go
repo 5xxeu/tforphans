@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"regexp"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -103,7 +104,7 @@ type seenKey struct {
 }
 
 // seenAs finds r among the objects seen this run. Only the listing that
-// found r, run again unchanged (same source, address and fingerprint),
+// found r, run again unchanged (same source, address, fingerprint and scope),
 // can say what became of it: equal keys from another root, plugin or
 // changed block may be another object (another Vault, another project),
 // as for resolution. Plugins never qualify. Several matches with a
@@ -117,7 +118,7 @@ func seenAs(r model.Resource, seen map[seenKey][]Seen, old, current map[[2]strin
 	listing := [2]string{r.Source, r.ListAddress}
 	before, ok1 := old[listing]
 	now, ok2 := current[listing]
-	if !ok1 || !ok2 || before.Fingerprint == "" || before.Fingerprint != now.Fingerprint {
+	if !ok1 || !ok2 || before.Fingerprint == "" || before.Fingerprint != now.Fingerprint || before.Scope == nil || now.Scope == nil || !maps.Equal(before.Scope, now.Scope) {
 		return Seen{}, false
 	}
 	rank := map[string]int{BecameUnsure: 0, "managed": 1, BecameIgnored: 2}
@@ -332,6 +333,12 @@ func missingReason(r model.Resource, old, current map[[2]string]Listing) string 
 	}
 	if now.Fingerprint != before.Fingerprint {
 		return "listing configuration changed"
+	}
+	if before.Scope == nil || now.Scope == nil {
+		return "listing scope not confirmed"
+	}
+	if !maps.Equal(before.Scope, now.Scope) {
+		return "listing scope changed"
 	}
 	return ""
 }

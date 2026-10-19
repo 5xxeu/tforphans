@@ -92,14 +92,14 @@ func TestUserListingEvidence(t *testing.T) {
 		name, config, address, reason string
 		failed, extraFailed, complete bool
 	}{
-		{name: "unchanged complete", complete: true},
+		{name: "unchanged complete", reason: "listing scope not confirmed", complete: true},
 		{name: "narrow zone still returns known object", config: "zone = \"Z1\"", reason: "listing configuration changed", complete: true},
 		{name: "changed block whitespace", config: "zone  = \"auto\"", reason: "listing configuration changed", complete: true},
 		{name: "provider alias changed", config: "zone = \"auto\"", reason: "listing configuration changed", complete: true},
 		{name: "for_each key removed", address: `list.foo_thing.tfo_custom["Z1"]`, reason: "not listed this run", complete: true},
 		{name: "no instance started", address: "empty", reason: "not listed this run"},
 		{name: "strict ignored instance failure", failed: true, reason: "listing incomplete"},
-		{name: "other instance failed", extraFailed: true},
+		{name: "other instance failed", reason: "listing scope not confirmed", extraFailed: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir, bin := queryListingSetup(t)

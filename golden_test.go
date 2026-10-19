@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/5xxeu/tforphans/internal/report"
 	"maps"
 	"os"
 	"path/filepath"
@@ -146,7 +147,7 @@ func jsonKeys(v any, keys []string) []string {
 				keys = append(keys, k)
 			}
 			switch k {
-			case "identity", "attributes", "by_type", "by_scope":
+			case "identity", "attributes", "by_type", "by_scope", "scope":
 				continue
 			}
 			keys = jsonKeys(e, keys)
@@ -157,4 +158,43 @@ func jsonKeys(v any, keys []string) []string {
 		}
 	}
 	return keys
+}
+
+func TestGoldenListingJSON(t *testing.T) {
+	s := report.Summary{}
+	s.AddListing(report.Listing{Source: "infra", Address: "list.aws_instance.all", Provider: "hashicorp/aws", Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": "123456789012", "region": "eu-north-1"}, Fingerprint: report.ListingFingerprint("block", "", "aws", "", "default")})
+	s.AddListing(report.Listing{Source: "-scan cloudflare", Address: `data.cloudflare_dns_records.by_zone_id["zone-id"]`, Provider: "cloudflare/cloudflare", Type: "cloudflare_dns_record", Complete: true, Scope: map[string]string{"zone_id": "zone-id"}, Fingerprint: report.ListingFingerprint("block", "zone-id", "cloudflare", "cloudflare", "")})
+	s.AddListing(report.Listing{Source: "-scan proxmox", Address: "data.proxmox_virtual_environment_vms.all", Provider: "bpg/proxmox", Type: "proxmox_virtual_environment_vm", Complete: true, Fingerprint: report.ListingFingerprint("block", "", "proxmox", "proxmox", "")})
+	s.SortListings()
+	data, err := json.MarshalIndent(s.Listings, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	path := filepath.Join("testdata", "golden", "listings.json")
+	if os.Getenv("TFORPHANS_UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatalf("listings differ from %s (TFORPHANS_UPDATE_GOLDEN=1 rewrites it):\n%s", path, data)
+	}
+	docs, err := os.ReadFile(filepath.Join("docs", "json.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range jsonKeys(doc, nil) {
+		if !bytes.Contains(docs, []byte("`"+key+"`")) {
+			t.Errorf("key %q is not described in docs/json.md", key)
+		}
+	}
 }

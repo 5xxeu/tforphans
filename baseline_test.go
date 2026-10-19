@@ -300,8 +300,8 @@ esac
 			s := doc.Summary
 			b := doc.Baseline
 			if !c.noQuery {
-				wantUnverified := len(old) - 1
-				if b.Resolved != 1 || b.Unverified != wantUnverified || wantUnverified > 0 && b.UnverifiedFindings[0].Reason != "not listed this run" {
+				wantUnverified := len(old)
+				if b.Resolved != 0 || b.Unverified != wantUnverified || b.UnverifiedFindings[0].Reason != "listing scope not confirmed" {
 					t.Fatalf("same source evidence: %s", stdout)
 				}
 				// Saved evidence must make the same decision in diff.
@@ -314,7 +314,7 @@ esac
 				if err := json.Unmarshal([]byte(diffJSON), &d); err != nil {
 					t.Fatal(err)
 				}
-				if code != exitOK || len(d.Resolved) != 1 || len(d.Unverified) != wantUnverified {
+				if code != exitOK || len(d.Resolved) != 0 || len(d.Unverified) != wantUnverified {
 					t.Fatalf("saved same source evidence: %s%s", diffJSON, stderr)
 				}
 			}

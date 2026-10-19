@@ -150,14 +150,25 @@ same path restrictions as `ignore`.
 A previous finding that is absent now is resolved only when the same listing,
 unchanged as written, fully ran again and no longer returned the object.
 The listing's source, address including its instance key, compatible provider
-family and configuration fingerprint must match the baseline. Changing list
-blocks, `-arg` values in generated text or scan scopes makes missing findings
+family, configuration fingerprint and confirmed scope must match the baseline.
+Changing list blocks, `-arg` values in generated text or scan scopes makes missing findings
 not verified. Running from another directory changes root names, so findings
 show as not verified.
 
-The fingerprint does not detect changes to values of variables, locals or
-data sources, or to the provider configuration body. Keep these consistent
-between the baseline and the current run.
+Query fingerprints include the selected workspace. Scope is confirmed from
+identity data sources for AWS (account and region), Google including google-beta
+(project, region and zone), and AzureRM (subscription and tenant). Each root
+that queried these providers runs an additional `terraform plan -refresh=false`
+with `-target` for identity data sources, even without `-baseline`. No state
+is applied. Cloudflare `-scan` listings confirm scope using their globally
+unique parent account or zone ID. Other listings, including Proxmox scans,
+plugins and scan blocks without a parent scope, leave missing findings
+unverified. A failed identity read also leaves them unverified and adds a note.
+
+Older reports without scope leave missing findings unverified once when used
+as a baseline. Save a new report to establish confirmed scope. Fingerprints
+do not include evaluated variables, locals, data sources or provider bodies;
+changes outside the confirmed identity still require care between runs.
 
 Name the environment when one repository checks several (the same roots
 with other credentials or workspaces):

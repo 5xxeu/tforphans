@@ -204,6 +204,24 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 		return source
 	}
+	var identityConfigs []tf.IdentityConfig
+	for _, q := range res.Queried {
+		identityConfigs = append(identityConfigs, tf.IdentityConfig{Ref: providerOf(q.Address, q.Type), Source: providerSource(q.Address, q.Type)})
+	}
+	scopes, failed, err := r.Identities(ctx, plan, identityConfigs)
+	if err != nil {
+		return nil, queryError{err}
+	}
+	refs := make([]string, 0, len(failed))
+	for ref := range failed {
+		refs = append(refs, ref)
+	}
+	slices.Sort(refs)
+	for _, ref := range refs {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%s: could not read where provider configuration %s looks (%s); missing findings of its listings stay unverified with -baseline", root, ref, tf.OneLine(failed[ref].Error(), 300)))
+	}
+	workspace := tf.SelectedWorkspace(root)
+
 	// Only failures of this instance or its block count against it.
 	finished := map[string]bool{}
 	for _, d := range res.Done {
@@ -233,7 +251,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			}
 		}
 		sum.AddListing(report.Listing{Source: root, Address: q.Address, Provider: source, Type: q.Type,
-			Complete: complete, Fingerprint: report.ListingFingerprint(config, key, provider, "")})
+			Complete: complete, Scope: scopes[providerOf(q.Address, q.Type)], Fingerprint: report.ListingFingerprint(config, key, provider, "", workspace)})
 	}
 	sum.MergeProviders(schemas, queried)
 	// What finished counts, not what was planned: a block with

@@ -129,6 +129,16 @@ resource "fake_thing" "a" {
 // setup builds the fake provider, points Terraform at it and returns the
 // fake data directory and an empty root module directory.
 func setup(t *testing.T) (data, root string) {
+	saved, exists := tf.IdentitySources["example.com/fake/fake"]
+	tf.IdentitySources["example.com/fake/fake"] = []tf.IdentityRead{{DataSource: "fake_whoami", Attrs: map[string][]string{"account": {"account"}}}}
+	t.Cleanup(func() {
+		if exists {
+			tf.IdentitySources["example.com/fake/fake"] = saved
+		} else {
+			delete(tf.IdentitySources, "example.com/fake/fake")
+		}
+	})
+
 	t.Helper()
 	if _, err := exec.LookPath("terraform"); err != nil {
 		t.Skip("terraform not in PATH")

@@ -17,13 +17,13 @@ func TestDiff(t *testing.T) {
 	old := Snapshot{
 		Orphans: []model.Resource{r("known", "a"), r("resolved", "a"), r("unverified", "b")},
 		Summary: Summary{Live: 4, Managed: 1, Uncertain: 2, Ignored: 3, Orphans: 3, States: 1, Queried: 2, Complete: true,
-			Listings: []Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "a"}, {Source: "infra", Address: "list.thing.b", Type: "thing", Complete: true, Fingerprint: "b"}},
+			Listings: []Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "a", Scope: map[string]string{"account": "a"}}, {Source: "infra", Address: "list.thing.b", Type: "thing", Complete: true, Fingerprint: "b", Scope: map[string]string{"account": "a"}}},
 			Coverage: []Coverage{{Type: "thing", Scope: "a", Status: Complete}, {Type: "thing", Scope: "b", Status: Complete}, {Type: "removed", Status: Skipped}}},
 	}
 	current := Snapshot{
 		Orphans: []model.Resource{r("known", "a"), r("added", "a")},
 		Summary: Summary{Live: 5, Managed: 1, Uncertain: 0, Ignored: 4, Orphans: 2, States: 2, Queried: 3,
-			Listings: []Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "a"}, {Source: "infra", Address: "list.thing.b", Type: "thing", Fingerprint: "b"}},
+			Listings: []Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "a", Scope: map[string]string{"account": "a"}}, {Source: "infra", Address: "list.thing.b", Type: "thing", Fingerprint: "b", Scope: map[string]string{"account": "a"}}},
 			Coverage: []Coverage{{Type: "thing", Scope: "a", Status: Complete}, {Type: "thing", Scope: "b", Status: Incomplete}, {Type: "introduced", Status: Complete}}},
 	}
 	d := CompareSnapshots(old, current)
@@ -69,7 +69,7 @@ func TestDiffTextLimits(t *testing.T) {
 	var old, current Snapshot
 	for i := range 10 {
 		typ := fmt.Sprintf("thing_%02d", i)
-		l := Listing{Source: "infra", Address: "list." + typ + ".all", Type: typ, Complete: true, Fingerprint: typ}
+		l := Listing{Source: "infra", Address: "list." + typ + ".all", Type: typ, Complete: true, Fingerprint: typ, Scope: map[string]string{"account": "a"}}
 		old.Summary.AddListing(l)
 		current.Summary.AddListing(l)
 		old.Orphans = append(old.Orphans, model.Resource{Type: typ, Identity: map[string]any{"id": "old"}, Source: l.Source, ListAddress: l.Address})

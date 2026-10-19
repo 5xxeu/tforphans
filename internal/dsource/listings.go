@@ -33,10 +33,14 @@ func scanListings(a Adapter, blocks, all []block, instances map[string][]string,
 			Instance string              `json:"instance"`
 			Scope    map[string][]string `json:"scope"`
 		}{key, scope})
+		var confirmed map[string]string
+		if b.scope != nil && key != "" {
+			confirmed = map[string]string{b.scope.Arg: b.scopeID(key)}
+		}
 		provider, _, _ := strings.Cut(b.dsType, "_")
 		out = append(out, report.Listing{Source: "-scan " + a.Name, Address: address,
-			Provider: a.Provider, Type: typ, Complete: complete,
-			Fingerprint: report.ListingFingerprint(text, string(scopeKey), provider, a.Name)})
+			Provider: a.Provider, Type: typ, Complete: complete, Scope: confirmed,
+			Fingerprint: report.ListingFingerprint(text, string(scopeKey), provider, a.Name, "")})
 	}
 	for _, b := range blocks {
 		for _, key := range instances[b.addr()] {

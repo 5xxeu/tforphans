@@ -70,6 +70,7 @@ func (p *fakeProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
+		func() datasource.DataSource { return &whoami{} },
 		func() datasource.DataSource { return &plural{kind: "zone"} },
 		func() datasource.DataSource { return &plural{kind: "record"} },
 	}
@@ -322,4 +323,20 @@ func (p *plural) Read(ctx context.Context, req datasource.ReadRequest, resp *dat
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("zone_id"), zone)...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("type"), typ)...)
 	}
+}
+
+type whoami struct{}
+
+func (*whoami) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_whoami"
+}
+func (*whoami) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = dsschema.Schema{Attributes: map[string]dsschema.Attribute{"account": dsschema.StringAttribute{Computed: true}}}
+}
+func (*whoami) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
+	account := os.Getenv("FAKE_ACCOUNT")
+	if account == "" {
+		account = "acct-1"
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("account"), account)...)
 }

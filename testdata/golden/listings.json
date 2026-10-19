@@ -1,0 +1,33 @@
+[
+  {
+    "source": "-scan cloudflare",
+    "address": "data.cloudflare_dns_records.by_zone_id[\"zone-id\"]",
+    "provider": "cloudflare/cloudflare",
+    "type": "cloudflare_dns_record",
+    "complete": true,
+    "fingerprint": "2b476e98bf4f01f710ed668cff74b718d000347c8d6c25bd4dea66ea82dc2811",
+    "scope": {
+      "zone_id": "zone-id"
+    }
+  },
+  {
+    "source": "-scan proxmox",
+    "address": "data.proxmox_virtual_environment_vms.all",
+    "provider": "bpg/proxmox",
+    "type": "proxmox_virtual_environment_vm",
+    "complete": true,
+    "fingerprint": "e39390cfba38527a8588d56e96237d1309c2deeb9646a5d1c9cc85f5bfedbea8"
+  },
+  {
+    "source": "infra",
+    "address": "list.aws_instance.all",
+    "provider": "hashicorp/aws",
+    "type": "aws_instance",
+    "complete": true,
+    "fingerprint": "ba82ffcefe6981406592dcbeec97ca566f874d6849b9e51fb57e57f3992f5038",
+    "scope": {
+      "account_id": "123456789012",
+      "region": "eu-north-1"
+    }
+  }
+]

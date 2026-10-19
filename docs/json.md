@@ -121,7 +121,8 @@ current findings. The extra object is:
 
 During a run, which sees every live object, a missing finding that the
 same listing returned again (same `source` and `list_address`, the same
-fingerprint in both reports; never for plugins) says what became of it in
+fingerprint and equal confirmed listing `scope` maps in both reports; never
+for plugins) says what became of it in
 `transition`: `became_managed`
 (resolved, with the `state_address` that manages it now), `ignored`
 (resolved, with the ignore `rule`) or `uncertain` (unverified, reason
@@ -147,7 +148,8 @@ participate. Without both identity and import ID, a current finding is always
 new and an old finding stays unverified (`identity and import_id missing`).
 A missing finding is resolved only when OLD has listing evidence matching its
 `source` and `list_address`, and NEW has the same listing address and source,
-a compatible provider family, `complete: true` and the same fingerprint.
+a compatible provider family, `complete: true`, the same fingerprint and equal
+confirmed listing `scope` maps.
 Coverage rows and scopes of returned objects do not decide resolution.
 Plugin findings whose source matches `plugin` followed by digits always stay
 unverified (`plugin results cannot be verified`). Other roots, including
@@ -158,8 +160,9 @@ as does OLD evidence without a fingerprint. No matching NEW listing gives
 `not listed this run`. An incompatible provider family gives
 `listed by another provider`, then an unfinished or failed listing gives
 `listing incomplete`, then a different fingerprint gives
-`listing configuration changed`. An empty provider is compatible with any
-provider family. Older reports without listing evidence cannot prove resolution.
+`listing configuration changed`, then an absent scope on either side gives
+`listing scope not confirmed`, then unequal scopes give `listing scope changed`.
+An empty provider is compatible with any provider family. Older reports without listing evidence cannot prove resolution.
 
 `tforphans diff -format json OLD.json NEW.json` uses the same rules and emits:
 
@@ -202,7 +205,8 @@ listing instance that actually started:
 ```json
 {"source": "infra", "address": "list.google_compute_instance.tfo_google_google_compute_instance[\"project=prod\"]",
  "provider": "hashicorp/google", "type": "google_compute_instance",
- "complete": true, "fingerprint": "<64 hex characters>"}
+ "complete": true, "fingerprint": "<64 hex characters>",
+ "scope": {"project": "prod", "region": "", "zone": ""}}
 ```
 
 - `source` matches the resource's `source`: its root name or `-scan NAME`.
@@ -215,10 +219,18 @@ listing instance that actually started:
 - `complete` means this instance finished without a failure counted against
   it. Failures suppressed by `-strict-ignore` still make it false. A failure
   on a whole block counts against its instances.
+- `scope` is an optional map of confirmed identity strings read during the run.
+  AWS records `account_id` and `region`, Google (including google-beta) records
+  `project`, `region` and `zone`, AzureRM records `subscription_id` and `tenant_id`.
+  Empty strings are valid. Cloudflare scans with a parent record its globally
+  unique `account_id` or `zone_id`. Other listings and failed identity reads omit
+  this field. Older reports without it leave missing findings unverified once.
 - `fingerprint` is the hex SHA-256 of canonical JSON containing the block's
   configuration as written, instance key and provider configuration reference
   (local name or alias). User `.tfquery.hcl` blocks use their exact source
   bytes from HCL ranges; generated blocks use their generated block text.
+  Query fingerprints also include the root's selected workspace, from
+  `TF_WORKSPACE`, the Terraform data directory's `environment` file, or `default`.
   Scan fingerprints also include the scan name, data source block text and
   scope key, including scan scope restrictions. Any `-arg` value included in
   generated text is therefore covered.

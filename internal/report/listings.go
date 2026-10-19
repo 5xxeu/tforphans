@@ -12,21 +12,26 @@ import (
 
 // Listing records one listing instance that actually started.
 type Listing struct {
-	Source      string `json:"source"`
-	Address     string `json:"address"`
-	Provider    string `json:"provider"`
-	Type        string `json:"type"`
-	Complete    bool   `json:"complete"`
-	Fingerprint string `json:"fingerprint"`
+	Source      string            `json:"source"`
+	Address     string            `json:"address"`
+	Provider    string            `json:"provider"`
+	Type        string            `json:"type"`
+	Complete    bool              `json:"complete"`
+	Fingerprint string            `json:"fingerprint"`
+	Scope       map[string]string `json:"scope,omitempty"`
 }
 
 // ListingFingerprint hashes the configuration as written, without evaluating
 // variables, locals, data sources or the provider configuration body.
-func ListingFingerprint(config, key, provider, scan string) string {
-	data, _ := json.Marshal(map[string]string{
+func ListingFingerprint(config, key, provider, scan, workspace string) string {
+	fields := map[string]string{
 		"configuration": config, "instance_key": key,
 		"provider": provider, "scan": scan,
-	})
+	}
+	if workspace != "" {
+		fields["workspace"] = workspace
+	}
+	data, _ := json.Marshal(fields)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

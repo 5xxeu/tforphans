@@ -87,11 +87,15 @@ func TestBaselineKeys(t *testing.T) {
 }
 
 func TestBaselineMissingListing(t *testing.T) {
-	base := Listing{Source: "infra", Address: `list.thing.all["Z2"]`, Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same"}
+	base := Listing{Source: "infra", Address: `list.thing.all["Z2"]`, Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same", Scope: map[string]string{"account": "a"}}
 	for _, c := range []struct {
 		name, reason string
 		change       func(*model.Resource, *Summary, *Summary)
 	}{
+		{"old scope unknown", "listing scope not confirmed", func(_ *model.Resource, old, _ *Summary) { old.Listings[0].Scope = nil }},
+		{"new scope unknown", "listing scope not confirmed", func(_ *model.Resource, _, now *Summary) { now.Listings[0].Scope = nil }},
+		{"both scopes unknown", "listing scope not confirmed", func(_ *model.Resource, old, now *Summary) { old.Listings[0].Scope = nil; now.Listings[0].Scope = nil }},
+		{"scope changed", "listing scope changed", func(_ *model.Resource, _, now *Summary) { now.Listings[0].Scope = map[string]string{"account": "b"} }},
 		{"same complete listing", "", func(_ *model.Resource, _, _ *Summary) {}},
 		{"missing finding address", "no listing evidence", func(r *model.Resource, _, _ *Summary) { r.ListAddress = "" }},
 		{"older baseline without listings", "no listing evidence", func(_ *model.Resource, old, _ *Summary) { old.Listings = nil }},
@@ -274,7 +278,7 @@ func BenchmarkBaseline(b *testing.B) {
 // TestBaselineEnvironment: a baseline of another environment (or one
 // without the label when this run has it) makes nothing known or resolved.
 func TestBaselineEnvironment(t *testing.T) {
-	l := Listing{Source: "infra", Address: "list.thing.all", Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same"}
+	l := Listing{Source: "infra", Address: "list.thing.all", Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same", Scope: map[string]string{"account": "a"}}
 	known := model.Resource{Type: "thing", Identity: map[string]any{"id": "known"}, Source: "infra", ListAddress: l.Address}
 	gone := model.Resource{Type: "thing", Identity: map[string]any{"id": "gone"}, Source: "infra", ListAddress: l.Address}
 	for _, c := range []struct {
@@ -309,7 +313,7 @@ func TestBaselineEnvironment(t *testing.T) {
 // TestBaselineTransitions: a missing finding that the run saw as something
 // else says what it became; one it did not see at all was no longer found.
 func TestBaselineTransitions(t *testing.T) {
-	l := Listing{Source: "infra", Address: "list.thing.all", Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same"}
+	l := Listing{Source: "infra", Address: "list.thing.all", Provider: "hashicorp/foo", Type: "thing", Complete: true, Fingerprint: "same", Scope: map[string]string{"account": "a"}}
 	gone := func(id string) model.Resource {
 		return model.Resource{Type: "thing", Identity: map[string]any{"id": id}, Source: "infra", ListAddress: l.Address, ProviderSource: "hashicorp/foo"}
 	}
@@ -364,7 +368,7 @@ func TestBaselineTransitionUnknownLocation(t *testing.T) {
 	if res.Resolved != 0 || res.Unverified != 1 || res.UnverifiedFindings[0].Transition != "" {
 		t.Errorf("another root's object resolved the finding: %+v", res)
 	}
-	l := Listing{Source: "root-a", Address: "list.x.a", Type: "google_compute_instance", Complete: true, Fingerprint: "f1"}
+	l := Listing{Source: "root-a", Address: "list.x.a", Type: "google_compute_instance", Complete: true, Fingerprint: "f1", Scope: map[string]string{"account": "a"}}
 	same := Summary{Listings: []Listing{l}}
 	_, res = CompareRun([]model.Resource{a}, nil, same, same, []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
 	if res.Resolved != 1 || res.ResolvedFindings[0].Transition != BecameIgnored {
@@ -374,8 +378,14 @@ func TestBaselineTransitionUnknownLocation(t *testing.T) {
 	// the same name says nothing about the old one.
 	changed := l
 	changed.Fingerprint = "f2"
+	unknownScope, changedScope := l, l
+	unknownScope.Scope = nil
+	changedScope.Scope = map[string]string{"account": "b"}
 	for name, sums := range map[string][2]Summary{
 		"changed listing":       {same, {Listings: []Listing{changed}}},
+		"old scope unknown":     {{Listings: []Listing{unknownScope}}, same},
+		"new scope unknown":     {same, {Listings: []Listing{unknownScope}}},
+		"scope changed":         {same, {Listings: []Listing{changedScope}}},
 		"no listing evidence":   {{}, {}},
 		"listing not run again": {same, {}},
 	} {
