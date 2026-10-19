@@ -88,8 +88,11 @@ reason, and `summary.skipped_types` in JSON.
 **Token.** The scan reads `CLOUDFLARE_API_TOKEN` (or the provider's other
 environment variables), never the root's provider block: that block can
 use files, variables and functions that only a plan of your configuration
-evaluates, and tforphans does not plan your configuration. If your
-configuration reads the token from a file, pass it the same way:
+evaluates. `-scan` does not plan the root's configuration and takes its token
+from the environment. Targeted identity plans run only for AWS, Google
+(including google-beta) and AzureRM query listings; they do not involve
+Cloudflare. If your configuration reads the token from a file, pass it the
+same way:
 
 ```sh
 CLOUDFLARE_API_TOKEN="$(jq -r .api_token ~/.cloudflare.json)" \

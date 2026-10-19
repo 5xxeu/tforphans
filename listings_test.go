@@ -13,6 +13,7 @@ import (
 	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 type listingReport struct {
@@ -92,14 +93,14 @@ func TestUserListingEvidence(t *testing.T) {
 		name, config, address, reason string
 		failed, extraFailed, complete bool
 	}{
-		{name: "unchanged complete", complete: true},
+		{name: "unchanged complete", reason: "listing scope not confirmed", complete: true},
 		{name: "narrow zone still returns known object", config: "zone = \"Z1\"", reason: "listing configuration changed", complete: true},
 		{name: "changed block whitespace", config: "zone  = \"auto\"", reason: "listing configuration changed", complete: true},
 		{name: "provider alias changed", config: "zone = \"auto\"", reason: "listing configuration changed", complete: true},
 		{name: "for_each key removed", address: `list.foo_thing.tfo_custom["Z1"]`, reason: "not listed this run", complete: true},
 		{name: "no instance started", address: "empty", reason: "not listed this run"},
 		{name: "strict ignored instance failure", failed: true, reason: "listing incomplete"},
-		{name: "other instance failed", extraFailed: true},
+		{name: "other instance failed", reason: "listing scope not confirmed", extraFailed: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir, bin := queryListingSetup(t)
@@ -313,4 +314,100 @@ func withoutTransitions(fs []report.Finding) []report.Finding {
 		out[i] = f
 	}
 	return out
+}
+
+func TestQueryListingScope(t *testing.T) {
+	for _, c := range []struct {
+		name                          string
+		user, optIn, dynamic, limited bool
+	}{
+		{name: "generated"},
+		{name: "user", user: true},
+		{name: "generated opt-in", optIn: true},
+		{name: "user opt-in", user: true, optIn: true},
+		{name: "user variable project", user: true, dynamic: true},
+		{name: "identity state limit", limited: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir, bin := queryListingSetup(t)
+			unverified := c.optIn || c.dynamic || c.limited
+			t.Setenv("FAKE_ACCOUNT", "acct-1")
+			savedSource, hadSource := tf.IdentitySources["hashicorp/foo"]
+			tf.IdentitySources["hashicorp/foo"] = []tf.IdentityRead{{DataSource: "foo_whoami", Attrs: map[string][]string{"account": {"account"}}}}
+			savedOptIn, hadOptIn := tf.OptIn["foo_thing"]
+			if c.optIn {
+				tf.OptIn["foo_thing"] = "lists everything the credentials can see"
+			}
+			t.Cleanup(func() {
+				if hadSource {
+					tf.IdentitySources["hashicorp/foo"] = savedSource
+				} else {
+					delete(tf.IdentitySources, "hashicorp/foo")
+				}
+				if hadOptIn {
+					tf.OptIn["foo_thing"] = savedOptIn
+				} else {
+					delete(tf.OptIn, "foo_thing")
+				}
+			})
+			script, err := os.ReadFile(bin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := ` plan) exit 0 ;;
+ show) printf '{"prior_state":{"values":{"root_module":{"resources":[{"mode":"data","address":"data.foo_whoami.tfo_id_0_0","values":{"account":"%s"}}]}}}}\n' "$FAKE_ACCOUNT" ;;
+`
+			writeListingFile(t, bin, strings.Replace(string(script), " query)", identity+" query)", 1), 0700)
+			address := "list.foo_thing.tfo_foo_foo_thing"
+			if c.user {
+				address = "list.foo_thing.mine"
+				config := ""
+				if c.dynamic {
+					config = "  config { project = var.target_project }\n"
+				}
+				writeListingFile(t, "plugin-infra/user.tfquery.hcl", "list \"foo_thing\" \"mine\" {\n  provider = foo\n"+config+"}\n", 0600)
+			}
+			args := []string{"-no-config", "-terraform", bin, "-current-workspace", "-format", "json", "-types", "foo_thing", "plugin-infra"}
+			if c.limited {
+				args = append(args, "-max-state-size", "128")
+			}
+			t.Setenv("TF_VAR_target_project", "A")
+			writeListingFile(t, "plugin-infra/query.json", listingStream(t, address, []string{"gone"}, false), 0600)
+			code, baseline, stderr := runReportTest(t, args...)
+			if code != exitOrphans {
+				t.Fatalf("baseline exit %d: %s%s", code, baseline, stderr)
+			}
+			before := decodeListingReport(t, baseline)
+			if len(before.Summary.Listings) != 1 {
+				t.Fatal(baseline)
+			}
+			scope := before.Summary.Listings[0].Scope
+			if unverified && scope != nil || !unverified && scope["account"] != "acct-1" {
+				t.Fatalf("wrong scope: %s", baseline)
+			}
+			if c.limited && !strings.Contains(strings.Join(before.Summary.Notes, "\n"), "state is larger than 128 bytes") {
+				t.Fatalf("identity limit was not reported: %s", baseline)
+			}
+			t.Setenv("TF_VAR_target_project", "B")
+			baselinePath := filepath.Join(dir, "baseline.json")
+			writeListingFile(t, baselinePath, baseline, 0600)
+			writeListingFile(t, "plugin-infra/query.json", listingStream(t, address, nil, false), 0600)
+			code, output, stderr := runReportTest(t, append(args, "-baseline", baselinePath)...)
+			if code != exitOK {
+				t.Fatalf("current exit %d: %s%s", code, output, stderr)
+			}
+			current := decodeListingReport(t, output)
+			if !reflect.DeepEqual(before.Summary.Listings, current.Summary.Listings) {
+				t.Fatalf("listing changed: %s", output)
+			}
+			b := current.Baseline
+			if unverified {
+				if b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].Reason != "listing scope not confirmed" {
+					t.Fatal(output)
+				}
+			} else if b.Resolved != 1 || b.Unverified != 0 {
+				t.Fatal(output)
+			}
+		})
+	}
 }

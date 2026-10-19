@@ -150,11 +150,12 @@ const (
 	tempQuerySuffix    = ".tfquery.hcl"
 	tempProviderSuffix = "_override.tf"
 	tempAutoSuffix     = "_auto.tf"
+	tempIdentitySuffix = "_identity.tf"
 	tempVersionSuffix  = "_version_override.tf"
 )
 
 var (
-	tempSuffixes = []string{tempQuerySuffix, tempProviderSuffix, tempAutoSuffix, tempVersionSuffix}
+	tempSuffixes = []string{tempQuerySuffix, tempProviderSuffix, tempAutoSuffix, tempVersionSuffix, tempIdentitySuffix}
 	tempMarker   = fmt.Sprintf("%s%d-%s\n", tempMarkerPrefix, os.Getpid(), rand.Text())
 )
 

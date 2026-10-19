@@ -439,6 +439,11 @@ func parseWorkspaces(out string) ([]string, error) {
 type UserList struct {
 	// Configuration is the exact source bytes of the whole block.
 	Configuration string
+	// Static means expressions outside provider depend only on literals,
+	// each.key, count.index, or each.value with a reference-free for_each.
+	// Function calls are excluded, including in for_each.
+	// Other dependencies can change the listing scope without changing its text.
+	Static bool
 	// Provider is the source text of the provider argument, such as "aws"
 	// or "aws.other_account".
 	Provider string
@@ -471,7 +476,7 @@ func UserLists(dir string) (map[string]UserList, error) {
 		for _, b := range content.Blocks {
 			inner, _, _ := b.Body.PartialContent(listAttrs)
 			body := b.Body.(*hclsyntax.Body)
-			l := UserList{Limit: DefaultListLimit, Configuration: string(f.Bytes[b.DefRange.Start.Byte:body.EndRange.End.Byte])}
+			l := UserList{Limit: DefaultListLimit, Static: staticUserList(body), Configuration: string(f.Bytes[b.DefRange.Start.Byte:body.EndRange.End.Byte])}
 			if attr, ok := inner.Attributes["provider"]; ok {
 				r := attr.Expr.Range()
 				l.Provider = strings.TrimSpace(string(f.Bytes[r.Start.Byte:r.End.Byte]))
@@ -488,6 +493,61 @@ func UserLists(dir string) (map[string]UserList, error) {
 		}
 	}
 	return out, nil
+}
+
+// staticUserList rejects function calls and references outside the instance key
+// or a value from a reference-free, function-free for_each. The provider argument
+// is checked separately when reading identity.
+func staticUserList(body *hclsyntax.Body) bool {
+	hasCalls := func(expr hclsyntax.Expression) bool {
+		found := false
+		// No diagnostics: the callback always returns nil.
+		_ = hclsyntax.VisitAll(expr, func(node hclsyntax.Node) hcl.Diagnostics {
+			if _, ok := node.(*hclsyntax.FunctionCallExpr); ok {
+				found = true
+			}
+			return nil
+		})
+		return found
+	}
+	forEachStatic := false
+	if attr := body.Attributes["for_each"]; attr != nil {
+		forEachStatic = len(attr.Expr.Variables()) == 0 && !hasCalls(attr.Expr)
+	}
+	var staticBody func(*hclsyntax.Body, bool) bool
+	staticBody = func(body *hclsyntax.Body, top bool) bool {
+		for name, attr := range body.Attributes {
+			if top && name == "provider" {
+				continue
+			}
+			if hasCalls(attr.Expr) {
+				return false
+			}
+			for _, ref := range attr.Expr.Variables() {
+				if len(ref) < 2 {
+					return false
+				}
+				field, ok := ref[1].(hcl.TraverseAttr)
+				if !ok {
+					return false
+				}
+				switch {
+				case ref.RootName() == "each" && field.Name == "key" && len(ref) == 2:
+				case ref.RootName() == "count" && field.Name == "index" && len(ref) == 2:
+				case ref.RootName() == "each" && field.Name == "value" && forEachStatic:
+				default:
+					return false
+				}
+			}
+		}
+		for _, block := range body.Blocks {
+			if !staticBody(block.Body, false) {
+				return false
+			}
+		}
+		return true
+	}
+	return staticBody(body, true)
 }
 
 var (

@@ -18,8 +18,8 @@ func TestDiffRun(t *testing.T) {
 	r := func(id, scope string) model.Resource {
 		return model.Resource{Type: "thing", Identity: map[string]any{"id": id}, ScopeName: scope, Source: "infra", ListAddress: "list.thing." + scope}
 	}
-	saveReportTest(t, old, []model.Resource{r("resolved", "a"), r("missing", "b")}, report.Summary{Live: 2, Orphans: 2, Complete: true, Listings: []report.Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "same"}, {Source: "infra", Address: "list.thing.b", Type: "thing", Complete: true, Fingerprint: "same"}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}, {Type: "thing", Scope: "b", Status: report.Complete}}})
-	saveReportTest(t, current, []model.Resource{r("added", "a")}, report.Summary{Live: 1, Orphans: 1, Listings: []report.Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "same"}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}}})
+	saveReportTest(t, old, []model.Resource{r("resolved", "a"), r("missing", "b")}, report.Summary{Live: 2, Orphans: 2, Complete: true, Listings: []report.Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "same", Scope: map[string]string{"account": "a"}}, {Source: "infra", Address: "list.thing.b", Type: "thing", Complete: true, Fingerprint: "same", Scope: map[string]string{"account": "a"}}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}, {Type: "thing", Scope: "b", Status: report.Complete}}})
+	saveReportTest(t, current, []model.Resource{r("added", "a")}, report.Summary{Live: 1, Orphans: 1, Listings: []report.Listing{{Source: "infra", Address: "list.thing.a", Type: "thing", Complete: true, Fingerprint: "same", Scope: map[string]string{"account": "a"}}}, Coverage: []report.Coverage{{Type: "thing", Scope: "a", Status: report.Complete}}})
 	// A config that could run a command must not be read by diff.
 	if err := os.WriteFile(defaultConfigFile, []byte("plugin: exit 99\n"), 0o600); err != nil {
 		t.Fatal(err)

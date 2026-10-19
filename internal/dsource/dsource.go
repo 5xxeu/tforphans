@@ -33,6 +33,7 @@ import (
 
 // Scope is an argument that places a data source in a parent object, such
 // as zone_id, filled from the parent's own plural data source.
+// Parent IDs must be globally unique to confirm the environment.
 type Scope struct {
 	Arg    string // argument name, e.g. zone_id
 	Parent string // plural data source listing the parents, e.g. cloudflare_zones
