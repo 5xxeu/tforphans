@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,11 +33,23 @@ func lockInit(ctx context.Context) (func(), error) {
 	}
 	select {
 	case initTurn <- struct{}{}:
+		if err := turnBroken.Load(); err != nil {
+			<-initTurn
+			return nil, *err
+		}
 		var once sync.Once
 		return func() { once.Do(func() { <-initTurn }) }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// turnBroken, once set, fails every later init: a process that may still
+// be installing providers outlived a cancel (see wrapTerragrunt).
+var turnBroken atomic.Pointer[error]
+
+func breakTurn(err error) {
+	turnBroken.CompareAndSwap(nil, &err)
 }
 
 type budgetKey struct{}
@@ -159,9 +172,13 @@ var (
 
 func turns() (*turnServer, error) {
 	serverOnce.Do(func() {
-		// A directory of its own (0700): no one else can connect, and the
-		// path stays short enough for a socket.
-		dir, err := os.MkdirTemp("", "tforphans-")
+		// A directory of its own (0700): no one else can connect. A socket
+		// path has a limit of about 104 bytes, which a long TMPDIR passes.
+		parent := ""
+		if len(filepath.Join(os.TempDir(), "tforphans-0123456789", "init.sock")) > 100 {
+			parent = "/tmp"
+		}
+		dir, err := os.MkdirTemp(parent, "tforphans-")
 		if err != nil {
 			serverErr = err
 			return

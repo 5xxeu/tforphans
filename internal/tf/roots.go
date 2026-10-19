@@ -878,7 +878,13 @@ func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string, maxSize in
 		if err != nil {
 			return nil, err
 		}
-		defer unlock()
+		defer func() {
+			// terragrunt is killed, a terraform init below it may not be.
+			if ctx.Err() != nil {
+				breakTurn(fmt.Errorf("terraform init not run: terragrunt in %s was stopped (%v), and a terraform it started may still be installing providers", dir, ctx.Err()))
+			}
+			unlock()
+		}()
 	}
 	r := Runner{Bin: bin, Dir: dir, Env: append([]string{
 		// Current and older names of the same settings.

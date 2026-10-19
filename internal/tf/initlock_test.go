@@ -190,3 +190,18 @@ func TestTurnHeldPastCancel(t *testing.T) {
 		t.Error("turn for an unknown token")
 	}
 }
+
+// TestBrokenTurn: after a cancel that may leave an init running, later
+// inits fail at once instead of running beside it or waiting forever.
+func TestBrokenTurn(t *testing.T) {
+	defer turnBroken.Store(nil)
+	breakTurn(errors.New("stopped"))
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	if _, err := lockInit(ctx); err == nil || err.Error() != "stopped" {
+		t.Errorf("init after a broken turn: %v", err)
+	}
+	if len(initTurn) != 0 {
+		t.Error("broken turn still held")
+	}
+}
