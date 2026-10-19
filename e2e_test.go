@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // TestE2ECloudflare scans the DNS records of a real Cloudflare zone against
@@ -125,6 +127,11 @@ func TestE2ECloudflare(t *testing.T) {
 		}
 	}
 	for _, id := range expect.Dropped {
+		// Still in the zone and still Cloudflare's, or their absence
+		// would not show the filter works.
+		if !cloudflareOwned(t, zone, id) {
+			t.Errorf("record %s is no longer one Cloudflare creates: update expect.json", id)
+		}
 		if s, ok := status[id]; ok {
 			t.Errorf("record %s created by Cloudflare is reported: %s", id, s)
 		}
@@ -132,6 +139,39 @@ func TestE2ECloudflare(t *testing.T) {
 	if want := len(managed) + len(expect.Orphans); len(out.Explain) != want {
 		t.Errorf("%d records reported, want %d", len(out.Explain), want)
 	}
+}
+
+// cloudflareOwned reads a DNS record from the API and reports whether
+// Cloudflare created it (the marks the adapter filters on).
+func cloudflareOwned(t *testing.T, zone, id string) bool {
+	t.Helper()
+	req, err := http.NewRequest("GET", "https://api.cloudflare.com/client/v4/zones/"+zone+"/dns_records/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("CLOUDFLARE_API_TOKEN"))
+	client := http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Success bool `json:"success"`
+		Result  struct {
+			Meta struct {
+				ReadOnly       bool   `json:"read_only"`
+				EmailRouting   bool   `json:"email_routing"`
+				OriginWorkerID string `json:"origin_worker_id"`
+			} `json:"meta"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || !body.Success {
+		t.Logf("record %s: HTTP %d, %v", id, resp.StatusCode, err)
+		return false
+	}
+	m := body.Result.Meta
+	return m.ReadOnly || m.EmailRouting || m.OriginWorkerID != ""
 }
 
 func readJSON(t *testing.T, path string, v any) {
