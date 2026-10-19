@@ -3,6 +3,7 @@ package tf
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -96,9 +97,9 @@ esac
 		t.Fatal(err)
 	}
 	r := Runner{Dir: dir, Bin: bin}
-	configs := []IdentityConfig{{Ref: "aws.good", Source: "hashicorp/aws"}, {Ref: "aws.bad", Source: "hashicorp/aws"}, {Ref: "aws.good", Source: "hashicorp/aws"}, {Ref: "other", Source: "hashicorp/other"}}
+	configs := []IdentityConfig{{Ref: "aws.good", Source: "hashicorp/aws"}, {Ref: "aws.bad", Source: "hashicorp/aws"}, {Ref: "aws.good", Source: "hashicorp/aws"}, {Ref: "other", Source: "hashicorp/other"}, {Ref: "aws.prod.extra", Source: "hashicorp/aws"}}
 	scopes, failed, err := r.Identities(context.Background(), Plan{}, configs)
-	if err != nil || len(scopes) != 1 || scopes["aws.good"]["account_id"] != "a" || len(failed) != 1 || !strings.Contains(failed["aws.bad"].Error(), "credentials unavailable") {
+	if err != nil || len(scopes) != 1 || scopes["aws.good"]["account_id"] != "a" || len(failed) != 2 || failed["aws.prod.extra"] == nil || !strings.Contains(failed["aws.bad"].Error(), "credentials unavailable") {
 		t.Fatalf("%v %v %v", scopes, failed, err)
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "zz_tforphans_*")); len(left) != 0 {
@@ -138,6 +139,11 @@ esac
 	if err != nil || len(failed) != 0 || !reflect.DeepEqual(scopes["tfo-google"], map[string]string{"project": "", "region": "", "zone": ""}) {
 		t.Fatalf("%v %v %v", scopes, failed, err)
 	}
+	mixed := append(configs, IdentityConfig{Ref: "google[0]", Source: "hashicorp/google"})
+	scopes, failed, err = r.Identities(context.Background(), p, mixed)
+	if err != nil || len(scopes) != 1 || len(failed) != 1 || failed["google[0]"] == nil {
+		t.Fatalf("invalid ref lost beside a successful plan: %v %v %v", scopes, failed, err)
+	}
 	planPath, err := os.ReadFile(filepath.Join(dir, "plan-path"))
 	if err != nil {
 		t.Fatal(err)
@@ -169,5 +175,43 @@ func TestIdentitiesCanceledPlan(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "zz_tforphans_*")); len(left) != 0 {
 		t.Fatal(left)
+	}
+}
+
+func TestIdentitiesProviderReferences(t *testing.T) {
+	for _, c := range []struct {
+		ref   string
+		valid bool
+	}{
+		{"aws", true}, {"aws.prod", true}, {"_aws-1._prod-2", true},
+		{"провайдер.регион1", true},
+		{"", false}, {" aws", false}, {"aws ", false}, {"aws. prod", false},
+		{"1aws", false}, {"aws.1prod", false}, {"-aws", false},
+		{"aws.", false}, {".prod", false}, {"aws.prod.extra", false},
+		{`aws["prod"]`, false}, {`"aws"`, false}, {"(aws)", false},
+		{"aws # comment", false}, {"aws\n}", false}, {"aws\n", false},
+	} {
+		t.Run(c.ref, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "terraform")
+			if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch planned\necho 'plan attempted' >&2\nexit 1\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			scopes, failed, err := (Runner{Dir: dir, Bin: bin}).Identities(context.Background(), Plan{}, []IdentityConfig{{Ref: c.ref, Source: "hashicorp/aws"}})
+			if err != nil || len(scopes) != 0 || len(failed) != 1 || failed[c.ref] == nil {
+				t.Fatalf("%v %v %v", scopes, failed, err)
+			}
+			_, statErr := os.Stat(filepath.Join(dir, "planned"))
+			if c.valid {
+				if statErr != nil || !strings.Contains(failed[c.ref].Error(), "plan attempted") {
+					t.Fatalf("valid ref was not planned: %v, %v", statErr, failed)
+				}
+			} else {
+				want := fmt.Sprintf("provider reference %q is not a plain name or name.alias", c.ref)
+				if !os.IsNotExist(statErr) || failed[c.ref].Error() != want {
+					t.Fatalf("invalid ref was planned or has wrong error: %v, %v", statErr, failed)
+				}
+			}
+		})
 	}
 }

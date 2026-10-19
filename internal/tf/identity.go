@@ -6,17 +6,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/5xxeu/tforphans/internal/model"
 )
 
+// IdentityRead describes a data source and the string attributes that confirm
+// scope. Each scope key takes the first string among its attribute names.
 type IdentityRead struct {
 	DataSource string
 	Attrs      map[string][]string
 }
 
+// IdentitySources selects data sources that report the account or location used
+// by each provider family. Only identity IDs and locations enter scope, never
+// tokens. google_client_config also puts access_token in the plan, so the plan
+// file must stay in a private temporary directory and be removed after reading.
 var IdentitySources = map[string][]IdentityRead{
 	"hashicorp/aws": {
 		{DataSource: "aws_caller_identity", Attrs: map[string][]string{"account_id": {"account_id"}}},
@@ -26,7 +33,11 @@ var IdentitySources = map[string][]IdentityRead{
 	"hashicorp/azurerm": {{DataSource: "azurerm_client_config", Attrs: map[string][]string{"subscription_id": {"subscription_id"}, "tenant_id": {"tenant_id"}}}},
 }
 
+// IdentityConfig identifies a provider configuration by its local reference
+// (aws or aws.prod) and provider source address.
 type IdentityConfig struct{ Ref, Source string }
+
+var plainIdentityRef = regexp.MustCompile(`^[\p{L}_][\p{L}\p{Nd}_-]*(\.[\p{L}_][\p{L}\p{Nd}_-]*)?$`)
 
 func identityHCL(configs []IdentityConfig) ([]byte, []string) {
 	var b strings.Builder
@@ -98,12 +109,22 @@ func parseIdentities(data []byte, configs []IdentityConfig) (map[string]map[stri
 	return scopes, failed
 }
 
-// Identities reads only the attributes that confirm where each configuration looks.
+// Identities reads the scope of configurations supported by IdentitySources.
+// References must be a plain name or name.alias. A targeted plan with
+// -refresh=false and -lock=false reads identity data without writing state or
+// taking a state lock. If a combined plan fails, each configuration is planned
+// separately so one failure does not hide the others' scopes. Configuration
+// failures go in failed; cancellation and timeouts return ctx.Err() instead.
+// Temporary file errors are returned as errors of the whole operation.
 func (r Runner) Identities(ctx context.Context, p Plan, configs []IdentityConfig) (map[string]map[string]string, map[string]error, error) {
 	scopes, failed := map[string]map[string]string{}, map[string]error{}
 	selected := map[string]IdentityConfig{}
 	for _, c := range configs {
 		if len(IdentitySources[model.ProviderFamily(c.Source)]) > 0 {
+			if !plainIdentityRef.MatchString(c.Ref) {
+				failed[c.Ref] = fmt.Errorf("provider reference %q is not a plain name or name.alias", c.Ref)
+				continue
+			}
 			selected[c.Ref] = c
 		}
 	}
@@ -176,12 +197,12 @@ func (r Runner) Identities(ctx context.Context, p Plan, configs []IdentityConfig
 		ss, fs := parseIdentities(out, cs)
 		return ss, fs, nil
 	}
-	scopes, failed, err = read(configs)
+	scopes, readFailed, err := read(configs)
 	if err != nil {
 		return nil, nil, err
 	}
 	if planFailed && len(configs) > 1 {
-		scopes, failed = map[string]map[string]string{}, map[string]error{}
+		scopes, readFailed = map[string]map[string]string{}, map[string]error{}
 		for _, c := range configs {
 			ss, fs, err := read([]IdentityConfig{c})
 			if err != nil {
@@ -191,9 +212,12 @@ func (r Runner) Identities(ctx context.Context, p Plan, configs []IdentityConfig
 				scopes[ref] = s
 			}
 			for ref, e := range fs {
-				failed[ref] = e
+				readFailed[ref] = e
 			}
 		}
+	}
+	for ref, e := range readFailed {
+		failed[ref] = e
 	}
 	return scopes, failed, nil
 }
