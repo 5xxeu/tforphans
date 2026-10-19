@@ -4,9 +4,24 @@
   (only for workspaces `workspace list` printed as list lines),
   `workspace list`, `query`, and `apply -refresh-only` on a temporary root
   that holds nothing but data sources; it never applies your
-  configuration, and plans it only with `-refresh` (`plan -refresh-only
-  -lock=false`, which writes no state; data sources of your configuration
-  are read then, as in any plan). `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are not passed
+  configuration. With `-refresh`, it runs `plan -refresh-only -lock=false`,
+  which writes no state; data sources of your configuration are read then,
+  as in any plan. On every root with query listings for AWS, Google
+  (including google-beta) or AzureRM, even without `-baseline`, it also runs
+  `terraform plan -refresh=false -lock=false -input=false` with `-target`
+  only for temporary identity data sources: `aws_caller_identity`,
+  `aws_region`, `google_client_config` and `azurerm_client_config`, declared
+  in `zz_tforphans_<pid>_identity.tf`, which is removed afterwards.
+  It reads the plan with `terraform show -json`. This identity plan writes
+  no state, takes no state lock and does not refresh resources; the root's
+  providers are configured just as they are for `query`.
+  The plan file is stored in a private temporary directory created by
+  `os.MkdirTemp` with mode 0700 and removed after reading. It contains prior
+  state and data source values, including `google_client_config.access_token`.
+  After SIGKILL, this directory may remain in `TMPDIR`. Only identity IDs
+  and locations from these data sources enter the report: `account_id`,
+  `region`, `project`, `zone`, `subscription_id` and `tenant_id`.
+  `TF_CLI_ARGS` and `TF_CLI_ARGS_<command>` are not passed
   on (they could redirect state), and the temporary root ignores
   `TF_DATA_DIR` and `TF_WORKSPACE`. Run it with read-only credentials (AWS `ReadOnlyAccess`,
   GCP Viewer, Azure Reader, a Cloudflare "Read all resources" token, a
