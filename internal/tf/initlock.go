@@ -44,28 +44,47 @@ type budgetKey struct{}
 // budgetCtx is cancelled when its time runs out, as context.WithTimeout,
 // but the clock stops while the work waits for the init turn: a root that
 // queues behind other inits has its whole -source-timeout once it runs.
+// It has a Done channel of its own and hides the parent's cancelCtx from
+// Value, so children made at any time see its Err (DeadlineExceeded).
 type budgetCtx struct {
-	context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	left    time.Duration
-	since   time.Time
-	timer   *time.Timer
-	pauses  int
-	expired bool
+	parent     context.Context
+	done       chan struct{}
+	stopParent func() bool
+	mu         sync.Mutex
+	err        error
+	left       time.Duration
+	since      time.Time
+	timer      *time.Timer
+	pauses     int
 }
 
 // WithBudget returns a context that times out after d of time not spent
 // waiting for the init turn.
 func WithBudget(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent)
-	b := &budgetCtx{Context: ctx, cancel: cancel, left: d, since: time.Now()}
+	b := &budgetCtx{parent: parent, done: make(chan struct{}), left: d, since: time.Now()}
+	// Under mu: either callback may run at once and reads both fields.
+	b.mu.Lock()
 	b.timer = time.AfterFunc(d, b.fire)
-	return b, func() {
-		b.mu.Lock()
-		b.timer.Stop()
-		b.mu.Unlock()
-		cancel()
+	b.stopParent = context.AfterFunc(parent, func() { b.finish(parent.Err()) })
+	b.mu.Unlock()
+	return b, func() { b.finish(context.Canceled) }
+}
+
+// finish ends the context with err, once.
+func (b *budgetCtx) finish(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.err != nil {
+		return
+	}
+	if pe := b.parent.Err(); pe != nil && err == context.Canceled {
+		err = pe
+	}
+	b.err = err
+	b.timer.Stop()
+	close(b.done)
+	if b.stopParent != nil {
+		b.stopParent()
 	}
 }
 
@@ -77,43 +96,42 @@ func (b *budgetCtx) fire() {
 		b.mu.Unlock()
 		return
 	}
-	b.expired = true
 	b.mu.Unlock()
-	b.cancel()
+	b.finish(context.DeadlineExceeded)
 }
 
 func (b *budgetCtx) pause() (resume func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pauses++
-	if b.pauses == 1 && !b.expired && b.timer.Stop() {
+	if b.pauses == 1 && b.err == nil && b.timer.Stop() {
 		b.left -= time.Since(b.since)
 	}
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.pauses--
-		if b.pauses == 0 && !b.expired {
+		if b.pauses == 0 && b.err == nil {
 			b.since = time.Now()
 			b.timer = time.AfterFunc(max(b.left, 0), b.fire)
 		}
 	}
 }
 
+func (b *budgetCtx) Deadline() (time.Time, bool) { return b.parent.Deadline() }
+func (b *budgetCtx) Done() <-chan struct{}       { return b.done }
+
 func (b *budgetCtx) Err() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.expired {
-		return context.DeadlineExceeded
-	}
-	return b.Context.Err()
+	return b.err
 }
 
 func (b *budgetCtx) Value(key any) any {
 	if key == (budgetKey{}) {
 		return b
 	}
-	return b.Context.Value(key)
+	return b.parent.Value(key)
 }
 
 // The environment of the wrapper: the terraform it runs, the socket that
@@ -214,17 +232,10 @@ func (s *turnServer) handle(c net.Conn) {
 	if _, err := fmt.Fprintln(c, "go"); err != nil {
 		return
 	}
-	// Held until the wrapper closes the connection (init done, or the
-	// wrapper is gone) or the unit's read is cancelled.
-	closed := make(chan struct{})
-	go func() {
-		_, _ = r.ReadByte()
-		close(closed)
-	}()
-	select {
-	case <-closed:
-	case <-ctx.Done():
-	}
+	// Held until the wrapper closes the connection: init is over, or the
+	// wrapper is gone (a cancelled unit's process group is killed). Not
+	// on cancel alone: terraform may still be installing providers then.
+	_, _ = r.ReadByte()
 }
 
 // wrapperEnv is the environment for terragrunt that makes tforphans its

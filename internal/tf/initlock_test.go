@@ -104,6 +104,9 @@ func TestBudget(t *testing.T) {
 	}()
 	ctx, cancel := WithBudget(context.Background(), 200*time.Millisecond)
 	defer cancel()
+	// Made before the budget runs out, as exec.CommandContext's are.
+	early, stopEarly := context.WithCancel(ctx)
+	defer stopEarly()
 	unlock, err := lockInit(ctx)
 	if err != nil {
 		t.Fatalf("budget ran out while waiting: %v", err)
@@ -121,11 +124,23 @@ func TestBudget(t *testing.T) {
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Errorf("error of a spent budget: %v", ctx.Err())
 	}
-	// Children see the same error.
+	// Children see the same error, made before or after.
 	child, stop := context.WithCancel(ctx)
 	defer stop()
-	if !errors.Is(child.Err(), context.DeadlineExceeded) {
-		t.Errorf("child of a spent budget: %v", child.Err())
+	<-early.Done()
+	for name, c := range map[string]context.Context{"early": early, "late": child} {
+		if !errors.Is(c.Err(), context.DeadlineExceeded) {
+			t.Errorf("%s child of a spent budget: %v", name, c.Err())
+		}
+	}
+	// The parent's cancel ends it too.
+	parent, cancelParent := context.WithCancel(context.Background())
+	b, cancelB := WithBudget(parent, time.Hour)
+	defer cancelB()
+	cancelParent()
+	<-b.Done()
+	if !errors.Is(b.Err(), context.Canceled) {
+		t.Errorf("budget of a cancelled parent: %v", b.Err())
 	}
 
 	initTurn <- struct{}{}
@@ -137,5 +152,41 @@ func TestBudget(t *testing.T) {
 	}()
 	if _, err := lockInit(ctx2); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled wait: %v", err)
+	}
+}
+
+// TestTurnHeldPastCancel: a wrapper given the turn keeps it until its
+// connection closes, even when its unit is cancelled: terraform may still
+// be installing providers until the process group is killed.
+func TestTurnHeldPastCancel(t *testing.T) {
+	srv, err := turns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitCtx, cancelUnit := context.WithCancel(context.Background())
+	token, done := srv.register(unitCtx)
+	defer done()
+	c, err := waitTurn(srv.socket, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelUnit()
+	short, stop := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer stop()
+	if unlock, err := lockInit(short); err == nil {
+		unlock()
+		t.Fatal("turn given out while the cancelled unit's wrapper still holds it")
+	}
+	_ = c.Close()
+	ctx, stop2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop2()
+	unlock, err := lockInit(ctx)
+	if err != nil {
+		t.Fatalf("turn not given back after the wrapper closed: %v", err)
+	}
+	unlock()
+
+	if _, err := waitTurn(srv.socket, "unknown-token"); err == nil {
+		t.Error("turn for an unknown token")
 	}
 }

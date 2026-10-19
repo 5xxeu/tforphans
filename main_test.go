@@ -369,6 +369,8 @@ func TestTerragruntUnitOverride(t *testing.T) {
 	}
 	bin := t.TempDir()
 	os.WriteFile(filepath.Join(bin, "terragrunt"), []byte("#!/bin/sh\necho '{\"version\":4,\"serial\":1,\"lineage\":\"x\",\"resources\":[]}'\n"), 0o755)
+	// Only found in PATH: the fake terragrunt never runs it.
+	os.WriteFile(filepath.Join(bin, "terraform"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "app", "db"), 0o755)
