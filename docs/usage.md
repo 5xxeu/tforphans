@@ -33,7 +33,8 @@ are dropped from each object right away. `-max-query-size` (1 GiB by
 default, same rules for config files) bounds the output of one query, and
 one query may return at most 1,000,000 objects. `-timeout 30m` stops the
 whole run; `-source-timeout 10m` gives up on one root, `-scan` or plugin
-and goes on with the others.
+and goes on with the others (waiting for the turn to run `terraform init`,
+which runs one root at a time, does not count).
 
 When one root, `-scan` or plugin fails as a whole (a query over the limit,
 a plugin that exits with an error or runs out of time), the run goes on with

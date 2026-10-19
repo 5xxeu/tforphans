@@ -1,15 +1,12 @@
 package tf
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -383,50 +380,5 @@ func TestSharedDataDirLinks(t *testing.T) {
 	t.Setenv("TF_DATA_DIR", ".terraform")
 	if d, _, _ := SharedDataDir([]string{a, b, linkB}); d != "" {
 		t.Errorf("per-root data directory: %q", d)
-	}
-}
-
-// TestTerragruntInitSerialized: units without .terragrunt-cache (terragrunt
-// initializes them) are pulled one at a time, units with one do not wait.
-func TestTerragruntInitSerialized(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script as terragrunt")
-	}
-	dir := t.TempDir()
-	busy := filepath.Join(dir, "busy")
-	bin := filepath.Join(dir, "terragrunt")
-	// mkdir fails when another pull is running.
-	script := fmt.Sprintf("#!/bin/sh\nmkdir '%s' || exit 1\nsleep 0.2\nrmdir '%s'\nprintf '{}'\n", busy, busy)
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var wg sync.WaitGroup
-	errs := make([]error, 3)
-	for i := range errs {
-		unit := filepath.Join(dir, fmt.Sprintf("unit%d", i))
-		if err := os.Mkdir(unit, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, errs[i] = TerragruntStatePull(context.Background(), bin, "terraform", unit, 0)
-		}()
-	}
-	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("unit%d pulled while another was: %v", i, err)
-		}
-	}
-
-	cached := filepath.Join(dir, "cached")
-	if err := os.MkdirAll(filepath.Join(cached, ".terragrunt-cache"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	initMu.Lock()
-	defer initMu.Unlock()
-	if _, err := TerragruntStatePull(context.Background(), bin, "terraform", cached, 0); err != nil {
-		t.Errorf("unit with a cache: %v", err)
 	}
 }

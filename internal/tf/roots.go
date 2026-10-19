@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/hashicorp/hcl/v2"
@@ -361,16 +360,13 @@ func resolvePath(p string) string {
 	}
 }
 
-// initMu serializes terraform init (and terragrunt's own init of a new
-// unit, see TerragruntStatePull): roots are read in parallel, and
-// terraform does not promise that a shared plugin cache (TF_PLUGIN_CACHE_DIR
-// or plugin_cache_dir in the CLI config) survives concurrent installs.
-var initMu sync.Mutex
-
 // Init runs terraform init without prompting, one root at a time.
 func (r Runner) Init(ctx context.Context) error {
-	initMu.Lock()
-	defer initMu.Unlock()
+	unlock, err := lockInit(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	args := []string{"init", "-input=false", "-no-color"}
 	if _, stderr, err := r.run(ctx, args...); err != nil {
 		return cmdError(args, stderr, err)
@@ -866,21 +862,20 @@ func TerragruntKind(dir string) (int, error) {
 // TerragruntStatePull reads the state of a Terragrunt unit with terragrunt,
 // which renders the backend and runs terraform (init included: it fetches
 // the module and providers into .terragrunt-cache). tfBin is the terraform
-// it runs. A unit without .terragrunt-cache is initialized first, so its
-// pull waits for initMu like Init; a cache elsewhere (download_dir,
-// TG_DOWNLOAD_DIR) is not looked for, and such a unit always waits.
+// it runs, through tforphans itself, so that terragrunt's inits take turns
+// with all others (see initTurn).
 func TerragruntStatePull(ctx context.Context, bin, tfBin, dir string, maxSize int64) ([]byte, error) {
-	if _, err := os.Stat(filepath.Join(dir, ".terragrunt-cache")); err != nil {
-		initMu.Lock()
-		defer initMu.Unlock()
+	wrap, done, err := wrapperEnv(ctx, tfBin)
+	if err != nil {
+		return nil, err
 	}
-	r := Runner{Bin: bin, Dir: dir, Env: []string{
+	defer done()
+	r := Runner{Bin: bin, Dir: dir, Env: append([]string{
 		// Current and older names of the same settings.
 		"TG_NON_INTERACTIVE=true", "TERRAGRUNT_NON_INTERACTIVE=true",
-		"TG_TF_PATH=" + tfBin, "TERRAGRUNT_TFPATH=" + tfBin,
 		"TG_LOG_LEVEL=error", "TERRAGRUNT_LOG_LEVEL=error",
 		"TG_NO_COLOR=true", "TERRAGRUNT_NO_COLOR=true",
-	}, MaxStateSize: maxSize}
+	}, wrap...), MaxStateSize: maxSize}
 	// "run --" needs Terragrunt 0.73 or newer.
 	args := []string{"run", "--", "state", "pull"}
 	out, stderr, err := r.runLimited(ctx, r.stateSize(), args...)
