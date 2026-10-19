@@ -360,3 +360,29 @@ func TestIntegrationScanNoZones(t *testing.T) {
 		t.Errorf("exit %d, complete %v\n%s", code, out.Summary.Complete, stderr)
 	}
 }
+
+// TestIntegrationScanCrashOnce: a crash that does not repeat changes
+// nothing, with or without -scan-scope and a split data source.
+func TestIntegrationScanCrashOnce(t *testing.T) {
+	root := scanSetup(t)
+	t.Chdir(root)
+	for _, split := range []bool{false, true} {
+		a := fakeAdapter
+		if split {
+			a.Split = map[string]dsource.Split{"fake_records": {Attr: "type"}}
+		}
+		sources["fake"] = a
+		for _, args := range [][]string{nil, {"-scan-scope", "zone_id=z3"}, {"-scan-scope", "zone_id=z1,z3"}} {
+			t.Setenv("FAKE_PANIC_ONCE", "")
+			_, want, _ := scanJSON(t, args...)
+			t.Setenv("FAKE_PANIC_ONCE", filepath.Join(t.TempDir(), "crashed"))
+			code, out, stderr := scanJSON(t, args...)
+			if !strings.Contains(stderr, "reading them in parts") {
+				t.Errorf("split %v %v: no crash\n%s", split, args, stderr)
+			}
+			if got := importIDs(out); code != exitOrphans || !slices.Equal(got, importIDs(want)) || out.Summary.Live != want.Summary.Live || !out.Summary.Complete {
+				t.Errorf("split %v %v: exit %d, live %d, orphans %v, want %d %v\n%s", split, args, code, out.Summary.Live, got, want.Summary.Live, importIDs(want), stderr)
+			}
+		}
+	}
+}

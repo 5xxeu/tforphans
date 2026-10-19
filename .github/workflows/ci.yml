@@ -30,14 +30,14 @@ jobs:
         run: scripts/cask.sh 0.1.10 testdata/cask/checksums.txt | diff -u testdata/cask/tforphans.rb -
       - name: gofmt
         run: test -z "$(gofmt -l .)"
-      - run: go vet -tags integration ./...
+      - run: go vet -tags integration,e2e ./...
       - name: vet for windows and darwin
         run: GOOS=windows go vet ./... && GOOS=darwin go vet ./...
       - run: go test -race ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0
-          args: --build-tags integration
+          args: --build-tags integration,e2e
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 

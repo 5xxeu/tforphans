@@ -1,0 +1,15 @@
+{
+  "zone_id": "ed93c0e1bd8dda363a5e672a212adf07",
+  "orphans": [
+    "ed93c0e1bd8dda363a5e672a212adf07/6b50b90173d1c73fbf2309f892e6bcdf",
+    "ed93c0e1bd8dda363a5e672a212adf07/a72bac92fc0148615ccfd892d51f13aa",
+    "ed93c0e1bd8dda363a5e672a212adf07/be9843c7e97f0c077602a083eece2b53"
+  ],
+  "dropped": [
+    "7720b4a7b156f31bf81c77b98db83034",
+    "a98f2d937c1f1e170f3473701bb65ac2",
+    "bbe74f6bbccd863401147ca7cb98f151",
+    "c18c780871381f8c612a41bf1a93bbd9",
+    "e1eed037d94c960f3b7bfaa0fb95ec3e"
+  ]
+}
