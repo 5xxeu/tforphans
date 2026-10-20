@@ -162,9 +162,14 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	}
 	d.version(ctx, o)
 	listable := map[state.TypeKey]bool{}
+	var checkedRoots []string
 	for _, root := range all {
 		o.stepf("checking %s", root)
-		d.root(ctx, o, root, slices.Contains(o.roots, root) && !o.noQuery, listable)
+		if d.root(ctx, o, root, slices.Contains(o.roots, root) && !o.noQuery, listable) {
+			checkedRoots = append(checkedRoots, root)
+		} else {
+			d.add("states.read", "skipped", "temporary file cleanup failed", root, "")
+		}
 	}
 	d.discovery(o)
 	var snapshots []state.Snapshot
@@ -176,7 +181,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 			d.add("states.read", "skipped", "root discovery failed; root state reads cannot run safely", "", "")
 			snapshots = d.states(ctx, o, nil)
 		} else {
-			snapshots = d.states(ctx, o, all)
+			snapshots = d.states(ctx, o, checkedRoots)
 		}
 		n := 0
 		for _, s := range snapshots {
@@ -205,7 +210,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	}
 	for _, name := range o.scans {
 		a := sources[name]
-		pin := dsource.VersionRoot(all, a.Provider)
+		pin := dsource.VersionRoot(checkedRoots, a.Provider)
 		if pin == "" {
 			d.add("scan."+name+".pin", "failed", "no root pins "+a.Provider+" with version and hashes", "", "Run terraform init and terraform providers lock in a root requiring "+a.Provider+", then pass it with -state-roots")
 		} else {
@@ -279,7 +284,17 @@ func (d *doctorReport) version(ctx context.Context, o *options) {
 	d.add("terraform.version", "ok", v.Version, "", "")
 }
 
-func (d *doctorReport) root(ctx context.Context, o *options, root string, query bool, listable map[state.TypeKey]bool) {
+func (d *doctorReport) root(ctx context.Context, o *options, root string, query bool, listable map[state.TypeKey]bool) bool {
+	removed, err := tf.RemoveStaleCount(root)
+	if removed > 0 {
+		d.add("root.stale", "warning", fmt.Sprintf("removed %d temporary files of dead tforphans processes", removed), root, "")
+		d.Checks[len(d.Checks)-1].Count = &removed
+	}
+	if err != nil {
+		d.add("root.stale", "failed", report.NewUnreadState(root, err).Error, root, "Remove zz_tforphans_* temporary files manually in "+shellQuote(root)+" after verifying no tforphans process is using them")
+		return false
+	}
+
 	if o.terragrunt && !query {
 		kind, err := tf.TerragruntKind(root)
 		if err == nil && kind != tf.TerragruntNone {
@@ -287,7 +302,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 			d.add("root.initialized", "skipped", "Terragrunt manages unit initialization", root, "")
 			d.add("root.lock", "skipped", "Terragrunt selects the rendered root's lock file", root, "")
 			d.add("root.query", "skipped", "used only for state", root, "")
-			return
+			return true
 		}
 	}
 
@@ -322,13 +337,13 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	}
 	if !query {
 		d.add("root.query", "skipped", "used only for state", root, "")
-		return
+		return true
 	}
 	if o.offline && !r.Initialized() {
 		d.add("providers.schema", "skipped", "offline: root is not initialized", root, init)
 		d.skipPlan(root, "provider schema unavailable")
 		d.add("auth.providers", "skipped", "offline: authentication disabled", root, "")
-		return
+		return true
 	}
 	schemas, err := withSource(ctx, o, r.ProvidersSchema)
 	if err != nil {
@@ -338,14 +353,14 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		}
 		d.skipPlan(root, "provider schema unavailable")
 		d.add("auth.providers", "skipped", "provider schema unavailable", root, "")
-		return
+		return true
 	}
 	if schemas.ProviderSchemas == nil {
 		d.add("providers.schema", "failed", "schema JSON has no provider_schemas object", root, "")
 		d.incomplete = true
 		d.skipPlan(root, "provider schema unavailable")
 		d.add("auth.providers", "skipped", "provider schema unavailable", root, "")
-		return
+		return true
 	}
 	if len(schemas.ProviderSchemas) == 0 {
 		d.add("providers.schema", "ok", "no providers in this root", root, "")
@@ -365,12 +380,12 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	sc, err := tf.ProviderSourceConfigs(root)
 	if err != nil {
 		d.add("query.plan", "failed", "provider configuration could not be parsed", root, "")
-		return
+		return true
 	}
 	pc, err := tf.ProviderConfigs(root)
 	if err != nil {
 		d.add("query.plan", "failed", "provider configuration could not be parsed", root, "")
-		return
+		return true
 	}
 	p := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, Configs: sc, NoAliases: o.noAliases, ProviderConfigs: pc})
 	userLists, err := tf.UserLists(root)
@@ -502,6 +517,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	if len(configs) == 0 {
 		d.add("auth.providers", "skipped", "no provider configurations selected", root, "")
 	}
+	return true
 }
 
 func (d *doctorReport) states(ctx context.Context, o *options, roots []string) []state.Snapshot {

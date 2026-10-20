@@ -202,6 +202,13 @@ func writeTemp(path string, data []byte) error {
 // no longer exists (killed before it could clean up), and fails when a
 // running one still has files in dir.
 func RemoveStale(dir string) error {
+	_, err := RemoveStaleCount(dir)
+	return err
+}
+
+// RemoveStaleCount is RemoveStale with a count of the files removed.
+func RemoveStaleCount(dir string) (int, error) {
+	removed := 0
 	stale, _ := filepath.Glob(filepath.Join(dir, "zz_tforphans_*"))
 	var busy []string
 	for _, path := range stale {
@@ -228,13 +235,14 @@ func RemoveStale(dir string) error {
 			continue
 		}
 		if err := os.Remove(path); err != nil {
-			return err
+			return removed, err
 		}
+		removed++
 	}
 	if len(busy) > 0 {
-		return fmt.Errorf("%s holds files of another tforphans run that may still be working; wait for it, or remove them: %s", dir, strings.Join(busy, ", "))
+		return removed, fmt.Errorf("%s holds files of another tforphans run that may still be working; wait for it, or remove them: %s", dir, strings.Join(busy, ", "))
 	}
-	return nil
+	return removed, nil
 }
 
 // Query writes the plan's list blocks (and temporary provider declarations)

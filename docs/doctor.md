@@ -16,6 +16,7 @@ providers, duplicate local names and other skipped types. User list blocks
 are counted but never executed. No resource listing, `terraform query`,
 refresh-only apply or plugin execution takes place. It does not initialize
 plain Terraform roots or take state locks.
+Before reading each root, including state-only and offline roots, it removes marked temporary files of dead tforphans processes, reports the count as `root.stale`, and stops checking that root if cleanup fails.
 
 The `discovery` check fails when no generated queries, user list blocks, scans
 or plugins are selected. Generated query counts follow `-types`,
@@ -137,7 +138,7 @@ Offline status is `unknown`, even with exit 0 or 2.
 Every check has `id`, `status` (`ok`, `warning`, `failed`, `skipped`) and
 `message`. Optional fields are `remediation` (a fix command or instructions),
 `root`, `provider` (source address), `types` (list-capable types), `read` and
-`total` (state counts), `count` (instances without identity, or selected discovery operations), and
+`total` (state counts), `count` (removed stale files, instances without identity, or selected discovery operations), and
 `skipped_types` (the existing query planner's `type`, `reason`, optional
 `root`, `provider`, `excluded`). State totals include all enumerated
 workspaces and explicit sources; a root whose workspace enumeration failed
@@ -153,6 +154,7 @@ Stable check IDs:
 | `roots` | Root discovery, limits and shared data directory safety |
 | `terraform.version` | Terraform version and, when selected, query support |
 | `discovery` | Selected query, scan and plugin count; fails when zero |
+| `root.stale` | Stale temporary file cleanup and failures |
 | `root.config` | Root configuration availability and parsing |
 | `root.initialized` | Terraform data directory availability |
 | `root.lock` | Local provider lock file syntax and availability |
