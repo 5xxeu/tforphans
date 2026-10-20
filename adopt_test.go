@@ -221,3 +221,21 @@ func TestAdoptOutDirLink(t *testing.T) {
 		t.Error("written to ./imports")
 	}
 }
+
+func TestSplitOutDir(t *testing.T) {
+	for in, want := range map[string][2]string{
+		"imports":         {".", "imports"},
+		"out/imports/":    {"out/", "imports"},
+		"jump/../imports": {"jump/../", "imports"},
+		"/abs/imports":    {"/abs/", "imports"},
+		"/":               {"/", ""},
+		"a//b//":          {"a//", "b"},
+	} {
+		if filepath.Separator != '/' {
+			break
+		}
+		if p, b := splitOutDir(in); p != want[0] || b != want[1] {
+			t.Errorf("%q: %q %q, want %q", in, p, b, want)
+		}
+	}
+}

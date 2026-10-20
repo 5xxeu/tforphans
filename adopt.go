@@ -350,12 +350,7 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 		file := filepath.Join(rel, "imports.tf")
 		files[file] = append(files[file], r)
 	}
-	// Split without Clean: in jump/../imports the link counts first.
-	raw := strings.TrimRight(o.outDir, string(filepath.Separator))
-	parent, base := ".", raw
-	if i := strings.LastIndex(raw, string(filepath.Separator)); i >= 0 {
-		parent, base = raw[:i+1], raw[i+1:]
-	}
+	parent, base := splitOutDir(o.outDir)
 	if base == "" || base == "." || base == ".." {
 		return 0, fmt.Errorf("-out-dir %s: name a new directory", o.outDir)
 	}
@@ -418,6 +413,23 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 		}
 	}
 	return written, nil
+}
+
+// splitOutDir splits -out-dir into its parent and the new directory's
+// name without Clean: in jump/../imports the link counts before ..
+// Both separators count on Windows, and a volume (C:) stays with the parent.
+func splitOutDir(dir string) (parent, base string) {
+	vol := filepath.VolumeName(dir)
+	rest := dir[len(vol):]
+	for len(rest) > 1 && os.IsPathSeparator(rest[len(rest)-1]) {
+		rest = rest[:len(rest)-1]
+	}
+	for i := len(rest) - 1; i >= 0; i-- {
+		if os.IsPathSeparator(rest[i]) {
+			return vol + rest[:i+1], rest[i+1:]
+		}
+	}
+	return vol + ".", rest
 }
 
 // sourceLabel names a source in messages as the command line spells it.
