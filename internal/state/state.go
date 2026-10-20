@@ -198,6 +198,15 @@ func providerAddress(ref string) string {
 
 const DefaultMaxSize int64 = 1 << 30
 
+// TooLargeError is ReadLimited's error for input above the limit. Readers
+// of something other than state (a -baseline report) word it themselves:
+// -max-state-size does not apply to them.
+type TooLargeError struct{ Max int64 }
+
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("state is larger than %d bytes; raise -max-state-size", e.Max)
+}
+
 // ReadLimited reads at most maxSize+1 bytes, rejecting oversized state.
 func ReadLimited(r io.Reader, maxSize int64) ([]byte, error) {
 	if maxSize <= 0 || maxSize == 1<<63-1 {
@@ -205,7 +214,7 @@ func ReadLimited(r io.Reader, maxSize int64) ([]byte, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(r, maxSize+1))
 	if int64(len(data)) > maxSize {
-		return nil, fmt.Errorf("state is larger than %d bytes; raise -max-state-size", maxSize)
+		return nil, &TooLargeError{maxSize}
 	}
 	return data, err
 }

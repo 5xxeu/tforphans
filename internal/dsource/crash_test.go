@@ -369,3 +369,58 @@ func TestRenderSplit(t *testing.T) {
 		t.Error("scopeID")
 	}
 }
+
+// TestEnvCrash covers a crash of unrelated blocks read on their own, which
+// points at the environment, against a crash of one block or one parent.
+func TestEnvCrash(t *testing.T) {
+	zones, accounts := &Cloudflare.Scopes[1], &Cloudflare.Scopes[0]
+	blocks := []block{
+		{dsType: "cloudflare_zones", label: "all"},
+		{dsType: "cloudflare_dns_records", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all"},
+		{dsType: "cloudflare_rulesets", label: "by_zone_id", scope: zones, parent: "data.cloudflare_zones.all"},
+		{dsType: "cloudflare_accounts", label: "all"},
+		{dsType: "cloudflare_lists", label: "by_account_id", scope: accounts, parent: "data.cloudflare_accounts.all"},
+		{dsType: "cloudflare_images", label: "all"},
+		{dsType: "cloudflare_r2_buckets", label: "all"},
+	}
+	for _, c := range []struct {
+		name   string
+		blocks []block
+		crash  func(set []block) bool
+		want   bool
+		runs   int
+	}{
+		{"every read crashes", blocks, func([]block) bool { return true }, true, 3},
+		{"one parent crashes", blocks, func(set []block) bool {
+			return slices.ContainsFunc(set, func(b block) bool { return b.dsType == "cloudflare_zones" })
+		}, false, 2},
+		{"one block crashes", blocks, func(set []block) bool {
+			return slices.ContainsFunc(set, func(b block) bool { return b.dsType == "cloudflare_images" })
+		}, false, 1},
+		{"blocks under one parent are one", blocks[:3], func([]block) bool { return true }, false, 0},
+		{"two unrelated blocks are too few", blocks[:5], func([]block) bool { return true }, false, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			runs := 0
+			probe := func(set []block) (bool, []byte, error) {
+				runs++
+				for _, b := range set {
+					if b.parent != "" && !slices.ContainsFunc(set, func(p block) bool { return p.addr() == b.parent }) {
+						t.Errorf("%s probed without its parent", b.addr())
+					}
+				}
+				if len(set) > 2 {
+					t.Errorf("probed %d blocks at once", len(set))
+				}
+				return c.crash(set), nil, nil
+			}
+			got, err := envCrash(c.blocks, probe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want || runs != c.runs {
+				t.Errorf("envCrash %v in %d runs, want %v in %d", got, runs, c.want, c.runs)
+			}
+		})
+	}
+}

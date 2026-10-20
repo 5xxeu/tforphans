@@ -163,6 +163,52 @@ func isolate(blocks []block, why string, probe prober) (keep []block, failed []f
 	return keep, failed, nil
 }
 
+// envCanaries is how many unrelated blocks are read on their own before a
+// crash is isolated.
+const envCanaries = 3
+
+// envCrash reports whether a crash looks like the environment (network,
+// the provider plugin, terraform) rather than one data source: each of a
+// few unrelated blocks crashes when read on its own. Isolating such a
+// crash would spend the whole probe budget only to report every block.
+// Blocks are unrelated when they read under different parents (a crashing
+// parent takes its children down); with fewer such blocks it says false.
+func envCrash(blocks []block, probe prober) (bool, error) {
+	byAddr := map[string]block{}
+	for _, b := range blocks {
+		byAddr[b.addr()] = b
+	}
+	seen := map[string]bool{}
+	var sets [][]block
+	for _, b := range blocks {
+		root, set := b.addr(), []block{b}
+		if b.parent != "" {
+			p, ok := byAddr[b.parent]
+			if !ok {
+				continue
+			}
+			root, set = b.parent, []block{p, b}
+		}
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		if sets = append(sets, set); len(sets) == envCanaries {
+			break
+		}
+	}
+	if len(sets) < envCanaries {
+		return false, nil
+	}
+	for _, set := range sets {
+		c, _, err := probe(set)
+		if err != nil || !c {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 // isolateInstances pins a crash of a scoped block down to its instances.
 // It returns the block with the crashing instances excluded, or nil when
 // the block crashes as a whole (or is not scoped).
