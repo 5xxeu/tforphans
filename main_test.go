@@ -125,25 +125,25 @@ func TestHasImport(t *testing.T) {
 		{Dir: "a", Type: "vault_mount", ID: "kv"}, // into module.app
 		{Dir: "a", To: "vault_policy.ops", Type: "vault_policy", Provider: "vault.other", ID: "ops"},
 	}
-	roots := map[string]bool{"a": true, "b": true}
 	for _, c := range []struct {
-		r    model.Resource
-		want bool
+		r      model.Resource
+		target string
+		want   bool
 	}{
-		{model.Resource{Type: "vault_policy", ImportID: "ci"}, true},
-		{model.Resource{Type: "vault_policy", ImportID: "ci", Source: "a"}, true},
+		{model.Resource{Type: "vault_policy", ImportID: "ci"}, "", true},
+		{model.Resource{Type: "vault_policy", ImportID: "ci", Source: "a"}, "a", true},
 		// Another root imports with its own provider configuration.
-		{model.Resource{Type: "vault_policy", ImportID: "ci", Source: "b"}, false},
-		{model.Resource{Type: "vault_policy", ImportID: "ops"}, false},
-		{model.Resource{Type: "vault_policy", ImportID: "ops", Provider: "vault.other"}, true},
-		{model.Resource{Type: "vault_policy", ImportID: "ci", Provider: "vault.other"}, false},
-		{model.Resource{Type: "vault_mount", ImportID: "ci"}, false},
-		{model.Resource{Type: "vault_mount", ImportID: "kv"}, true},
-		{model.Resource{Type: "fake_thing", Identity: map[string]any{"id": "x", "n": json.Number("5")}}, true},
-		{model.Resource{Type: "fake_thing", Identity: map[string]any{"id": "x"}}, false},
-		{model.Resource{Type: "fake_thing", Identity: map[string]any{"ids": []any{"x", json.Number("2")}}}, true},
+		{model.Resource{Type: "vault_policy", ImportID: "ci", Source: "b"}, "b", false},
+		{model.Resource{Type: "vault_policy", ImportID: "ops"}, "", false},
+		{model.Resource{Type: "vault_policy", ImportID: "ops", Provider: "vault.other"}, "", true},
+		{model.Resource{Type: "vault_policy", ImportID: "ci", Provider: "vault.other"}, "", false},
+		{model.Resource{Type: "vault_mount", ImportID: "ci"}, "", false},
+		{model.Resource{Type: "vault_mount", ImportID: "kv"}, "", true},
+		{model.Resource{Type: "fake_thing", Identity: map[string]any{"id": "x", "n": json.Number("5")}}, "", true},
+		{model.Resource{Type: "fake_thing", Identity: map[string]any{"id": "x"}}, "", false},
+		{model.Resource{Type: "fake_thing", Identity: map[string]any{"ids": []any{"x", json.Number("2")}}}, "", true},
 	} {
-		if got := hasImport(c.r, imports, roots); got != c.want {
+		if got := hasImport(c.r, imports, c.target); got != c.want {
 			t.Errorf("%+v: got %v", c.r, got)
 		}
 	}

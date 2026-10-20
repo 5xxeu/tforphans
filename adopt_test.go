@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/model"
 )
 
 // -out-dir writes a file per root module: a plugin assigned with
@@ -135,5 +137,64 @@ func put(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A pending import block counts only in the root a source is assigned to:
+// a imports both policies, plugin1 is assigned to b, where ci is not
+// imported yet, plugin2 to a, where ops already is.
+func TestAdoptOutDirPendingImports(t *testing.T) {
+	t.Chdir(t.TempDir())
+	put(t, "a/imports.tf", "import {\n  to = vault_policy.ci\n  id = \"ci\"\n}\nimport {\n  to = vault_policy.ops\n  id = \"ops\"\n}\n")
+	put(t, "b/main.tf", "")
+	put(t, "empty.tfstate", `{"version": 4, "serial": 1, "lineage": "x", "resources": []}`)
+	ci := `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci"}'`
+	ops := `echo '{"type": "vault_policy", "identity": {"id": "ops"}, "import_id": "ops"}'`
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"adopt", "-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", ci, "-plugin", ops,
+		"-out-dir", "out", "-adopt-root", "plugin1=b", "-adopt-root", "plugin2=a"}, io.Discard, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit %d\n%s", code, stderr.String())
+	}
+	if got := read(t, "out/b/imports.tf"); !strings.Contains(got, `id = "ci"`) {
+		t.Errorf("b/imports.tf:\n%s", got)
+	}
+	if _, err := os.Stat("out/a"); err == nil || !strings.Contains(stderr.String(), "1 objects already have import blocks") {
+		t.Errorf("ops written again\n%s", stderr.String())
+	}
+}
+
+// A root directory named like a plugin does not take that plugin's
+// objects: only terraform query results carry a list block address.
+func TestAdoptTarget(t *testing.T) {
+	t.Chdir(t.TempDir())
+	put(t, "plugin1/main.tf", "")
+	put(t, "vault/main.tf", "")
+	roots := map[string]bool{"plugin1": true}
+	o := &options{}
+	if got := adoptTarget(o, model.Resource{Source: "plugin1"}, roots); got != "" {
+		t.Errorf("plugin1 result went to %s", got)
+	}
+	if got := adoptTarget(o, model.Resource{Source: "plugin1", ListAddress: "list.x.y"}, roots); got != canonDir("plugin1") {
+		t.Errorf("root result: %q", got)
+	}
+	o.adoptRoots = map[string]string{"plugin1": "vault"}
+	if got := adoptTarget(o, model.Resource{Source: "plugin1"}, roots); got != canonDir("vault") {
+		t.Errorf("assigned: %q", got)
+	}
+}
+
+// A link is resolved before .. applies: jump/../prod is team/prod.
+func TestCanonDirLink(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	put(t, "team/sub/x", "")
+	put(t, "team/prod/x", "")
+	if err := os.Symlink(filepath.Join("team", "sub"), "jump"); err != nil {
+		t.Skip(err)
+	}
+	cwd, _ := realCwd()
+	if got, err := relRoot(cwd, "jump"+string(filepath.Separator)+".."+string(filepath.Separator)+"prod"); err != nil || got != filepath.Join("team", "prod") {
+		t.Errorf("%q %v", got, err)
 	}
 }

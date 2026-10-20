@@ -688,13 +688,20 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Skipped = append(sum.Skipped, res.Skipped...)
 		// Import blocks need the provider's local name in that root when it
 		// is not the type prefix (cf = { source = "cloudflare/cloudflare" }).
-		local := ""
-		if versionRoot != "" {
-			names, err := tf.LocalNames(versionRoot)
+		// With -adopt-root the blocks go to that root: its name counts.
+		local, nameRoot := "", versionRoot
+		target, assigned := o.adoptRoots[a.Name]
+		if assigned {
+			nameRoot = target
+		}
+		undeclared := false
+		if nameRoot != "" {
+			names, err := tf.LocalNames(nameRoot)
 			if err != nil {
 				return err
 			}
 			local = names[a.Provider]
+			undeclared = assigned && local == ""
 		}
 		for i := range res.Resources {
 			r := &res.Resources[i]
@@ -704,6 +711,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			}
 			if local != "" && !strings.HasPrefix(r.Type, local+"_") {
 				r.Provider = local
+			}
+			if undeclared {
+				r.UndeclaredProvider = a.Provider
 			}
 			// The scan cannot tell which account or cluster the root's own
 			// provider block points to.
@@ -846,6 +856,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			if err != nil {
 				return err
 			}
+			for i := range ims {
+				ims[i].Dir = canonDir(ims[i].Dir)
+			}
 			imports = append(imports, ims...)
 		}
 		// An earlier adopt whose blocks are not applied yet: keep its
@@ -860,7 +873,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			roots[r] = true
 		}
 		n := len(orphans)
-		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, roots) })
+		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, adoptTarget(o, r, roots)) })
 		if n > len(orphans) {
 			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
 		}

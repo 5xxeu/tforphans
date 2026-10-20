@@ -51,3 +51,38 @@ resource "fake_thing" "a" {
 		t.Errorf("out holds %v", entries)
 	}
 }
+
+// TestIntegrationAdoptOutDirScan: -scan objects assigned to a root use that
+// root's local name of the provider, and a root that does not declare it
+// says so in the block.
+func TestIntegrationAdoptOutDirScan(t *testing.T) {
+	root := scanSetup(t)
+	parent := filepath.Dir(root)
+	if err := os.MkdirAll(filepath.Join(parent, "named"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(parent, "named", "main.tf"), "terraform {\n  required_providers {\n    fk = { source = \"example.com/fake/fake\" }\n  }\n}\n")
+	t.Chdir(parent)
+
+	if code, stdout, stderr := runTool("adopt", "-no-config", "-no-query", "-scan", "fake", "-allow-unpinned", "-out-dir", "out", "-adopt-root", "fake=named"); code != exitOK || stdout != "" {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join("out", "named", "imports.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "  provider = fk\n") || strings.Contains(string(got), "does not declare") {
+		t.Errorf("named/imports.tf:\n%s", got)
+	}
+
+	if code, stdout, stderr := runTool("adopt", "-no-config", "-no-query", "-scan", "fake", "-allow-unpinned", "-out-dir", "out2", "-adopt-root", "fake=root"); code != exitOK || stdout != "" {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	got, err = os.ReadFile(filepath.Join("out2", "root", "imports.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "\n  provider =") || !strings.Contains(string(got), "the root module does not declare example.com/fake/fake") {
+		t.Errorf("root/imports.tf:\n%s", got)
+	}
+}

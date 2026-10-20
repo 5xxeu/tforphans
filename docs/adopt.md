@@ -23,7 +23,8 @@ their addresses, and objects they target are not written again: same type,
 same provider configuration (`provider = vault.other` is not the default
 one), the same literal `id` or `identity`, and, for objects listed by a root
 module, a block in that root. Objects found by `-scan` or a plugin have no
-root, so a block in any root with their provider configuration counts. With several roots or plugins the blocks are grouped under
+root, so a block in any root with their provider configuration counts
+(with `-adopt-root`, only a block in that root). With several roots or plugins the blocks are grouped under
 `# Found by <source>` comments: each group belongs in its own root module.
 `-out-dir DIR` splits them for you (see below).
 Narrow down what to adopt with `-types` or the ignore file, and review
@@ -74,8 +75,9 @@ another account than any root. They go to `_unassigned/<name>.tf`
 know where they belong, name the root module with `-adopt-root NAME=DIR`:
 `cloudflare=zones/example.com` for `-scan cloudflare`, `plugin1=vault` for
 the first `-plugin`. Their blocks then go to that root's file under
-`# Found by` comments, and their names avoid the addresses of that root's
-configuration. `-out-dir` and `-adopt-root` are accepted only on the command
+`# Found by` comments, their names avoid the addresses of that root's
+configuration, and a `-scan` provider is named as that root declares it (a
+note says when it does not). `-out-dir` and `-adopt-root` are accepted only on the command
 line.
 
 [Back to the README](../README.md) · [All guides](README.md)

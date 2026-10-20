@@ -19,12 +19,13 @@ import (
 
 // hasImport reports whether an import block of the configuration already
 // targets r: same type, the same provider configuration, and the same
-// literal id or identity. An object listed by a root module only counts
-// blocks of that root; one found by -scan or a plugin has no root, and a
-// block of any root with its provider configuration counts.
-func hasImport(r model.Resource, imports []tf.Import, roots map[string]bool) bool {
+// literal id or identity. With a target root (the root module that listed
+// r, or the one -adopt-root names) only blocks of that root count; an
+// object of -scan or a plugin without one has no root, and a block of any
+// root with its provider configuration counts.
+func hasImport(r model.Resource, imports []tf.Import, target string) bool {
 	for _, im := range imports {
-		if im.Type != r.Type || roots[r.Source] && im.Dir != r.Source {
+		if im.Type != r.Type || target != "" && im.Dir != target {
 			continue
 		}
 		if providerConfig(im.Provider, im.Type) != providerConfig(r.Provider, r.Type) {
@@ -187,6 +188,9 @@ func adoptRootFlags(o *options, pairs []string) error {
 		if prev, ok := o.adoptRoots[name]; ok && prev != dir {
 			return fmt.Errorf("-adopt-root %s is given twice: %s and %s", name, prev, dir)
 		}
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = real
+		}
 		if fi, err := os.Stat(dir); err != nil {
 			return fmt.Errorf("-adopt-root %s: %w", name, err)
 		} else if !fi.IsDir() {
@@ -245,6 +249,44 @@ func realCwd() (string, error) {
 	return cwd, nil
 }
 
+// fromRoot reports whether a root module's terraform query listed r: only
+// those have a list block address, so a root directory named like a plugin
+// (plugin1) does not take that plugin's objects.
+func fromRoot(r model.Resource, roots map[string]bool) bool {
+	return r.ListAddress != "" && roots[r.Source]
+}
+
+// adoptTarget is the root module directory r is adopted into, as canonDir
+// spells it: the root that listed it, or the one -adopt-root names for its
+// -scan provider or plugin; "" when it has none.
+func adoptTarget(o *options, r model.Resource, roots map[string]bool) string {
+	if fromRoot(r, roots) {
+		return canonDir(r.Source)
+	}
+	if name, ok := sourceName(r.Source); ok {
+		if d, ok := o.adoptRoots[name]; ok {
+			return canonDir(d)
+		}
+	}
+	return ""
+}
+
+// canonDir is the absolute path of a directory with links resolved before
+// .. is applied, as the system resolves it.
+func canonDir(dir string) string {
+	if !filepath.IsAbs(dir) {
+		// Not Abs, which cleans: a link before .. must count as the
+		// system resolves it.
+		if cwd, err := realCwd(); err == nil {
+			dir = cwd + string(filepath.Separator) + dir
+		}
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		return real
+	}
+	return filepath.Clean(dir)
+}
+
 // sourceName is the name -adopt-root uses for a source that is not a root
 // module: the provider of -scan, or pluginN.
 func sourceName(source string) (string, bool) {
@@ -258,14 +300,7 @@ func sourceName(source string) (string, bool) {
 // path its file gets under -out-dir. Links are resolved, so that two
 // spellings of one root share a file.
 func relRoot(cwd, dir string) (string, error) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return "", err
-	}
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = real
-	}
-	rel, err := filepath.Rel(cwd, abs)
+	rel, err := filepath.Rel(cwd, canonDir(dir))
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("root module %s is outside the current directory: run adopt -out-dir from a directory that contains every root module", dir)
 	}
@@ -289,17 +324,16 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 	files := map[string][]model.Resource{}
 	unassigned := map[string]string{} // file: source name
 	for _, r := range orphans {
-		dir := r.Source
-		name, other := sourceName(r.Source)
-		if !roots[r.Source] && other {
-			d, ok := o.adoptRoots[name]
+		dir := adoptTarget(o, r, roots)
+		if dir == "" {
+			name, ok := sourceName(r.Source)
 			if !ok {
-				file := filepath.Join("_unassigned", name+".tf")
-				files[file] = append(files[file], r)
-				unassigned[file] = name
-				continue
+				name = "other"
 			}
-			dir = d
+			file := filepath.Join("_unassigned", name+".tf")
+			files[file] = append(files[file], r)
+			unassigned[file] = name
+			continue
 		}
 		rel, err := relRoot(cwd, dir)
 		if err != nil {
