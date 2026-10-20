@@ -881,16 +881,16 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, r := range o.roots {
 			roots[r] = true
 		}
-		targets := adoptTargets(o, orphans, copies, roots, &sum)
+		placeOrphans(o, orphans, copies, roots, &sum)
 		n := len(orphans)
-		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, targets[originKey(r)]) })
+		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, adoptTarget(o, r, roots)) })
 		if n > len(orphans) {
 			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err = adopt(o, orphans, reserved, targets, &sum, stdout, stderr)
+		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
 	case o.format == "json":
 		err = report.JSON(stdout, orphans, uncertain, sum, baseline)
 	case o.format == "summary":

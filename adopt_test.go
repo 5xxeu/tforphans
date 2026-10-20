@@ -276,3 +276,34 @@ func TestAdoptOutDirDuplicates(t *testing.T) {
 		t.Errorf("stderr:\n%s", stderr)
 	}
 }
+
+// The copy that decides the root also gives the provider configuration,
+// and objects of two providers stay apart.
+func TestAdoptOutDirCopyProvider(t *testing.T) {
+	t.Chdir(t.TempDir())
+	put(t, "a/main.tf", "")
+	put(t, "b/main.tf", "")
+	put(t, "empty.tfstate", `{"version": 4, "serial": 1, "lineage": "x", "resources": []}`)
+	line := func(extra string) string {
+		return `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci"` + extra + `}'`
+	}
+	run1 := func(out string, args ...string) {
+		t.Helper()
+		var stderr bytes.Buffer
+		args = append([]string{"adopt", "-no-config", "-no-query", "-state", "empty.tfstate", "-out-dir", out}, args...)
+		if code := run(context.Background(), args, io.Discard, &stderr); code != exitOK {
+			t.Fatalf("exit %d\n%s", code, stderr.String())
+		}
+	}
+	run1("alias", "-plugin", line(`, "provider": "vault.first"`), "-plugin", line(`, "provider": "vault.second"`), "-adopt-root", "plugin2=b")
+	if got := read(t, "alias/b/imports.tf"); !strings.Contains(got, "provider = vault.second\n") || strings.Contains(got, "vault.first") {
+		t.Errorf("b/imports.tf:\n%s", got)
+	}
+	run1("family", "-plugin", line(`, "provider_source": "hashicorp/vault"`), "-plugin", line(`, "provider_source": "example.com/fork/vault"`),
+		"-adopt-root", "plugin1=a", "-adopt-root", "plugin2=b")
+	for _, f := range []string{"family/a/imports.tf", "family/b/imports.tf"} {
+		if got := read(t, f); strings.Count(got, "import {") != 1 {
+			t.Errorf("%s:\n%s", f, got)
+		}
+	}
+}

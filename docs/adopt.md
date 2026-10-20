@@ -79,7 +79,8 @@ the first `-plugin`. Their blocks then go to that root's file under
 configuration, and a `-scan` provider is named as that root declares it (a
 note says when it does not). An object that several sources found goes
 where any of them points (a plugin assigned to a root counts even when
-dedupe kept another plugin's copy); when they point to different root
+dedupe kept another plugin's copy, and the block then names that plugin's
+provider configuration); when they point to different root
 modules, it is written once and a note names them. `-out-dir` and `-adopt-root` are accepted only on the command
 line.
 
