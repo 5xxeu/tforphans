@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/proc"
 	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/hashicorp/terraform-config-inspect/tfconfig"
@@ -257,7 +258,7 @@ func (r Runner) ProvidersSchema(ctx context.Context) (*Schemas, error) {
 	}
 	var s Schemas
 	if err := json.Unmarshal(out, &s); err != nil {
-		return nil, fmt.Errorf("decode provider schemas: %w", err)
+		return nil, fmt.Errorf("decode provider schemas: %w", &model.ResponseError{Err: err})
 	}
 	return &s, nil
 }

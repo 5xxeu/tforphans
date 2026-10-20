@@ -57,6 +57,7 @@ Exit status: 0 nothing new found, 2 unmanaged resources found (only new with
 ownership with -strict-ownership).
 
 Run "tforphans adopt -h" to generate import blocks for what it finds.
+Run "tforphans doctor -h" to check readiness before an audit.
 Run "tforphans diff -h" to compare two saved JSON reports.
 
 Flags:
@@ -197,6 +198,10 @@ type options struct {
 	terragrunt       bool
 	tgUnits          listFlag // -terragrunt-unit
 	configFile       string   // flags read from this file
+
+	doctor, offline, checkAuth bool
+	doctorConfigFlags          map[string]bool
+	doctorIgnoreFlags          *flag.FlagSet
 }
 
 // version is set by release builds; go install builds take the module
@@ -230,6 +235,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	if len(argv) > 0 && argv[0] == "adopt" {
 		o.adopt, argv = true, argv[1:]
 		name, help = "tforphans adopt", adoptUsage
+	} else if len(argv) > 0 && argv[0] == "doctor" {
+		o.doctor, argv = true, argv[1:]
+		name, help = "tforphans doctor", doctorUsage
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -293,6 +301,11 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	noConfig := fs.Bool("no-config", false, "do not read "+defaultConfigFile)
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
+	if o.doctor {
+		fs = doctorFlags(fs, o)
+		fs.SetOutput(stderr)
+		fs.Usage = func() { fmt.Fprint(stderr, doctorUsage); fs.PrintDefaults() }
+	}
 	// Allow flags after positional arguments.
 	for rest := argv; ; {
 		if err := fs.Parse(rest); err != nil {
@@ -460,6 +473,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 }
 
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
+	if len(argv) > 0 && argv[0] == "doctor" {
+		return runDoctor(ctx, argv, stdout, stderr)
+	}
 	if len(argv) > 0 && argv[0] == "diff" {
 		return runDiff(argv[1:], stdout, stderr)
 	}

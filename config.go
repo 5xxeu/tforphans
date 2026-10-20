@@ -84,6 +84,9 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
+		if o.doctor && o.doctorConfigFlags[key] && !slices.Contains(commandLineOnly, key) && !doctorIgnoreKey(key) {
+			continue
+		}
 		vals, err := configValues(doc[key])
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", path, key, err)
@@ -101,6 +104,9 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			continue
 		}
 		f := fs.Lookup(key)
+		if o.doctor && doctorIgnoreKey(key) {
+			f = o.doctorIgnoreFlags.Lookup(key)
+		}
 		switch {
 		case slices.Contains(commandLineOnly, key):
 			return fmt.Errorf("%s: %s is accepted only on the command line: it runs a command, sends credentials or writes a file, and a change to a config file should not be enough for that", path, key)
@@ -141,7 +147,11 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 				}
 				v = p
 			}
-			if err := fs.Set(key, v); err != nil {
+			target := fs
+			if o.doctor && doctorIgnoreKey(key) {
+				target = o.doctorIgnoreFlags
+			}
+			if err := target.Set(key, v); err != nil {
 				return fmt.Errorf("%s: %s: %w", path, key, err)
 			}
 		}
