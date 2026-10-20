@@ -466,7 +466,16 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 				return identities{s, f}, e
 			})
 			if err != nil || len(result.failed) > 0 {
-				d.add(id, "failed", "identity read failed", root, "Check provider credentials and connectivity")
+				malformed := doctorResponseError(err)
+				for _, failure := range result.failed {
+					malformed = malformed || doctorResponseError(failure)
+				}
+				if malformed {
+					d.incomplete = true
+					d.add(id, "failed", "could not decode identity plan", root, "Check Terraform and provider output, then retry")
+				} else {
+					d.add(id, "failed", "identity read failed", root, "Check provider credentials and connectivity")
+				}
 			} else {
 				values := []string{}
 				for _, k := range slices.Sorted(maps.Keys(result.scopes[ref])) {
@@ -605,14 +614,12 @@ func doctorNext(args, fixes []string) []string {
 }
 
 func doctorArg(arg string) string {
-	key, value, ok := strings.Cut(arg, "=")
-	if !ok {
+	parsed, err := tf.ParseArg(arg)
+	if err != nil {
 		return "<redacted>"
 	}
-	_, name, scoped := strings.Cut(key, ":")
-	if !scoped {
-		name = key
-	}
+	key, value, _ := strings.Cut(arg, "=")
+	name := parsed.Name
 	camelKey := strings.HasSuffix(name, "Key")
 	name = strings.ToLower(name)
 	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' || r == '.' })

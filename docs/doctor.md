@@ -25,8 +25,11 @@ to list-capable types; matching by attributes still works, so this is a
 warning. A successful state pull proves access to the backend, not permission
 to read cloud resources.
 
-`-check-auth` is opt-in. AWS, Google and Azure use the existing identity data
-sources with targeted plans, refresh disabled and locking disabled. Proxmox
+`-check-auth` is opt-in and accepted only on the command line, never from
+a config file (including `-config`). A targeted identity plan can evaluate
+provider configuration dependencies. `offline` may be set in config.
+AWS, Google and Azure use the existing identity data sources with targeted
+plans, refresh disabled and locking disabled. Proxmox
 uses only its adapter probe in a temporary root with the pinned provider and
 environment credentials, also through a targeted plan. Neither runs a full
 scan. Other providers, including Cloudflare, report authentication as

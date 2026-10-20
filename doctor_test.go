@@ -120,6 +120,10 @@ case "$1 $2" in
   if [ "$DOCTOR_STATE_FAIL" = 1 ]; then printf 'secret state error' >&2; exit 1; fi
   if [ "$DOCTOR_STATE_BAD" = 1 ]; then printf 'invalid secret'; exit 0; fi
   printf '%s' '{"version":4,"resources":[{"mode":"managed","type":"aws_thing","name":"a","provider":"provider[\"registry.terraform.io/hashicorp/aws\"]","instances":[{"attributes":{"id":"secret"}}]}]}' ;;
+ "plan "*)
+  if [ "$DOCTOR_IDENTITY_PLAN_FAIL" = 1 ]; then printf 'Error: identity plan could not decode provider credentials' >&2; exit 1; fi
+  exit 0 ;;
+ "show -json") printf '%s' "$DOCTOR_IDENTITY_JSON" ;;
  *) printf 'forbidden invocation' >&2; exit 90 ;;
 esac
 `
@@ -710,6 +714,133 @@ func TestDoctorStateLimits(t *testing.T) {
 			c := doctorFindCheck(t, d, "states.read", ".")
 			if !strings.Contains(c.Remediation, tc.fix) {
 				t.Fatal(c)
+			}
+		})
+	}
+}
+
+func TestDoctorCheckAuthCommandLineOnly(t *testing.T) {
+	bin := doctorFixture(t)
+	marker := filepath.Join(t.TempDir(), "executed")
+	t.Setenv("DOCTOR_EXECUTED", marker)
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch \"$DOCTOR_EXECUTED\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []bool{false, true} {
+		for _, value := range []string{"true", "false"} {
+			t.Run(fmt.Sprintf("explicit=%t/value=%s", explicit, value), func(t *testing.T) {
+				path := defaultConfigFile
+				if explicit {
+					path = "doctor.yaml"
+				}
+				if err := os.WriteFile(path, []byte("check-auth: "+value+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Remove(path) })
+				args := []string{"doctor", "-terraform", bin, "-check-auth=false"}
+				if explicit {
+					args = append(args, "-config", path)
+				}
+				var out, stderr bytes.Buffer
+				code := run(context.Background(), args, &out, &stderr)
+				if code != 1 || out.Len() != 0 || !strings.Contains(stderr.String(), "check-auth is accepted only on the command line: it runs a command, sends credentials or writes a file") {
+					t.Fatalf("exit %d: %s %s", code, &out, &stderr)
+				}
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatalf("a command ran: %v", err)
+				}
+			})
+		}
+	}
+	if err := os.WriteFile(defaultConfigFile, []byte("offline: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"doctor", "-check-auth"}, {"doctor", "-config", defaultConfigFile, "-check-auth"}} {
+		o, err := parseFlags(args, io.Discard)
+		if err != nil || !o.offline || !o.checkAuth {
+			t.Fatalf("offline config and CLI auth: %+v, %v", o, err)
+		}
+	}
+}
+
+func TestDoctorArgumentNameNormalization(t *testing.T) {
+	for _, arg := range []string{
+		"api_key =sensitive", " api_key =sensitive", "\tapiKey\t=sensitive",
+		" aws_* : api_key =sensitive", "aws_*: password \t=sensitive", " type : token =sensitive",
+	} {
+		t.Run(arg, func(t *testing.T) {
+			key, _, _ := strings.Cut(arg, "=")
+			if got := doctorArg(arg); got != key+"=<redacted>" {
+				t.Fatalf("%q became %q", arg, got)
+			}
+			for _, argv := range [][]string{{"-arg", arg}, {"--arg=" + arg}} {
+				d := doctorReport{NextCommand: doctorNext(argv, nil)}
+				for _, format := range []string{"text", "json"} {
+					var out bytes.Buffer
+					if err := d.write(&out, format); err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(out.String(), "sensitive") {
+						t.Fatal(out.String())
+					}
+				}
+			}
+		})
+	}
+	for _, arg := range []string{"api_key=sensitive,auto", ":api_key=sensitive", "api_key=", "invalid sensitive"} {
+		if got := doctorArg(arg); got != "<redacted>" {
+			t.Fatalf("invalid %q became %q", arg, got)
+		}
+	}
+	for _, arg := range []string{" key_vault_name =prod", "type : key_name =name", " type : custom =value"} {
+		if got := doctorArg(arg); got != arg {
+			t.Fatalf("safe %q became %q", arg, got)
+		}
+	}
+}
+
+func TestDoctorIdentityResponseErrors(t *testing.T) {
+	bin := doctorFixture(t)
+	if err := os.WriteFile("main.tf", []byte("terraform {\n required_providers {\n aws = { source = \"hashicorp/aws\" }\n }\n}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, reply string
+		planFails   bool
+		code        int
+		status      string
+	}{
+		{"invalid JSON", "invalid sensitive", false, 1, "unknown"},
+		{"truncated JSON", `{"prior_state":`, false, 1, "unknown"},
+		{"wrong JSON type", `{"prior_state":[]}`, false, 1, "unknown"},
+		{"trailing JSON", `{} {}`, false, 1, "unknown"},
+		{"missing identity attributes", `{}`, false, 2, "needs_configuration"},
+		{"plan failure", "", true, 2, "needs_configuration"},
+		{"valid", `{"prior_state":{"values":{"root_module":{"resources":[{"mode":"data","address":"data.aws_caller_identity.tfo_id_0_0","values":{"account_id":"123"}},{"mode":"data","address":"data.aws_region.tfo_id_0_1","values":{"region":"eu"}}]}}}}`, false, 0, "ready"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DOCTOR_IDENTITY_JSON", tc.reply)
+			if tc.planFails {
+				t.Setenv("DOCTOR_IDENTITY_PLAN_FAIL", "1")
+			}
+			var out, stderr bytes.Buffer
+			code := run(context.Background(), []string{"doctor", "-no-config", "-terraform", bin, "-arg", "region=eu", "-check-auth", "-format", "json"}, &out, &stderr)
+			if code != tc.code {
+				t.Fatalf("exit %d want %d: %s %s", code, tc.code, &out, &stderr)
+			}
+			var d doctorReport
+			if err := json.Unmarshal(out.Bytes(), &d); err != nil {
+				t.Fatal(err)
+			}
+			if d.Status != tc.status {
+				t.Fatalf("status %s want %s", d.Status, tc.status)
+			}
+			c := doctorFindCheck(t, d, "auth.aws", ".")
+			if tc.code == 1 && (c.Status != "failed" || c.Message != "could not decode identity plan" || strings.Contains(c.Remediation, "credentials")) {
+				t.Fatalf("malformed response: %+v", c)
+			}
+			if strings.Contains(out.String(), "sensitive") {
+				t.Fatal(out.String())
 			}
 		})
 	}

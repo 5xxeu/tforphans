@@ -18,13 +18,13 @@ import (
 const defaultConfigFile = ".tforphans.yaml"
 
 // commandLineOnly are keys no config file may set, not even one given with
-// -config: they run any command (plugin, terraform, terragrunt, which runs
-// the run_cmd and hooks of the units), send credentials to
-// an address of the file's choosing (state URLs, allow-http) or overwrite
-// any file (adopt -o). Config files live in repositories and change in
-// pull requests that a CI job then runs; such a change has to show in the
+// -config: they run commands (plugin, terraform, terragrunt, check-auth),
+// including units' run_cmd and hooks or provider configuration dependencies,
+// send credentials to an address of the file's choosing (state URLs, allow-http)
+// or overwrite any file (adopt -o). Config files live in repositories and
+// change in pull requests that a CI job then runs; such a change has to show in the
 // command itself.
-var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o", "out-dir", "adopt-root"}
+var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o", "out-dir", "adopt-root", "check-auth"}
 
 // configOnlyExplicit are keys a config file found on its own may not set,
 // one given with -config may: they run the root's data sources (refresh
