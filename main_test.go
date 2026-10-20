@@ -638,7 +638,7 @@ func TestLoadIgnoreDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ig, err := loadIgnore(o)
+		ig, err := loadIgnore(context.Background(), o)
 		if err != nil {
 			t.Fatal(err)
 		}

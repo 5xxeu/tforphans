@@ -709,18 +709,19 @@ func (ix *Index) match(r model.Resource, rejected func(in *Instance, why string)
 					if !model.SameProvider(r.ProviderSource, by.parent.Provider) {
 						continue
 					}
-					verified := k == full
+					verified, scopeUnknown := k == full, false
 					if r.Scope != nil {
 						inScope, known := scopeCheck(r.Scope, by.parent.Type, by.parent)
 						if !inScope {
 							continue
 						}
-						verified = verified && known
+						verified, scopeUnknown = verified && known, !known
 					}
-					m := Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified, Via: "owner", Source: by.parent.Source}
+					m := Match{Address: by.parent.Address + "." + by.what, Managed: true, Verified: verified, Via: "owner", Source: by.parent.Source, ScopeUnknown: scopeUnknown}
 					if verified {
 						return m
 					}
+					m.Unknown = unknownKeys(r)
 					if !best.Managed {
 						best = m
 					}

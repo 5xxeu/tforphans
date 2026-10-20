@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,42 @@ func TestDecodeJSON(t *testing.T) {
 		if err := DecodeJSON([]byte(bad), &v); err == nil {
 			t.Errorf("%q: no error", bad)
 		}
+	}
+}
+
+func TestDecodeJSONUnique(t *testing.T) {
+	var v map[string]any
+	for _, ok := range []string{`{"a":{"x":1},"b":{"x":2}}`, `[{"a":1},{"a":2}]`, `{"a":[{"x":1,"y":2}]}`, `"s"`, `{}`,
+		// Nested objects are maps: keys differing in case are two keys.
+		`{"type":"t","attributes":{"tags":{"Env":"prod","env":"test"}}}`, `{"identity":{"Name":"a","name":"b"}}`} {
+		if err := DecodeJSONUnique([]byte(ok), new(any)); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		`{"done":false,"done":true}`,
+		`{"done":false,"\u0064one":true}`,
+		`{"type":"a","Type":"b"}`,
+		"{\"s\":1,\"\u017f\":2}", // long s folds to s
+		`{"identity":{"name":"a","name":"b"}}`,
+		`{"identity":{"name":"a","n\u0061me":"b"}}`,
+		`{"a":[{"x":1,"x":2}]}`,
+		`{"a":1}{"b":2}`,
+		`{"a":`,
+	} {
+		if err := DecodeJSONUnique([]byte(bad), &v); err == nil {
+			t.Errorf("%s: no error", bad)
+		}
+	}
+	// Deep nesting is an error, not a stack overflow; what encoding/json
+	// accepts still passes.
+	deep := strings.Repeat("[", 10_000_000)
+	if err := DecodeJSONUnique([]byte(deep), new(any)); err == nil {
+		t.Error("deep nesting: no error")
+	}
+	ok := strings.Repeat("[", 9000) + strings.Repeat("]", 9000)
+	if err := DecodeJSONUnique([]byte(ok), new(any)); err != nil {
+		t.Errorf("nesting 9000: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package report
 
 import (
 	"bufio"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -50,17 +51,36 @@ type ignoreCond struct {
 var condition = regexp.MustCompile(`^(attr\.)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_.-]+)?)=(\S*)$`)
 
 // LoadIgnore reads an ignore file. A missing optional file is an empty rule
-// set.
-func LoadIgnore(path string, optional bool) (*Ignore, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if optional && os.IsNotExist(err) {
+// set. It gives up when ctx ends (-timeout): a named pipe nobody writes to
+// blocks already when it is opened. The file is parsed as it is read, so
+// a huge line fails at the scanner's limit instead of filling memory (the
+// file may come with a repository). The reading goroutine stays blocked
+// until the process exits; nothing waits for it.
+func LoadIgnore(ctx context.Context, path string, optional bool) (*Ignore, error) {
+	type result struct {
+		ig  *Ignore
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		f, err := os.Open(path)
+		if err != nil {
+			done <- result{nil, err}
+			return
+		}
+		defer f.Close()
+		ig, err := parseIgnore(f, path)
+		done <- result{ig, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil && optional && os.IsNotExist(res.err) {
 			return &Ignore{}, nil
 		}
-		return nil, err
+		return res.ig, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	defer f.Close()
-	return parseIgnore(f, path)
 }
 
 func ParseIgnore(r io.Reader) (*Ignore, error) { return parseIgnore(r, "ignore") }

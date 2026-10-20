@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -515,7 +516,7 @@ func TestIgnoreRuleOrigin(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# comment\n\nvault_policy:tmp-*\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ig, err := LoadIgnore(path, false)
+	ig, err := LoadIgnore(context.Background(), path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,5 +551,20 @@ func TestBuildCoverageConfigs(t *testing.T) {
 	})
 	if !incomplete {
 		t.Errorf("coverage %+v", got)
+	}
+}
+
+// TestLoadIgnoreLongLine: an ignore file comes with the repository; one
+// huge line fails at the scanner's limit instead of being read whole.
+func TestLoadIgnoreLongLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".tforphans-ignore")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 8<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadIgnore(context.Background(), path, true); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Errorf("long line: %v", err)
+	}
+	if ig, err := LoadIgnore(context.Background(), filepath.Join(t.TempDir(), "missing"), true); err != nil || ig == nil {
+		t.Errorf("missing optional file: %v %v", ig, err)
 	}
 }

@@ -589,11 +589,16 @@ func TestMatchBootDisk(t *testing.T) {
 			t.Errorf("%v: got %+v", c.r.Identity, m)
 		}
 	}
+	// -explain says why: the listing left project empty, or state cannot
+	// tell where the object lives.
+	if m := ix.Match(disk("vm", "z1", "")); !slices.Equal(m.Unknown, []string{"project"}) || m.ScopeUnknown {
+		t.Errorf("empty project: %+v", m)
+	}
 	// A plugin result marked unverified stays unverified; another
 	// provider's disk is not owned.
 	r := disk("vm", "z1", "p1")
 	r.Scope = &model.Scope{Unverifiable: true}
-	if m := ix.Match(r); !m.Managed || m.Verified {
+	if m := ix.Match(r); !m.Managed || m.Verified || !m.ScopeUnknown || len(m.Unknown) != 0 {
 		t.Errorf("unverifiable scope: %+v", m)
 	}
 	r = disk("vm", "z1", "p1")

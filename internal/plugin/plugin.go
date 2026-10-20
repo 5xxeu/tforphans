@@ -130,7 +130,7 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, bool,
 			continue
 		}
 		var l line
-		if err := model.DecodeJSON(b, &l); err != nil {
+		if err := model.DecodeJSONUnique(b, &l); err != nil {
 			return nil, nil, false, fmt.Errorf("%s line %d: %w", source, n, err)
 		}
 		if l.Done != nil || bytes.ContainsRune(b, '\\') {
