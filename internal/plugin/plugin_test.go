@@ -331,6 +331,8 @@ func TestParseDone(t *testing.T) {
 		{"repeated escaped", `{"done":false,"d\u006fne":true}`, 0, false, true},
 		{"repeated type", `{"type":"t","Type":"u","identity":{"id":"x"}}`, 0, false, true},
 		{"repeated identity key", `{"type":"t","identity":{"id":"x","id":"y"}}`, 0, false, true},
+		{"identity keys in two cases", `{"type":"t","identity":{"id":"x","ID":"y"}}`, 1, false, false},
+		{"tags in two cases", `{"type":"t","identity":{"id":"x"},"attributes":{"tags":{"Env":"prod","env":"test"}}}`, 1, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			res, warns, done, err := Parse([]byte(c.output), "plugin1")

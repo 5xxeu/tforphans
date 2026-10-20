@@ -196,10 +196,12 @@ func DecodeJSON(data []byte, v any) error {
 }
 
 // DecodeJSONUnique is DecodeJSON for input that tforphans does not trust
-// to be unambiguous (plugin lines): a key repeated in one object, also in
-// another case, is an error. encoding/json would keep the last value and
-// match struct fields ignoring case, so {"done":false,"done":true} or
-// {"type":"a","Type":"b"} would mean whatever the last copy says.
+// to be unambiguous (plugin lines): a key repeated in one object is an
+// error, since encoding/json would keep the last value and
+// {"done":false,"done":true} would mean done. Keys of the top-level object
+// also may not repeat in another case: they fill struct fields, which
+// encoding/json matches ignoring case ({"type":"a","Type":"b"}). Nested
+// objects decode into maps, where "Env" and "env" are two tags.
 func DecodeJSONUnique(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber() // a float64 would overflow on 1e7000000000
@@ -215,7 +217,7 @@ func DecodeJSONUnique(data []byte, v any) error {
 const maxDepth = 10000
 
 // uniqueKeys reads one JSON value from dec and checks its objects for
-// repeated keys. Keys come unescaped from the decoder, so "\u0064one" is
+// repeated keys, ignoring case at depth 0. Keys come unescaped from the decoder, so "\u0064one" is
 // "done".
 func uniqueKeys(dec *json.Decoder, depth int) error {
 	if depth > maxDepth {
@@ -234,11 +236,14 @@ func uniqueKeys(dec *json.Decoder, depth int) error {
 				return err
 			}
 			key, _ := tok.(string)
-			folded := foldKey(key)
-			if seen[folded] {
+			seenAs := key
+			if depth == 0 {
+				seenAs = foldKey(key)
+			}
+			if seen[seenAs] {
 				return fmt.Errorf("key %q repeated in one object", key)
 			}
-			seen[folded] = true
+			seen[seenAs] = true
 			if err := uniqueKeys(dec, depth+1); err != nil {
 				return err
 			}

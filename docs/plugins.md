@@ -15,8 +15,8 @@ fails the plugin and kills its process group while the command is still
 running. After the command exits, tforphans stops reading its output;
 descendants that outlived it may keep running. Errors name the plugin by
 position (`plugin1`, `plugin2`), never its command line. A key repeated
-in one object, also in another case (`"type"` and `"Type"`), fails the
-plugin: JSON readers disagree on which copy wins.
+in one object fails the plugin, and so do top-level keys that differ only
+in case (`"type"` and `"Type"`): JSON readers disagree on which copy wins.
 
 - `type`: Terraform resource type.
 - `identity`: attributes to match. Against state without resource identity

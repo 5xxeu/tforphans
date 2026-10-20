@@ -93,7 +93,9 @@ func TestDecodeJSON(t *testing.T) {
 
 func TestDecodeJSONUnique(t *testing.T) {
 	var v map[string]any
-	for _, ok := range []string{`{"a":{"x":1},"b":{"x":2}}`, `[{"a":1},{"a":2}]`, `{"a":[{"x":1,"y":2}]}`, `"s"`, `{}`} {
+	for _, ok := range []string{`{"a":{"x":1},"b":{"x":2}}`, `[{"a":1},{"a":2}]`, `{"a":[{"x":1,"y":2}]}`, `"s"`, `{}`,
+		// Nested objects are maps: keys differing in case are two keys.
+		`{"type":"t","attributes":{"tags":{"Env":"prod","env":"test"}}}`, `{"identity":{"Name":"a","name":"b"}}`} {
 		if err := DecodeJSONUnique([]byte(ok), new(any)); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}
@@ -104,6 +106,7 @@ func TestDecodeJSONUnique(t *testing.T) {
 		`{"type":"a","Type":"b"}`,
 		"{\"s\":1,\"\u017f\":2}", // long s folds to s
 		`{"identity":{"name":"a","name":"b"}}`,
+		`{"identity":{"name":"a","n\u0061me":"b"}}`,
 		`{"a":[{"x":1,"x":2}]}`,
 		`{"a":1}{"b":2}`,
 		`{"a":`,
