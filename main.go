@@ -70,6 +70,9 @@ each one. Put the blocks into the root module and generate the configuration:
   tforphans adopt -o imports.tf
   terraform plan -generate-config-out=generated.tf
 
+With several root modules, -out-dir DIR writes a file per root module
+(DIR/<root path>/imports.tf) to copy into it.
+
 Objects that state may manage but cannot confirm (uncertain) get no block.
 When a state could not be read, adopt stops: objects of that state would show
 as unmanaged and be imported a second time (-allow-incomplete writes anyway).
@@ -150,8 +153,10 @@ type options struct {
 	exclude                glob.List
 	limit                  int
 	format                 string
-	adopt                  bool   // "adopt" subcommand: write import blocks
-	out                    string // adopt: output file, empty for stdout
+	adopt                  bool              // "adopt" subcommand: write import blocks
+	out                    string            // adopt: output file, empty for stdout
+	outDir                 string            // adopt: directory with a file per root module
+	adoptRoots             map[string]string // adopt -adopt-root: -scan provider or pluginN to root module directory
 	baselinePath           string
 	environment            string
 	ignorePath             string
@@ -232,7 +237,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fmt.Fprint(stderr, help)
 		fs.PrintDefaults()
 	}
-	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore listFlag
+	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.IntVar(&o.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
 	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
@@ -262,6 +267,8 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.IntVar(&o.limit, "limit", 100000, "maximum results per list query")
 	if o.adopt {
 		fs.StringVar(&o.out, "o", "", "write the import blocks to this new file instead of stdout")
+		fs.StringVar(&o.outDir, "out-dir", "", "write the import blocks to this new directory, one imports.tf per root module at its path from the current directory")
+		fs.Var(&adoptRoots, "adopt-root", "with -out-dir: put what a -scan provider or plugin found into this root module's file, e.g. cloudflare=zones/example.com or plugin1=vault; without it they go to _unassigned/NAME.tf; repeatable")
 		fs.BoolVar(&o.allowIncomplete, "allow-incomplete", false, "write import blocks even when a state could not be read (its objects would be imported a second time)")
 		fs.BoolVar(&o.namesFromTags, "names-from-tags", false, "name the resources after their Name tag where the type has tags (slower: terraform query returns whole objects for those types)")
 	} else {
@@ -398,6 +405,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 			return nil, fmt.Errorf("unknown -scan %q", s)
 		}
 	}
+	if err := adoptRootFlags(o, adoptRoots); err != nil {
+		return nil, err
+	}
 	for _, sc := range scanScopes {
 		if sc == "state" {
 			o.scopeState = true
@@ -442,6 +452,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	if o.noQuery && len(o.plugins) == 0 && len(o.scans) == 0 {
 		return nil, errors.New("-no-query needs at least one -scan or -plugin")
+	}
+	if err := outDirRoots(o); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
@@ -823,7 +836,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	case o.adopt:
 		reserved := maps.Clone(idx.RootAddresses())
 		var imports []tf.Import
-		for _, dir := range slices.Concat(o.roots, stateDirs) {
+		for _, dir := range slices.Concat(o.roots, stateDirs, adoptRootDirs(o)) {
 			cfg, err := tf.ConfigAddresses(dir)
 			if err != nil {
 				return err
