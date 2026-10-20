@@ -39,17 +39,35 @@ func killDescendants(pid int) {
 
 // running tells whether pid is a process that has not exited. A zombie has
 // exited: in a container without an init that reaps orphans it stays in
-// the process table, and kill(pid, 0) still succeeds.
-func running(pid int) bool {
+// the process table, and kill(pid, 0) still succeeds. An error means that
+// ps could not tell, which must fail the test rather than pass it.
+func running(pid int) (bool, error) {
 	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-		return false
+		return false, nil
 	}
 	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return false // ps exits 1 when there is no such process
+		// ps exits 1 for a pid that is gone; it may have exited just now.
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return false, nil
+		}
+		return false, fmt.Errorf("ps -p %d: %w", pid, err)
 	}
 	stat := strings.TrimSpace(string(out))
-	return stat != "" && !strings.HasPrefix(stat, "Z")
+	if stat == "" {
+		return false, fmt.Errorf("ps -p %d: no state", pid)
+	}
+	return !strings.HasPrefix(stat, "Z"), nil
+}
+
+// mustRun is running for tests, failing them when ps cannot tell.
+func mustRun(t *testing.T, pid int) bool {
+	t.Helper()
+	alive, err := running(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return alive
 }
 
 // TestProcessHelpers: an exited child that is not waited for yet is a
@@ -60,11 +78,11 @@ func TestProcessHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
-	for running(zombie.Process.Pid) && time.Now().Before(deadline) {
+	for mustRun(t, zombie.Process.Pid) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if err := syscall.Kill(zombie.Process.Pid, 0); err != nil || running(zombie.Process.Pid) {
-		t.Errorf("zombie: kill %v, running %v", err, running(zombie.Process.Pid))
+	if err := syscall.Kill(zombie.Process.Pid, 0); err != nil || mustRun(t, zombie.Process.Pid) {
+		t.Errorf("zombie: kill %v, running %v", err, mustRun(t, zombie.Process.Pid))
 	}
 	_ = zombie.Wait()
 
@@ -85,10 +103,10 @@ func TestProcessHelpers(t *testing.T) {
 	if err := sh.Wait(); err != nil {
 		t.Logf("sh: %v", err) // wait returns once sleep is killed
 	}
-	for running(sleep) && time.Now().Before(deadline) {
+	for mustRun(t, sleep) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if running(sleep) {
+	if mustRun(t, sleep) {
 		_ = syscall.Kill(sleep, syscall.SIGKILL)
 		t.Error("grandchild still runs")
 	}

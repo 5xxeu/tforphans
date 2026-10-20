@@ -130,7 +130,7 @@ func waitGone(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if !running(pid) {
+		if !mustRun(t, pid) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
