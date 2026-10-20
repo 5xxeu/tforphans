@@ -44,6 +44,8 @@ pagination) are warnings when they leave coverage incomplete; deliberate
 adapter exclusions are `skipped`. They do not require configuration fixes
 or prevent readiness. A missing Terraform data directory is a warning;
 operations that actually fail because initialization is needed still fail.
+A state-only root without Terraform configuration also receives a warning;
+state reads determine its readiness. A query root still needs configuration.
 Schema errors and zero discovery blocks still fail their respective checks.
 
 Query and scan plan skips are grouped by category and status for each root.
@@ -116,7 +118,12 @@ quoting. JSON contains the command as an argument array. Doctor-only flags
 `-offline`, `-check-auth` and `-format` are removed only in flag positions;
 string values such as `-state -offline` are preserved. The command uses the
 same parsed arguments as doctor, including flags after roots and `--` to end
-flags. Missing argument suggestions are inserted before `--`, when present. Argument suggestions are collected across all roots:
+flags. Missing argument suggestions are inserted before `--`, when present.
+When a suggestion adds the first CLI occurrence of a repeated flag, effective
+config values for that flag are copied into the command too, with the same
+redaction as CLI values. This preserves config arguments and scans instead
+of replacing their lists with the fix. Existing CLI overrides remain in effect.
+Argument suggestions are collected across all roots:
 when every type needing an argument has the same suggested value, the flag
 is global (`-arg NAME=VALUE`). Different suggested values use one
 `-arg TYPE:NAME=VALUE` per type, including in each check's remediation.

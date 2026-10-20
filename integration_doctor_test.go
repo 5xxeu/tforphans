@@ -186,3 +186,28 @@ func TestIntegrationDoctorStateOnlyUninitialized(t *testing.T) {
 		t.Fatalf("Terraform data directory was created: %v", err)
 	}
 }
+
+func TestIntegrationDoctorStateOnlyWithoutConfiguration(t *testing.T) {
+	if _, err := exec.LookPath("terraform"); err != nil {
+		t.Skip("terraform not in PATH")
+	}
+	t.Chdir(t.TempDir())
+	write(t, "terraform.tfstate", `{"version":4,"serial":1,"lineage":"doctor-state-only","resources":[]}`)
+	code, out, stderr := runTool("doctor", "-no-config", "-no-query", "-plugin", "echo unused", "-format", "json", ".")
+	if code != 0 {
+		t.Fatalf("exit %d: %s\n%s", code, out, stderr)
+	}
+	var d doctorReport
+	if err := json.Unmarshal([]byte(out), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "ready" {
+		t.Fatal(out)
+	}
+	if c := doctorFindCheck(t, d, "root.config", "."); c.Status != "warning" {
+		t.Fatal(c)
+	}
+	if c := doctorFindCheck(t, d, "states.read", ""); c.Status != "ok" {
+		t.Fatal(c)
+	}
+}

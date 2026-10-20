@@ -256,7 +256,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.incomplete = true
 		d.add("run", "failed", "diagnostics interrupted or overall timeout exceeded", "", "Increase -timeout or retry")
 	}
-	d.NextCommand = doctorNext(o.doctorArgs, d.fixes)
+	d.NextCommand = doctorNext(doctorConfiguredArgs(o, d.fixes), d.fixes)
 	code := d.result(o.offline)
 	if err := d.write(stdout, o.format); err != nil {
 		fmt.Fprintln(stderr, "error:", report.Clean(err.Error()))
@@ -323,7 +323,11 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.providers = append(d.providers, slices.Collect(maps.Keys(declared))...)
 	}
 	if err != nil || !tf.HasConfig(root) {
-		d.add("root.config", "failed", "root configuration is missing or invalid", root, "Check the root's Terraform configuration")
+		status, message, fix := "failed", "root configuration is missing or invalid", "Check the root's Terraform configuration"
+		if !query && err == nil {
+			status, message, fix = "warning", "no root configuration; used only for state", ""
+		}
+		d.add("root.config", status, message, root, fix)
 	} else {
 		d.add("root.config", "ok", "root configuration parsed", root, "")
 	}
@@ -610,6 +614,40 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 	d.add("states.read", status, fmt.Sprintf("%d of %d states read", n, total), "", "")
 	d.Checks[len(d.Checks)-1].Read, d.Checks[len(d.Checks)-1].Total = &n, &total
 	return all
+}
+
+func doctorConfiguredArgs(o *options, fixes []string) []commandArg {
+	args := slices.Clone(o.doctorArgs)
+	set := map[string]bool{}
+	for _, arg := range args {
+		if !arg.positional && !arg.end {
+			set[arg.name] = true
+		}
+	}
+	var preserved []commandArg
+	for i := 0; i+1 < len(fixes); i += 2 {
+		name := strings.TrimPrefix(fixes[i], "-")
+		if set[name] {
+			continue
+		}
+		set[name] = true
+		f := o.doctorFlagSet.Lookup(name)
+		if f == nil {
+			continue
+		}
+		// A CLI occurrence replaces the config's whole list, so keep the
+		// effective values before adding the first occurrence as a fix.
+		if values, ok := f.Value.(*listFlag); ok {
+			for _, value := range *values {
+				preserved = append(preserved, commandArg{raw: "-" + name, name: name, value: value, separate: true})
+			}
+		}
+	}
+	at := slices.IndexFunc(args, func(arg commandArg) bool { return arg.end })
+	if at < 0 {
+		at = len(args)
+	}
+	return slices.Insert(args, at, preserved...)
 }
 
 func doctorNext(args []commandArg, fixes []string) []string {
