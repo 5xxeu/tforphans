@@ -18,16 +18,16 @@ func TestDoctorNextFlagValues(t *testing.T) {
 		name                             string
 		args, want, roots, states, fixes []string
 	}{
-		{"state value", []string{"-state", "-offline", "ROOT"}, []string{"tforphans", "-state", "-offline", "ROOT"}, []string{"ROOT"}, []string{"-offline"}, nil},
+		{"state value", []string{"-state", "-offline", "ROOT"}, []string{"tforphans", "-state", "-offline", "--", "ROOT"}, []string{"ROOT"}, []string{"-offline"}, nil},
 		{"config value", []string{"-config", "-format"}, []string{"tforphans", "-config", "-format"}, []string{"."}, nil, nil},
 		{"attached format", []string{"-format=json"}, []string{"tforphans"}, []string{"."}, nil, nil},
 		{"false offline", []string{"-offline=false"}, []string{"tforphans"}, []string{"."}, nil, nil},
 		{"end flags", []string{"--", "-offline", "-format=json", "ROOT"}, []string{"tforphans", "--", "-offline", "-format=json", "ROOT"}, []string{"-offline", "-format=json", "ROOT"}, nil, nil},
-		{"flags after roots", []string{"ROOT", "--offline", "-state", "-check-auth", "--format=json"}, []string{"tforphans", "ROOT", "-state", "-check-auth"}, []string{"ROOT"}, []string{"-check-auth"}, nil},
-		{"format after root", []string{"ROOT", "-format", "json", "-state", "-format"}, []string{"tforphans", "ROOT", "-state", "-format"}, []string{"ROOT"}, []string{"-format"}, nil},
+		{"flags after roots", []string{"ROOT", "--offline", "-state", "-check-auth", "--format=json"}, []string{"tforphans", "-state", "-check-auth", "--", "ROOT"}, []string{"ROOT"}, []string{"-check-auth"}, nil},
+		{"format after root", []string{"ROOT", "-format", "json", "-state", "-format"}, []string{"tforphans", "-state", "-format", "--", "ROOT"}, []string{"ROOT"}, []string{"-format"}, nil},
 		{"boolean assignment", []string{"-quiet=false", "--current-workspace=false", "--offline=false"}, []string{"tforphans", "-quiet=false", "--current-workspace=false"}, []string{"."}, nil, nil},
-		{"end marker as value", []string{"-state", "--", "ROOT", "-offline"}, []string{"tforphans", "-state", "--", "ROOT"}, []string{"ROOT"}, []string{"--"}, nil},
-		{"fixes before end flags", []string{"ROOT", "--", "-format"}, []string{"tforphans", "ROOT", "-arg", "region=...", "--", "-format"}, []string{"ROOT", "-format"}, nil, []string{"-arg", "region=..."}},
+		{"end marker as value", []string{"-state", "--", "ROOT", "-offline"}, []string{"tforphans", "-state", "--", "--", "ROOT"}, []string{"ROOT"}, []string{"--"}, nil},
+		{"fixes before end flags", []string{"ROOT", "--", "-format"}, []string{"tforphans", "-arg", "region=...", "--", "ROOT", "-format"}, []string{"ROOT", "-format"}, nil, []string{"-arg", "region=..."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o, err := parseFlags(append([]string{"doctor"}, tc.args...), io.Discard)

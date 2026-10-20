@@ -79,7 +79,7 @@ no-default-presets: true
 
 func TestDoctorNext(t *testing.T) {
 	got := doctorNextArgs(t, []string{"-offline", "-check-auth=false", "-format=json", "-state", "https://u:password@host/state?token=secret", "-arg", "region=eu-north-1", "-arg", "token=secret", "-plugin", "echo secret", "root with 'quote'"}, []string{"-arg", "zone=auto", "-arg", "zone=auto"})
-	want := []string{"tforphans", "-state", "https://host/state?REDACTED", "-arg", "region=eu-north-1", "-arg", "token=<redacted>", "-plugin", "<plugin command>", "root with 'quote'", "-arg", "zone=auto"}
+	want := []string{"tforphans", "-state", "https://host/state?REDACTED", "-arg", "region=eu-north-1", "-arg", "token=<redacted>", "-plugin", "<plugin command>", "-arg", "zone=auto", "--", "root with 'quote'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q, want %q", got, want)
 	}

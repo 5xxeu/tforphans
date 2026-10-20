@@ -239,7 +239,7 @@ func TestDoctorArgumentFixesKeepOtherFlags(t *testing.T) {
 
 func TestDoctorNextPreservesNonURLs(t *testing.T) {
 	args := []string{"-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "root?name", "-state", "https://user:password@host/state?token=secret", "-state=https://user:password@host/other?signature=secret"}
-	want := []string{"tforphans", "-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "root?name", "-state", "https://host/state?REDACTED", "-state=https://host/other?REDACTED"}
+	want := []string{"tforphans", "-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "-state", "https://host/state?REDACTED", "-state=https://host/other?REDACTED", "--", "root?name"}
 	got := doctorNextArgs(t, args, nil)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q want %q", got, want)
@@ -280,7 +280,7 @@ func TestDoctorNextUnicodeSpace(t *testing.T) {
 			}
 			if format == "text" {
 				_, next, ok := strings.Cut(out.String(), "Next run:\n  ")
-				want := "tforphans '" + path + "' '<argument with control characters>'\n"
+				want := "tforphans -- '" + path + "' '<argument with control characters>'\n"
 				if !ok || next != want {
 					t.Fatalf("command bytes %q want %q", next, want)
 				}
@@ -289,7 +289,7 @@ func TestDoctorNextUnicodeSpace(t *testing.T) {
 				if err := json.Unmarshal(out.Bytes(), &d); err != nil {
 					t.Fatal(err)
 				}
-				want := []string{"tforphans", path, "<argument with control characters>"}
+				want := []string{"tforphans", "--", path, "<argument with control characters>"}
 				if !reflect.DeepEqual(d.NextCommand, want) {
 					t.Fatalf("%q want %q", d.NextCommand, want)
 				}

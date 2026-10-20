@@ -165,7 +165,11 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 			all = append(all, dir)
 		}
 	}
-	d.version(ctx, o)
+	if len(all) > 0 || len(o.stateRoots) > 0 || o.terragrunt || len(o.tgUnits) > 0 || len(o.scans) > 0 {
+		d.version(ctx, o)
+	} else {
+		d.add("terraform.version", "skipped", "Terraform is not needed for explicit state sources and plugins without roots or scans", "", "")
+	}
 	listable := map[state.TypeKey]bool{}
 	var checkedRoots []string
 	for _, root := range all {
@@ -659,6 +663,8 @@ func doctorConfiguredArgs(o *options, fixes []string) []commandArg {
 
 func doctorNext(args []commandArg, fixes []string) []string {
 	out := []string{"tforphans"}
+	var roots []string
+	ended := false
 	var extra []string
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(fixes); i += 2 {
@@ -673,13 +679,11 @@ func doctorNext(args []commandArg, fixes []string) []string {
 	}
 	for _, arg := range args {
 		if arg.end {
-			out = append(out, extra...)
-			extra = nil
-			out = append(out, arg.raw)
+			ended = true
 			continue
 		}
 		if arg.positional {
-			out = append(out, doctorRedactURLs(arg.raw))
+			roots = append(roots, doctorRedactURLs(arg.raw))
 			continue
 		}
 		if arg.name == "offline" || arg.name == "check-auth" || arg.name == "format" {
@@ -703,6 +707,10 @@ func doctorNext(args []commandArg, fixes []string) []string {
 		}
 	}
 	out = append(out, extra...)
+	if len(roots) > 0 || ended {
+		out = append(out, "--")
+	}
+	out = append(out, roots...)
 	for i, arg := range out {
 		out[i] = doctorRedactURLs(arg)
 	}

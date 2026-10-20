@@ -16,6 +16,9 @@ providers, duplicate local names and other skipped types. User list blocks
 are counted but never executed. No resource listing, `terraform query`,
 refresh-only apply or plugin execution takes place. It does not initialize
 plain Terraform roots or take state locks.
+With only explicit `-state` sources and/or plugins, no roots, state-root
+searches, Terragrunt or scans, Terraform is not needed and its version check
+is `skipped`; the Terraform executable need not be installed.
 Before reading each root, including state-only and offline roots, it removes marked temporary files of dead tforphans processes, reports the count as `root.stale`, and stops checking that root if cleanup fails.
 
 The `discovery` check fails when no generated queries, user list blocks,
@@ -119,8 +122,10 @@ unless `-quiet` is set. Text includes a proposed next audit command, with shell
 quoting. JSON contains the command as an argument array. Doctor-only flags
 `-offline`, `-check-auth` and `-format` are removed only in flag positions;
 string values such as `-state -offline` are preserved. The command uses the
-same parsed arguments as doctor, including flags after roots and `--` to end
-flags. Missing argument suggestions are inserted before `--`, when present.
+same parsed arguments as doctor, including flags after roots. The proposed
+command puts all flags before `--` and positional roots after it, preserving
+roots named like subcommands or starting with a hyphen. Missing argument
+suggestions are inserted before `--`, when present.
 When a suggestion adds the first CLI occurrence of a repeated flag, effective
 config values for that flag are copied into the command too, with the same
 redaction as CLI values. This preserves config arguments and scans instead
