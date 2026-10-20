@@ -23,6 +23,15 @@ import (
 	"time"
 )
 
+func doctorNextArgs(t *testing.T, args, fixes []string) []string {
+	t.Helper()
+	o, err := parseFlags([]string{"doctor", "-no-config"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doctorNext(commandArgs(o.doctorFlagSet, args), fixes)
+}
+
 func TestDoctorFlags(t *testing.T) {
 	t.Chdir(t.TempDir())
 	accepted := []string{"doctor", "-no-config", "-terraform", "./terraform", "-state", "state.json", "-state-roots", "infra", "-current-workspace", "-terragrunt", "-terragrunt-unit", "unit", "-types", "google_*", "-exclude-types", "google_project", "-arg", "zone=auto", "-no-aliases", "-scan", "cloudflare", "-scan-scope", "zone_id=abc", "-no-query", "-format", "json", "-v", "-quiet", "-timeout", "1m", "-source-timeout", "10s", "-max-state-size", "2M", "-state-parallelism", "2", "-max-roots", "5", "-offline", "-check-auth", "-plugin", "echo done", "root"}
@@ -69,7 +78,7 @@ no-default-presets: true
 }
 
 func TestDoctorNext(t *testing.T) {
-	got := doctorNext([]string{"-offline", "-check-auth=false", "-format=json", "-state", "https://u:password@host/state?token=secret", "-arg", "region=eu-north-1", "-arg", "token=secret", "-plugin", "echo secret", "root with 'quote'"}, []string{"-arg", "zone=auto", "-arg", "zone=auto"})
+	got := doctorNextArgs(t, []string{"-offline", "-check-auth=false", "-format=json", "-state", "https://u:password@host/state?token=secret", "-arg", "region=eu-north-1", "-arg", "token=secret", "-plugin", "echo secret", "root with 'quote'"}, []string{"-arg", "zone=auto", "-arg", "zone=auto"})
 	want := []string{"tforphans", "-state", "https://host/state?REDACTED", "-arg", "region=eu-north-1", "-arg", "token=<redacted>", "-plugin", "<plugin command>", "root with 'quote'", "-arg", "zone=auto"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q, want %q", got, want)
@@ -82,7 +91,7 @@ func TestDoctorNext(t *testing.T) {
 	if strings.Contains(out.String(), "secret") || strings.Contains(out.String(), "password") || !strings.Contains(out.String(), `'root with '"'"'quote'"'"''`) {
 		t.Fatal(out.String())
 	}
-	got = doctorNext([]string{"-state=https://u:p@host/s?secret=value", "--plugin=echo secret", "--arg=token=secret"}, nil)
+	got = doctorNextArgs(t, []string{"-state=https://u:p@host/s?secret=value", "--plugin=echo secret", "--arg=token=secret"}, nil)
 	if strings.Contains(strings.Join(got, " "), "secret") || strings.Contains(strings.Join(got, " "), "u:p") {
 		t.Fatal(got)
 	}
@@ -463,7 +472,7 @@ func TestDoctorArgumentValues(t *testing.T) {
 		}
 	}
 	want := []string{"tforphans", "-arg", "key_vault_name=prod", "--arg=custom=a?b#c", "-plugin", "<plugin command>"}
-	if got := doctorNext([]string{"-arg", "key_vault_name=prod", "--arg=custom=a?b#c", "-plugin", "credentials here"}, nil); !reflect.DeepEqual(got, want) {
+	if got := doctorNextArgs(t, []string{"-arg", "key_vault_name=prod", "--arg=custom=a?b#c", "-plugin", "credentials here"}, nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v", got)
 	}
 }
@@ -774,7 +783,7 @@ func TestDoctorArgumentNameNormalization(t *testing.T) {
 				t.Fatalf("%q became %q", arg, got)
 			}
 			for _, argv := range [][]string{{"-arg", arg}, {"--arg=" + arg}} {
-				d := doctorReport{NextCommand: doctorNext(argv, nil)}
+				d := doctorReport{NextCommand: doctorNextArgs(t, argv, nil)}
 				for _, format := range []string{"text", "json"} {
 					var out bytes.Buffer
 					if err := d.write(&out, format); err != nil {

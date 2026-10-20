@@ -202,6 +202,8 @@ type options struct {
 	doctor, offline, checkAuth bool
 	doctorConfigFlags          map[string]bool
 	doctorIgnoreFlags          *flag.FlagSet
+	doctorFlagSet              *flag.FlagSet
+	doctorArgs                 []commandArg
 }
 
 // version is set by release builds; go install builds take the module
@@ -306,17 +308,24 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fs.SetOutput(stderr)
 		fs.Usage = func() { fmt.Fprint(stderr, doctorUsage); fs.PrintDefaults() }
 	}
-	// Allow flags after positional arguments.
-	for rest := argv; ; {
-		if err := fs.Parse(rest); err != nil {
-			return nil, err
+	// Allow flags after positional arguments, until --.
+	args := commandArgs(fs, argv)
+	var flags []string
+	for _, arg := range args {
+		if !arg.positional && !arg.end {
+			flags = append(flags, arg.parts()...)
 		}
-		rest = fs.Args()
-		if len(rest) == 0 {
-			break
+	}
+	if err := fs.Parse(flags); err != nil {
+		return nil, err
+	}
+	for _, arg := range args {
+		if arg.positional {
+			o.roots = append(o.roots, arg.raw)
 		}
-		o.roots = append(o.roots, rest[0])
-		rest = rest[1:]
+	}
+	if o.doctor {
+		o.doctorArgs = args
 	}
 	if *showVersion {
 		fmt.Fprintln(stderr, "tforphans", buildVersion())

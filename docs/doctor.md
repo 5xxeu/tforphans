@@ -113,8 +113,10 @@ validation even though doctor does not filter resource findings.
 Only diagnostic results go to stdout. Progress goes to stderr on a terminal,
 unless `-quiet` is set. Text includes a proposed next audit command, with shell
 quoting. JSON contains the command as an argument array. Doctor-only flags
-`-offline`, `-check-auth` and `-format` are removed and missing argument
-suggestions are added. Argument suggestions are collected across all roots:
+`-offline`, `-check-auth` and `-format` are removed only in flag positions;
+string values such as `-state -offline` are preserved. The command uses the
+same parsed arguments as doctor, including flags after roots and `--` to end
+flags. Missing argument suggestions are inserted before `--`, when present. Argument suggestions are collected across all roots:
 when every type needing an argument has the same suggested value, the flag
 is global (`-arg NAME=VALUE`). Different suggested values use one
 `-arg TYPE:NAME=VALUE` per type, including in each check's remediation.

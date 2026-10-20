@@ -55,6 +55,7 @@ func doctorFlags(all *flag.FlagSet, o *options) *flag.FlagSet {
 	fs.Lookup("format").Usage = "output format: text or json"
 	fs.BoolVar(&o.offline, "offline", false, "skip workspace, state and authentication reads; report unknown")
 	fs.BoolVar(&o.checkAuth, "check-auth", false, "read supported providers' account identities (does not test resource read permissions)")
+	o.doctorFlagSet = fs
 	return fs
 }
 
@@ -255,7 +256,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.incomplete = true
 		d.add("run", "failed", "diagnostics interrupted or overall timeout exceeded", "", "Increase -timeout or retry")
 	}
-	d.NextCommand = doctorNext(argv[1:], d.fixes)
+	d.NextCommand = doctorNext(o.doctorArgs, d.fixes)
 	code := d.result(o.offline)
 	if err := d.write(stdout, o.format); err != nil {
 		fmt.Fprintln(stderr, "error:", report.Clean(err.Error()))
@@ -611,45 +612,52 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 	return all
 }
 
-func doctorNext(args, fixes []string) []string {
+func doctorNext(args []commandArg, fixes []string) []string {
 	out := []string{"tforphans"}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		name := strings.TrimLeft(strings.SplitN(arg, "=", 2)[0], "-")
-		if strings.HasPrefix(arg, "-") && (name == "offline" || name == "check-auth" || name == "format") {
-			if name == "format" && !strings.Contains(arg, "=") {
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(arg, "-") && !strings.Contains(arg, "=") && i+1 < len(args) {
-			if name == "arg" {
-				out = append(out, arg, doctorArg(args[i+1]))
-				i++
-				continue
-			}
-			if name == "plugin" {
-				out = append(out, arg, "<plugin command>")
-				i++
-				continue
-			}
-		}
-		if name == "arg" && strings.Contains(arg, "=") {
-			out = append(out, strings.SplitN(arg, "=", 2)[0]+"="+doctorArg(strings.SplitN(arg, "=", 2)[1]))
-			continue
-		}
-		if name == "plugin" && strings.Contains(arg, "=") {
-			arg = strings.SplitN(arg, "=", 2)[0] + "=<plugin command>"
-		}
-		out = append(out, arg)
-	}
+	var extra []string
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(fixes); i += 2 {
 		if !seen[fixes[i+1]] {
-			out = append(out, fixes[i], fixes[i+1])
+			value := doctorRedactURLs(fixes[i+1])
+			if fixes[i] == "-arg" {
+				value = doctorArg(fixes[i+1])
+			}
+			extra = append(extra, fixes[i], value)
 			seen[fixes[i+1]] = true
 		}
 	}
+	for _, arg := range args {
+		if arg.end {
+			out = append(out, extra...)
+			extra = nil
+			out = append(out, arg.raw)
+			continue
+		}
+		if arg.positional {
+			out = append(out, doctorRedactURLs(arg.raw))
+			continue
+		}
+		if arg.name == "offline" || arg.name == "check-auth" || arg.name == "format" {
+			continue
+		}
+		value := arg.value
+		switch arg.name {
+		case "arg":
+			value = doctorArg(value)
+		case "plugin":
+			value = "<plugin command>"
+		default:
+			value = doctorRedactURLs(value)
+		}
+		if arg.separate {
+			out = append(out, arg.raw, value)
+		} else if name, _, attached := strings.Cut(arg.raw, "="); attached {
+			out = append(out, name+"="+value)
+		} else {
+			out = append(out, arg.raw)
+		}
+	}
+	out = append(out, extra...)
 	for i, arg := range out {
 		out[i] = doctorRedactURLs(arg)
 	}

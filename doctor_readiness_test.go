@@ -15,7 +15,7 @@ func TestDoctorURLQueryRedaction(t *testing.T) {
 	for _, query := range []string{`filter=a,b&token=SECRET`, `filter=a,"b'&token=SECRET`, `filter=a%2Cb&token=SECRET`, `filter=a,b&token=SECRET more text`, `filter=a&token=SECREThttps://other/url`} {
 		url := "https://user:password@backend/state?" + query
 		for _, args := range [][]string{{"-state", url}, {"-state=" + url}, {url}, {"-arg", "endpoint=" + url}, {"-arg=endpoint=" + url}, {"prefix " + url}} {
-			command := doctorNext(args, nil)
+			command := doctorNextArgs(t, args, nil)
 			for _, format := range []string{"text", "json"} {
 				var out bytes.Buffer
 				if err := (doctorReport{NextCommand: command}).write(&out, format); err != nil {

@@ -30,7 +30,7 @@ func TestDoctorURLCredentials(t *testing.T) {
 				t.Fatalf("arg: %q, want %q", got, tc.want)
 			}
 			for _, args := range [][]string{{"-arg", tc.arg}, {"--arg=" + tc.arg}} {
-				command := doctorNext(args, nil)
+				command := doctorNextArgs(t, args, nil)
 				for _, format := range []string{"text", "json"} {
 					var out bytes.Buffer
 					if err := (doctorReport{NextCommand: command}).write(&out, format); err != nil {
@@ -59,9 +59,9 @@ func TestDoctorURLCredentials(t *testing.T) {
 		t.Run(arg, func(t *testing.T) {
 			// Cover positional arguments, both state flag forms, and direct report writers.
 			commands := [][]string{
-				doctorNext([]string{arg}, nil),
-				doctorNext([]string{"-state", arg}, nil),
-				doctorNext([]string{"--state=" + arg}, nil),
+				doctorNextArgs(t, []string{arg}, nil),
+				doctorNextArgs(t, []string{"-state", arg}, nil),
+				doctorNextArgs(t, []string{"--state=" + arg}, nil),
 				{"tforphans", arg},
 			}
 			for _, command := range commands {
@@ -240,7 +240,7 @@ func TestDoctorArgumentFixesKeepOtherFlags(t *testing.T) {
 func TestDoctorNextPreservesNonURLs(t *testing.T) {
 	args := []string{"-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "root?name", "-state", "https://user:password@host/state?token=secret", "-state=https://user:password@host/other?signature=secret"}
 	want := []string{"tforphans", "-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "root?name", "-state", "https://host/state?REDACTED", "-state=https://host/other?REDACTED"}
-	got := doctorNext(args, nil)
+	got := doctorNextArgs(t, args, nil)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q want %q", got, want)
 	}
