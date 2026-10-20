@@ -90,6 +90,29 @@ func TestDecodeJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONUnique(t *testing.T) {
+	var v map[string]any
+	for _, ok := range []string{`{"a":{"x":1},"b":{"x":2}}`, `[{"a":1},{"a":2}]`, `{"a":[{"x":1,"y":2}]}`, `"s"`, `{}`} {
+		if err := DecodeJSONUnique([]byte(ok), new(any)); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		`{"done":false,"done":true}`,
+		`{"done":false,"\u0064one":true}`,
+		`{"type":"a","Type":"b"}`,
+		"{\"s\":1,\"\u017f\":2}", // long s folds to s
+		`{"identity":{"name":"a","name":"b"}}`,
+		`{"a":[{"x":1,"x":2}]}`,
+		`{"a":1}{"b":2}`,
+		`{"a":`,
+	} {
+		if err := DecodeJSONUnique([]byte(bad), &v); err == nil {
+			t.Errorf("%s: no error", bad)
+		}
+	}
+}
+
 func TestProviderFamily(t *testing.T) {
 	for in, want := range map[string]string{
 		"aws": "hashicorp/aws",

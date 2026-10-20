@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Resource is an object that exists in the real infrastructure, as reported
@@ -191,6 +193,74 @@ func DecodeJSON(data []byte, v any) error {
 		return errors.New("unexpected data after the JSON value")
 	}
 	return nil
+}
+
+// DecodeJSONUnique is DecodeJSON for input that tforphans does not trust
+// to be unambiguous (plugin lines): a key repeated in one object, also in
+// another case, is an error. encoding/json would keep the last value and
+// match struct fields ignoring case, so {"done":false,"done":true} or
+// {"type":"a","Type":"b"} would mean whatever the last copy says.
+func DecodeJSONUnique(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber() // a float64 would overflow on 1e7000000000
+	if err := uniqueKeys(dec); err != nil {
+		return err
+	}
+	return DecodeJSON(data, v)
+}
+
+// uniqueKeys reads one JSON value from dec and checks its objects for
+// repeated keys. Keys come unescaped from the decoder, so "\u0064one" is
+// "done".
+func uniqueKeys(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			tok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, _ := tok.(string)
+			folded := foldKey(key)
+			if seen[folded] {
+				return fmt.Errorf("key %q repeated in one object", key)
+			}
+			seen[folded] = true
+			if err := uniqueKeys(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	case json.Delim('['):
+		for dec.More() {
+			if err := uniqueKeys(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	}
+	return nil
+}
+
+// foldKey maps keys that strings.EqualFold treats as equal to one string:
+// each rune becomes the smallest rune of its case folding orbit.
+func foldKey(key string) string {
+	var b strings.Builder
+	for _, r := range key {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		b.WriteRune(least)
+	}
+	return b.String()
 }
 
 // Scope tells which state instances can belong to the scanned place.

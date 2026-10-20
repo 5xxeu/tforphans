@@ -497,12 +497,12 @@ func (c exitCode) Error() string { return fmt.Sprintf("exit %d", int(c)) }
 
 // loadIgnore reads the ignore file and adds the presets asked for and,
 // unless -no-default-presets, the default ones.
-func loadIgnore(o *options) (*report.Ignore, error) {
+func loadIgnore(ctx context.Context, o *options) (*report.Ignore, error) {
 	ignorePath, optional := o.ignorePath, false
 	if ignorePath == "" {
 		ignorePath, optional = defaultIgnoreFile, true
 	}
-	ignore, err := report.LoadIgnore(ignorePath, optional)
+	ignore, err := report.LoadIgnore(ctx, ignorePath, optional)
 	if err != nil {
 		return nil, fmt.Errorf("ignore file: %w", err)
 	}
@@ -530,7 +530,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			return fmt.Errorf("baseline: %w", err)
 		}
 	}
-	ignore, err := loadIgnore(o)
+	ignore, err := loadIgnore(ctx, o)
 	if err != nil {
 		return err
 	}

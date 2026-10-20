@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -515,7 +516,7 @@ func TestIgnoreRuleOrigin(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# comment\n\nvault_policy:tmp-*\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ig, err := LoadIgnore(path, false)
+	ig, err := LoadIgnore(context.Background(), path, false)
 	if err != nil {
 		t.Fatal(err)
 	}

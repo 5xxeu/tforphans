@@ -3,6 +3,8 @@ package report
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -50,17 +52,17 @@ type ignoreCond struct {
 var condition = regexp.MustCompile(`^(attr\.)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_.-]+)?)=(\S*)$`)
 
 // LoadIgnore reads an ignore file. A missing optional file is an empty rule
-// set.
-func LoadIgnore(path string, optional bool) (*Ignore, error) {
-	f, err := os.Open(path)
+// set. It gives up when ctx ends (-timeout): a named pipe nobody writes to
+// blocks already when it is opened.
+func LoadIgnore(ctx context.Context, path string, optional bool) (*Ignore, error) {
+	data, err := state.ReadFile(ctx, path, state.DefaultMaxSize)
 	if err != nil {
 		if optional && os.IsNotExist(err) {
 			return &Ignore{}, nil
 		}
 		return nil, err
 	}
-	defer f.Close()
-	return parseIgnore(f, path)
+	return parseIgnore(bytes.NewReader(data), path)
 }
 
 func ParseIgnore(r io.Reader) (*Ignore, error) { return parseIgnore(r, "ignore") }

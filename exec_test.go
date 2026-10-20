@@ -55,6 +55,9 @@ func start(t *testing.T, cmd *exec.Cmd) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if t.Failed() {
+			killDescendants(cmd.Process.Pid)
+		}
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
@@ -70,6 +73,7 @@ func waitFor(t *testing.T, cmd *exec.Cmd, limit time.Duration) error {
 	case err := <-done:
 		return err
 	case <-time.After(limit):
+		killDescendants(cmd.Process.Pid)
 		_ = cmd.Process.Kill()
 		<-done
 		t.Fatalf("still running after %s", limit)
