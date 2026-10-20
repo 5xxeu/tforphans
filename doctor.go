@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -81,6 +82,12 @@ type doctorReport struct {
 	fixes         []string
 	queries       int
 	providers     []string
+	argFixes      []doctorArgFix
+}
+
+type doctorArgFix struct {
+	check            int
+	typ, name, value string
 }
 
 func (d *doctorReport) add(id, status, message, root, remediation string) {
@@ -412,15 +419,10 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 					if doctorAutoArg(source, name) {
 						value = "auto"
 					}
-					fix += " -arg " + name + "=" + value
-					d.fixes = append(d.fixes, "-arg", name+"="+value)
+					d.argFixes = append(d.argFixes, doctorArgFix{check: len(d.Checks), typ: sk.Type, name: name, value: value})
 				}
 			}
-			if fix == "" {
-				fix = "Write a user list block for " + sk.Type + " supplying " + missing
-			} else {
-				fix = "tforphans" + fix
-			}
+			fix = "Write a user list block for " + sk.Type + " supplying " + missing
 		} else if strings.Contains(sk.Reason, "provider") {
 			id, aliasStatus = "query.aliases", "warning"
 			if o.noAliases && strings.HasSuffix(sk.Reason, " not listed (-no-aliases)") {
@@ -433,6 +435,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		}
 		d.add(id, status, sk.Type+": "+sk.Reason, root, fix)
 	}
+	d.updateArgumentFixes()
 	if argsStatus == "ok" {
 		d.add("query.arguments", "ok", "selected generated listings have their required arguments", root, "")
 	}
@@ -619,6 +622,9 @@ func doctorNext(args, fixes []string) []string {
 			seen[fixes[i+1]] = true
 		}
 	}
+	for i, arg := range out {
+		out[i] = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
+	}
 	return out
 }
 
@@ -627,7 +633,7 @@ func doctorArg(arg string) string {
 	if err != nil {
 		return "<redacted>"
 	}
-	key, value, _ := strings.Cut(arg, "=")
+	key, _, _ := strings.Cut(arg, "=")
 	name := parsed.Name
 	camelKey := strings.HasSuffix(name, "Key")
 	name = strings.ToLower(name)
@@ -636,8 +642,13 @@ func doctorArg(arg string) string {
 	if secret || camelKey || name == "key" || len(words) > 0 && words[len(words)-1] == "key" {
 		return key + "=<redacted>"
 	}
-	if strings.Contains(value, "://") {
-		return key + "=" + state.Redact(value)
+	if strings.Contains(arg, "://") {
+		values := slices.Clone(parsed.Values)
+		for i, value := range values {
+			value = doctorURLUserinfo.ReplaceAllString(value, "${1}")
+			values[i] = doctorURLs.ReplaceAllStringFunc(value, state.Redact)
+		}
+		return doctorURLUserinfo.ReplaceAllString(key+"="+strings.Join(values, ","), "${1}")
 	}
 	return arg
 }
@@ -666,6 +677,8 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	d.NextCommand = slices.Clone(d.NextCommand)
 	unsafe := false
 	for i, arg := range d.NextCommand {
+		arg = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
+		d.NextCommand[i] = arg
 		if strings.ContainsFunc(arg, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
 			d.NextCommand[i] = "<argument with control characters>"
 			unsafe = true
@@ -778,4 +791,45 @@ func (d *doctorReport) discovery(o *options) {
 	}
 	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scans, %d plugins selected", queries, len(o.scans), len(o.plugins)), "", fix)
 	d.Checks[len(d.Checks)-1].Count = &count
+}
+
+var (
+	doctorURLs        = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^,\s"'<>]+`)
+	doctorURLUserinfo = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@`)
+)
+
+func (d *doctorReport) updateArgumentFixes() {
+	values := map[string]map[string]bool{}
+	for _, fix := range d.argFixes {
+		if values[fix.name] == nil {
+			values[fix.name] = map[string]bool{}
+		}
+		values[fix.name][fix.value] = true
+	}
+	kept := []string{}
+	for i := 0; i+1 < len(d.fixes); i += 2 {
+		if d.fixes[i] != "-arg" {
+			kept = append(kept, d.fixes[i:i+2]...)
+		}
+	}
+	d.fixes = kept
+	byCheck := map[int][]string{}
+	seen := map[string]bool{}
+	for _, fix := range d.argFixes {
+		name := fix.name
+		if len(values[name]) > 1 {
+			name = fix.typ + ":" + name
+		}
+		arg := name + "=" + fix.value
+		if !slices.Contains(byCheck[fix.check], arg) {
+			byCheck[fix.check] = append(byCheck[fix.check], arg)
+		}
+		if !seen[arg] {
+			d.fixes = append(d.fixes, "-arg", arg)
+			seen[arg] = true
+		}
+	}
+	for check, args := range byCheck {
+		d.Checks[check].Remediation = "tforphans -arg " + strings.Join(args, " -arg ")
+	}
 }

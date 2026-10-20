@@ -84,9 +84,14 @@ Only diagnostic results go to stdout. Progress goes to stderr on a terminal,
 unless `-quiet` is set. Text includes a proposed next audit command, with shell
 quoting. JSON contains the command as an argument array. Doctor-only flags
 `-offline`, `-check-auth` and `-format` are removed and missing argument
-suggestions are added. State URLs use the same credential redaction as audit
-reports. Plugin commands and potentially sensitive argument values are
-replaced with placeholders. Review and fill placeholders before running the
+suggestions are added. Argument suggestions are collected across all roots:
+when every type needing an argument has the same suggested value, the flag
+is global (`-arg NAME=VALUE`). Different suggested values use one
+`-arg TYPE:NAME=VALUE` per type, including in each check's remediation.
+State URLs use the same credential redaction as audit reports. URL lists in
+`-arg` are redacted value by value; userinfo is also removed from every
+embedded URL in all next-command arguments. Plugin commands and potentially
+sensitive argument values are replaced with placeholders. Review and fill placeholders before running the
 command; redacted URLs may also need their original credentials restored.
 User `-arg` values are preserved unless the argument name contains token,
 secret, password or credential, or ends in a separate key component (for
