@@ -77,7 +77,10 @@ know where they belong, name the root module with `-adopt-root NAME=DIR`:
 the first `-plugin`. Their blocks then go to that root's file under
 `# Found by` comments, their names avoid the addresses of that root's
 configuration, and a `-scan` provider is named as that root declares it (a
-note says when it does not). `-out-dir` and `-adopt-root` are accepted only on the command
+note says when it does not). An object that several sources found goes
+where any of them points (a plugin assigned to a root counts even when
+dedupe kept another plugin's copy); when they point to different root
+modules, it is written once and a note names them. `-out-dir` and `-adopt-root` are accepted only on the command
 line.
 
 [Back to the README](../README.md) · [All guides](README.md)

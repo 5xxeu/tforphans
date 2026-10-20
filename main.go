@@ -778,6 +778,14 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			origins[originKey(r)] = append(origins[originKey(r)], r)
 		}
 	}
+	// adopt places an object by every source that listed it: dedupe keeps
+	// one copy, and -adopt-root may name the source of another.
+	copies := map[string][]model.Resource{}
+	if o.adopt {
+		for _, r := range scopes {
+			copies[originKey(r)] = append(copies[originKey(r)], r)
+		}
+	}
 	live = dedupe(live)
 	c := classify(o, idx, live, origins, &sum)
 	orphans, uncertain := c.orphans, c.uncertain
@@ -873,15 +881,16 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, r := range o.roots {
 			roots[r] = true
 		}
+		targets := adoptTargets(o, orphans, copies, roots, &sum)
 		n := len(orphans)
-		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, adoptTarget(o, r, roots)) })
+		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, targets[originKey(r)]) })
 		if n > len(orphans) {
 			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
+		err = adopt(o, orphans, reserved, targets, &sum, stdout, stderr)
 	case o.format == "json":
 		err = report.JSON(stdout, orphans, uncertain, sum, baseline)
 	case o.format == "summary":

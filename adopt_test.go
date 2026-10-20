@@ -239,3 +239,40 @@ func TestSplitOutDir(t *testing.T) {
 		}
 	}
 }
+
+// Two plugins find the same object and dedupe keeps plugin1's copy: an
+// -adopt-root for plugin2 still places it, and two different ones keep
+// the kept copy's root with a note.
+func TestAdoptOutDirDuplicates(t *testing.T) {
+	t.Chdir(t.TempDir())
+	put(t, "a/main.tf", "")
+	put(t, "b/main.tf", "")
+	put(t, "empty.tfstate", `{"version": 4, "serial": 1, "lineage": "x", "resources": []}`)
+	plugin := `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci", "display_name": "ci"}'`
+	adopt := func(out string, assign ...string) string {
+		t.Helper()
+		args := []string{"adopt", "-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", plugin, "-plugin", plugin, "-out-dir", out}
+		for _, a := range assign {
+			args = append(args, "-adopt-root", a)
+		}
+		var stderr bytes.Buffer
+		if code := run(context.Background(), args, io.Discard, &stderr); code != exitOK {
+			t.Fatalf("exit %d\n%s", code, stderr.String())
+		}
+		return stderr.String()
+	}
+	adopt("one", "plugin2=b")
+	if got := read(t, "one/b/imports.tf"); !strings.Contains(got, `id = "ci"`) {
+		t.Errorf("b/imports.tf:\n%s", got)
+	}
+	if _, err := os.Stat("one/_unassigned"); err == nil {
+		t.Error("also written to _unassigned")
+	}
+	stderr := adopt("two", "plugin1=a", "plugin2=b")
+	if _, err := os.Stat("two/a/imports.tf"); err != nil {
+		t.Error(err)
+	}
+	if _, err := os.Stat("two/b"); err == nil || !strings.Contains(stderr, "note: vault_policy ci was found for several root modules (a, b); its import block is in a only") {
+		t.Errorf("stderr:\n%s", stderr)
+	}
+}

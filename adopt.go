@@ -71,7 +71,8 @@ const providerNote = "With Terraform before 1.16, move the provider line of each
 
 // adopt writes import blocks for the orphans to stdout or to a new file.
 // Objects that cannot be written as an import block are warnings.
-func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *report.Summary, stdout, stderr io.Writer) error {
+// targets are the root modules from adoptTargets.
+func adopt(o *options, orphans []model.Resource, reserved map[string]bool, targets map[string]string, sum *report.Summary, stdout, stderr io.Writer) error {
 	if len(orphans) == 0 {
 		fmt.Fprintln(stderr, "Nothing to adopt.")
 		return nil
@@ -90,7 +91,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 	}
 	head := adoptHeader(sum)
 	if o.outDir != "" {
-		n, err := adoptDir(o, orphans, reserved, head, stderr)
+		n, err := adoptDir(o, orphans, reserved, targets, head, stderr)
 		if err == nil {
 			skipped(n)
 			providerHint()
@@ -279,6 +280,53 @@ func adoptTarget(o *options, r model.Resource, roots map[string]bool) string {
 	return ""
 }
 
+// adoptTargets maps each orphan (by originKey) to the root module it is
+// adopted into, from every copy of it the sources listed before dedupe:
+// the one root they point to, or "" for none. Copies that point to
+// different roots (two roots share an account, or -adopt-root names two
+// sources that both found it) keep the root of the copy dedupe kept, or
+// the first by path, with a note.
+func adoptTargets(o *options, orphans []model.Resource, copies map[string][]model.Resource, roots map[string]bool, sum *report.Summary) map[string]string {
+	out := map[string]string{}
+	cwd, _ := realCwd()
+	for _, r := range orphans {
+		k := originKey(r)
+		var dirs []string
+		for _, c := range append([]model.Resource{r}, copies[k]...) {
+			if !model.SameProvider(c.ProviderSource, r.ProviderSource) {
+				continue
+			}
+			if d := adoptTarget(o, c, roots); d != "" && !slices.Contains(dirs, d) {
+				dirs = append(dirs, d)
+			}
+		}
+		if len(dirs) == 0 {
+			continue
+		}
+		own := adoptTarget(o, r, roots)
+		if own == "" {
+			own = slices.Min(dirs)
+		}
+		out[k] = own
+		if len(dirs) > 1 && o.outDir != "" {
+			var names []string
+			for _, d := range dirs {
+				if rel, err := relRoot(cwd, d); err == nil {
+					d = rel
+				}
+				names = append(names, d)
+			}
+			slices.Sort(names)
+			at := own
+			if rel, err := relRoot(cwd, own); err == nil {
+				at = rel
+			}
+			sum.Notes = append(sum.Notes, fmt.Sprintf("%s %s was found for several root modules (%s); its import block is in %s only", r.Type, r.DisplayName, strings.Join(names, ", "), at))
+		}
+	}
+	return out
+}
+
 // canonDir is the absolute path of a directory with links resolved before
 // .. is applied, as the system resolves it.
 func canonDir(dir string) string {
@@ -320,19 +368,15 @@ func relRoot(cwd, dir string) (string, error) {
 // providers and plugins -adopt-root assigns to it, _unassigned/NAME.tf for
 // the other ones. The directory appears whole or not at all.
 // It returns how many import blocks it wrote.
-func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, head string, stderr io.Writer) (int, error) {
+func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, targets map[string]string, head string, stderr io.Writer) (int, error) {
 	cwd, err := realCwd()
 	if err != nil {
 		return 0, err
 	}
-	roots := map[string]bool{}
-	for _, r := range o.roots {
-		roots[r] = true
-	}
 	files := map[string][]model.Resource{}
 	unassigned := map[string]string{} // file: source name
 	for _, r := range orphans {
-		dir := adoptTarget(o, r, roots)
+		dir := targets[originKey(r)]
 		if dir == "" {
 			name, ok := sourceName(r.Source)
 			if !ok {
