@@ -48,7 +48,11 @@ per value, and only the values that still crash are reported, for example
 `data.cloudflare_dns_records.by_zone_id_by_type["<zone>/NAPTR"]` with
 `type NAPTR: crashed: ...`. This takes extra runs (at most 80; what is still
 suspect after them is reported as crashed), and a note says so while it
-happens. With
+happens. Before that, three unrelated data sources (under different parents)
+are read one at a time; when each of them crashes too, the cause is most
+likely the environment (network, the provider plugin, terraform) rather than
+one type, so nothing is split: every data source is reported as crashed with
+that reason, and the scan is worth running again. With
 `-strict` such gaps are errors; leave out products you do not use with
 `-exclude-types`.
 

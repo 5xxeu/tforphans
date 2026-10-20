@@ -29,6 +29,10 @@ func ReadSnapshot(ctx context.Context, path string, maxSize int64) (*Snapshot, e
 	if errors.As(err, &pathErr) {
 		return nil, err
 	}
+	var tooLarge *state.TooLargeError
+	if errors.As(err, &tooLarge) {
+		return nil, fmt.Errorf("%s: report is larger than %d bytes", path, tooLarge.Max)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

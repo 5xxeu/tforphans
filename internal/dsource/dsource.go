@@ -294,6 +294,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		}
 	}
 	var failures []failure
+	envChecked := false
 	for len(blocks) > 0 {
 		out, stderr, runErr, err := apply(blocks)
 		if err != nil {
@@ -312,6 +313,24 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 				why = "crashed: " + tf.OneLine(why, 200)
 			} else {
 				why = "crashed: terraform or the provider stopped without a message"
+			}
+			if !envChecked {
+				envChecked = true
+				env, err := envCrash(blocks, probe)
+				if err != nil {
+					return nil, err
+				}
+				if env {
+					if opt.Progress != nil {
+						opt.Progress(fmt.Sprintf("%s: unrelated data sources crashed also when read on their own, which points at the environment (network, the provider plugin, terraform) rather than one type; nothing was listed, run again", a.Name))
+					}
+					why = "crashed (also when read alone, as did unrelated data sources: likely the environment, not this type; run again): " + strings.TrimPrefix(why, "crashed: ")
+					for _, b := range blocks {
+						failures = append(failures, failure{block: b.addr(), address: b.addr(), message: why})
+					}
+					blocks = nil
+					continue
+				}
 			}
 			keep, failed, err := isolate(blocks, why, probe)
 			if err != nil {

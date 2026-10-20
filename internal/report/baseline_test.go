@@ -183,7 +183,7 @@ func TestReadSnapshotErrors(t *testing.T) {
 		{"array", `[]`, "JSON object", state.DefaultMaxSize},
 		{"null", `null`, "JSON object", state.DefaultMaxSize},
 		{"trailing data", `{"schema_version":1,"orphans":[]} {}`, "unexpected data", state.DefaultMaxSize},
-		{"too large", `{"schema_version":1,"orphans":[]}`, "larger than 10 bytes", 10},
+		{"too large", `{"schema_version":1,"orphans":[]}`, "report is larger than 10 bytes", 10},
 		{"missing orphans", `{"schema_version":1}`, "orphans must be an array", state.DefaultMaxSize},
 		{"null orphans", `{"schema_version":1,"orphans":null}`, "orphans must be an array", state.DefaultMaxSize},
 		{"object orphans", `{"schema_version":1,"orphans":{}}`, "orphans must be an array", state.DefaultMaxSize},
@@ -193,7 +193,7 @@ func TestReadSnapshotErrors(t *testing.T) {
 			if err := os.WriteFile(path, []byte(c.data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadSnapshot(context.Background(), path, c.limit); err == nil || !strings.Contains(err.Error(), c.want) {
+			if _, err := ReadSnapshot(context.Background(), path, c.limit); err == nil || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), "max-state-size") {
 				t.Fatalf("want %q: %v", c.want, err)
 			}
 		})
