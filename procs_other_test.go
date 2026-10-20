@@ -2,4 +2,4 @@
 
 package main
 
-func killDescendants(int) {}
+func killDescendants(int) error { return nil }

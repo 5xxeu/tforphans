@@ -16,13 +16,19 @@ import (
 // killDescendants kills every process below pid. It must run while pid is
 // alive: once it dies, its children belong to init and pgrep -P no longer
 // finds them. A plugin runs in its own process group, so killing the
-// binary alone leaves the plugin and its children behind.
-func killDescendants(pid int) {
+// binary alone leaves the plugin and its children behind. An error means
+// that pgrep could not list children; what was found is killed anyway.
+func killDescendants(pid int) error {
 	var all []int
+	var failed error
 	for next := []int{pid}; len(next) > 0; {
 		var found []int
 		for _, p := range next {
-			out, _ := exec.Command("pgrep", "-P", strconv.Itoa(p)).Output()
+			out, err := exec.Command("pgrep", "-P", strconv.Itoa(p)).Output()
+			var exit *exec.ExitError
+			if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) { // 1: no children
+				failed = errors.Join(failed, fmt.Errorf("pgrep -P %d: %w", p, err))
+			}
 			for _, f := range strings.Fields(string(out)) {
 				if c, err := strconv.Atoi(f); err == nil {
 					found = append(found, c)
@@ -35,6 +41,7 @@ func killDescendants(pid int) {
 	for _, p := range all {
 		_ = syscall.Kill(p, syscall.SIGKILL)
 	}
+	return failed
 }
 
 // running tells whether pid is a process that has not exited. A zombie has
@@ -94,20 +101,29 @@ func TestProcessHelpers(t *testing.T) {
 	if err := sh.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sh.Process.Kill(); _ = sh.Wait() })
 	var sleep int
+	t.Cleanup(func() {
+		if sleep > 0 {
+			_ = syscall.Kill(sleep, syscall.SIGKILL)
+		}
+		_ = sh.Process.Kill()
+		_ = sh.Wait()
+	})
 	if _, err := fmt.Fscan(out, &sleep); err != nil {
 		t.Fatal(err)
 	}
-	killDescendants(sh.Process.Pid)
-	if err := sh.Wait(); err != nil {
-		t.Logf("sh: %v", err) // wait returns once sleep is killed
+	if err := killDescendants(sh.Process.Pid); err != nil {
+		t.Fatal(err)
 	}
-	for mustRun(t, sleep) && time.Now().Before(deadline) {
+	// sleep runs for 300 s unless it was killed; sh is not waited for,
+	// since its wait would end only with sleep.
+	for deadline := time.Now().Add(10 * time.Second); mustRun(t, sleep); {
+		if time.Now().After(deadline) {
+			t.Fatal("grandchild still runs")
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if mustRun(t, sleep) {
-		_ = syscall.Kill(sleep, syscall.SIGKILL)
-		t.Error("grandchild still runs")
+	if err := killDescendants(1 << 30); err != nil {
+		t.Errorf("pid without children: %v", err)
 	}
 }
