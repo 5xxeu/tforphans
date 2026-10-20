@@ -327,7 +327,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.add("root.config", "ok", "root configuration parsed", root, "")
 	}
 	if !r.Initialized() {
-		d.add("root.initialized", "failed", "Terraform data directory is missing: "+tf.DataDir(root), root, init)
+		d.add("root.initialized", "warning", "Terraform data directory is missing: "+tf.DataDir(root), root, init)
 	} else {
 		d.add("root.initialized", "ok", "Terraform data directory exists", root, "")
 	}
@@ -421,6 +421,9 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		var argFixes []doctorArgFix
 		if sk.Excluded {
 			status = "skipped"
+		} else if address := doctorUserListCoverage(sk, root, userLists); strings.HasPrefix(sk.Reason, tf.MissingArgs) && address != "" {
+			d.planSkip("query.arguments", "skipped", "covered by user list block "+address, root, "", sk)
+			continue
 		} else if strings.HasPrefix(sk.Reason, tf.MissingArgs) {
 			id, status, argsStatus = "query.arguments", "failed", "failed"
 			missing := strings.Split(strings.TrimPrefix(sk.Reason, tf.MissingArgs), " (provider ")[0]
@@ -670,10 +673,9 @@ func doctorArg(arg string) string {
 	if strings.Contains(arg, "://") {
 		values := slices.Clone(parsed.Values)
 		for i, value := range values {
-			value = doctorURLUserinfo.ReplaceAllString(value, "${1}")
-			values[i] = doctorURLs.ReplaceAllStringFunc(value, state.Redact)
+			values[i] = doctorRedactURLs(value)
 		}
-		return doctorURLUserinfo.ReplaceAllString(key+"="+strings.Join(values, ","), "${1}")
+		return doctorRedactURLs(key + "=" + strings.Join(values, ","))
 	}
 	return arg
 }
@@ -838,8 +840,41 @@ func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin strin
 }
 
 func doctorRedactURLs(arg string) string {
+	if name, value, ok := strings.Cut(arg, "="); ok && (name == "-state" || name == "--state") {
+		return name + "=" + doctorRedactURLs(value)
+	}
 	arg = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
-	return doctorURLs.ReplaceAllStringFunc(arg, state.Redact)
+	urls := doctorURLScheme.FindAllStringIndex(arg, -1)
+	if len(urls) == 0 {
+		return arg
+	}
+	if urls[0][0] == 0 {
+		return state.Redact(arg)
+	}
+	var out strings.Builder
+	out.WriteString(arg[:urls[0][0]])
+	for i, loc := range urls {
+		end := len(arg)
+		if i+1 < len(urls) {
+			end = urls[i+1][0]
+		}
+		value := arg[loc[0]:end]
+		// A URL embedded inside a query belongs to that query too.
+		if i+1 < len(urls) && strings.ContainsAny(value, "?#") && !strings.HasSuffix(value, ",") {
+			out.WriteString(state.Redact(arg[loc[0]:]))
+			break
+		}
+		separator := ""
+		if i+1 < len(urls) && strings.HasSuffix(value, ",") {
+			value, separator = strings.TrimSuffix(value, ","), ","
+		}
+		if strings.ContainsAny(value, "?#") {
+			value = state.Redact(value)
+		}
+		out.WriteString(value)
+		out.WriteString(separator)
+	}
+	return out.String()
 }
 
 func (d *doctorReport) discovery(o *options) {
@@ -865,7 +900,7 @@ func (d *doctorReport) discovery(o *options) {
 }
 
 var (
-	doctorURLs        = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^,\s"'<>]+`)
+	doctorURLScheme   = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://`)
 	doctorURLUserinfo = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@`)
 )
 

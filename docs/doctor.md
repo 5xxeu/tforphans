@@ -42,14 +42,17 @@ A successfully built scan plan is `ok`. Provider and adapter limitations
 (such as missing result identities, unsupported parent arguments or
 pagination) are warnings when they leave coverage incomplete; deliberate
 adapter exclusions are `skipped`. They do not require configuration fixes
-or prevent readiness. Initialization and schema errors still fail, and
-zero discovery blocks still fail `discovery`.
+or prevent readiness. A missing Terraform data directory is a warning;
+operations that actually fail because initialization is needed still fail.
+Schema errors and zero discovery blocks still fail their respective checks.
 
 Query and scan plan skips are grouped by category and status for each root.
 Each group shows the number of types and the first eight names; `-v` shows
 all names in text. JSON always includes the full `types` and `skipped_types`
 with the original reasons. Query skips remain failures when arguments or
-provider configuration can fix them; explicit `-no-aliases` is a warning.
+provider configuration can fix them; a user list block for the same type and
+provider configuration covers a missing generated argument without an
+`-arg` suggestion; explicit `-no-aliases` is a warning.
 
 By default it lists workspaces and pulls their stored states, plus `-state`
 sources and roots under `-state-roots`. State reads use `-max-state-size`,
@@ -118,7 +121,8 @@ is global (`-arg NAME=VALUE`). Different suggested values use one
 State URLs use the same credential redaction as audit reports. URL lists in
 `-arg` are redacted value by value; userinfo is also removed from every
 embedded URL in all next-command arguments. Redaction applies only to URLs;
-globs and paths containing `?` are preserved literally. Plugin commands and potentially
+globs and paths containing `?` are preserved literally. URL queries, including
+commas and quotes, are redacted in full. Plugin commands and potentially
 sensitive argument values are replaced with placeholders. Review and fill placeholders before running the
 command; redacted URLs may also need their original credentials restored.
 User `-arg` values are preserved unless the argument name contains token,

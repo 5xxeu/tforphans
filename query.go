@@ -179,11 +179,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		if q, ok := byAddress[block]; ok {
 			return q.Ref()
 		}
-		if ref := userLists[block].Provider; ref != "" {
-			return ref
-		}
-		local, _, _ := strings.Cut(typ, "_")
-		return local
+		return userLists[block].ProviderRef(typ)
 	}
 	// localOf is its local name (the provider, whatever the alias).
 	localOf := func(address, typ string) string {

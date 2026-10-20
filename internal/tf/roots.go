@@ -452,6 +452,15 @@ type UserList struct {
 	Limit int
 }
 
+// ProviderRef returns the provider configuration used by a user list block.
+func (l UserList) ProviderRef(typ string) string {
+	if l.Provider != "" {
+		return l.Provider
+	}
+	local, _, _ := strings.Cut(typ, "_")
+	return local
+}
+
 // DefaultListLimit is Terraform's limit for list blocks without one.
 const DefaultListLimit = 100
 

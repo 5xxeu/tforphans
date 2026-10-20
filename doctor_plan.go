@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -76,4 +77,20 @@ func doctorQueryCategory(sk tf.Skip) string {
 	default:
 		return sk.Reason
 	}
+}
+
+func doctorUserListCoverage(sk tf.Skip, root string, lists map[string]tf.UserList) string {
+	if sk.Excluded {
+		return ""
+	}
+	sk.Root = root
+	for _, address := range slices.Sorted(maps.Keys(lists)) {
+		typ := strings.SplitN(address, ".", 3)[1]
+		check := tf.Check{Type: typ, Root: root, Provider: lists[address].ProviderRef(typ)}
+		coverage := report.BuildCoverage(nil, []tf.Check{check}, []tf.Skip{sk}, nil)
+		if !slices.ContainsFunc(coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete }) {
+			return address
+		}
+	}
+	return ""
 }

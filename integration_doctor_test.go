@@ -44,7 +44,7 @@ terraform {
 		{"supplied argument", []string{"-types", "fake_zoned", "-arg", "zone=a"}, 0, "ready"},
 		{"unread state", []string{"-types", "fake_thing", "-state", "missing.tfstate"}, 2, "needs_configuration"},
 		{"offline", []string{"-types", "fake_thing", "-offline", "-check-auth", "-state", "missing.tfstate"}, 0, "unknown"},
-		{"uninitialized", []string{"-types", "fake_thing"}, 2, "needs_configuration"},
+		{"uninitialized", []string{"-types", "fake_thing"}, 0, "ready"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.name == "uninitialized" {
@@ -62,6 +62,11 @@ terraform {
 			}
 			if d.Status != tc.status {
 				t.Fatalf("status %s want %s", d.Status, tc.status)
+			}
+			if tc.name == "uninitialized" {
+				if c := doctorFindCheck(t, d, "root.initialized", "."); c.Status != "warning" {
+					t.Fatalf("missing initialization warning: %+v", c)
+				}
 			}
 			if tc.name == "required argument" && !strings.Contains(out, "-arg zone=...") {
 				t.Fatal(out)
@@ -152,5 +157,32 @@ func TestIntegrationDoctorScanPlan(t *testing.T) {
 				t.Fatalf("discovery: %+v", discovery)
 			}
 		})
+	}
+}
+
+func TestIntegrationDoctorStateOnlyUninitialized(t *testing.T) {
+	if _, err := exec.LookPath("terraform"); err != nil {
+		t.Skip("terraform not in PATH")
+	}
+	root := t.TempDir()
+	t.Chdir(root)
+	write(t, "main.tf", "terraform {}\n")
+	write(t, "terraform.tfstate", `{"version":4,"serial":1,"lineage":"doctor-local","resources":[]}`)
+	code, out, stderr := runTool("doctor", "-no-config", "-no-query", "-plugin", "echo unused", "-format", "json", ".")
+	if code != 0 {
+		t.Fatalf("exit %d: %s\n%s", code, out, stderr)
+	}
+	var d doctorReport
+	if err := json.Unmarshal([]byte(out), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "ready" {
+		t.Fatal(out)
+	}
+	if c := doctorFindCheck(t, d, "root.initialized", "."); c.Status != "warning" {
+		t.Fatal(c)
+	}
+	if _, err := os.Stat(".terraform"); !os.IsNotExist(err) {
+		t.Fatalf("Terraform data directory was created: %v", err)
 	}
 }
