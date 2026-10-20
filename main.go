@@ -780,13 +780,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	// adopt places an object by every source that listed it: dedupe keeps
 	// one copy, and -adopt-root may name the source of another.
-	copies := map[string][]model.Resource{}
-	if o.adopt {
-		for _, r := range scopes {
-			copies[originKey(r)] = append(copies[originKey(r)], r)
-		}
-	}
-	live = dedupe(live)
+	live, copies := dedupeMembers(live)
 	c := classify(o, idx, live, origins, &sum)
 	orphans, uncertain := c.orphans, c.uncertain
 	sortResources(orphans)
@@ -980,14 +974,22 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 // dropped copies are kept: one copy may come from a list block that did
 // not ask for them.
 func dedupe(rs []model.Resource) []model.Resource {
+	out, _ := dedupeMembers(rs)
+	return out
+}
+
+// dedupeMembers is dedupe that also returns, by memberKey of each kept
+// result, every result merged into it (the kept one too).
+func dedupeMembers(rs []model.Resource) ([]model.Resource, map[string][]model.Resource) {
 	// One slot per key and provider family; "" collects the results
 	// without a provider. The order of the results must not matter, so
 	// those join a known family only when it is the only one: an object of
 	// unknown provider could be either of two, and swallowing both would
 	// hide one.
 	type slot struct {
-		r     model.Resource
-		first int // position of the first result in the slot
+		r       model.Resource
+		first   int // position of the first result in the slot
+		members []model.Resource
 	}
 	slots := map[string]map[string]*slot{}
 	var keys []string
@@ -1006,9 +1008,10 @@ func dedupe(rs []model.Resource) []model.Resource {
 		}
 		if s := slots[k][family]; s != nil {
 			mergeResult(&s.r, r)
+			s.members = append(s.members, r)
 			continue
 		}
-		slots[k][family] = &slot{r, i}
+		slots[k][family] = &slot{r, i, []model.Resource{r}}
 	}
 	var out []*slot
 	for _, k := range keys {
@@ -1018,6 +1021,7 @@ func dedupe(rs []model.Resource) []model.Resource {
 			for _, known := range group {
 				mergeResult(&known.r, unknown.r)
 				known.first = min(known.first, unknown.first)
+				known.members = append(known.members, unknown.members...)
 			}
 		}
 		for _, s := range group {
@@ -1026,10 +1030,22 @@ func dedupe(rs []model.Resource) []model.Resource {
 	}
 	slices.SortFunc(out, func(a, b *slot) int { return a.first - b.first })
 	res := make([]model.Resource, len(out))
+	members := map[string][]model.Resource{}
 	for i, s := range out {
 		res[i] = s.r
+		members[memberKey(s.r)] = s.members
 	}
-	return res
+	return res, members
+}
+
+// memberKey tells the results dedupe kept apart: one slot per originKey and
+// provider family.
+func memberKey(r model.Resource) string {
+	family := ""
+	if r.ProviderSource != "" {
+		family = model.ProviderFamily(r.ProviderSource)
+	}
+	return originKey(r) + "\x00" + family
 }
 
 // originKey keys the listings of an object as dedupe's slots: with an

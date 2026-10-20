@@ -306,4 +306,54 @@ func TestAdoptOutDirCopyProvider(t *testing.T) {
 			t.Errorf("%s:\n%s", f, got)
 		}
 	}
+
+	// An unknown provider joins no copy while two known ones differ:
+	// dedupe keeps all three, and only plugin3's goes to b.
+	run1("unknown", "-plugin", line(`, "provider_source": "hashicorp/vault"`), "-plugin", line(`, "provider_source": "example.com/fork/vault"`),
+		"-plugin", line(`, "provider": "vault.third"`), "-adopt-root", "plugin3=b")
+	if got := read(t, "unknown/b/imports.tf"); strings.Count(got, "import {") != 1 || !strings.Contains(got, "provider = vault.third") {
+		t.Errorf("b/imports.tf:\n%s", got)
+	}
+	// The pending import in b names the ID plugin2 gives, not plugin1's
+	// identity: it counts.
+	put(t, "b/imports.tf", "import {\n  to = vault_policy.ci\n  id = \"ci\"\n}\n")
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"adopt", "-no-config", "-no-query", "-state", "empty.tfstate", "-out-dir", "pending",
+		"-plugin", `echo '{"type": "vault_policy", "identity": {"id": "ci"}}'`, "-plugin", line(""), "-adopt-root", "plugin2=b"}, io.Discard, &stderr)
+	if code != exitOK || !strings.Contains(stderr.String(), "1 objects already have import blocks") {
+		t.Errorf("exit %d\n%s", code, stderr.String())
+	}
+}
+
+// Every result lands in exactly one group, whatever the order.
+func TestDedupeMembers(t *testing.T) {
+	id := map[string]any{"id": "x"}
+	rs := []model.Resource{
+		{Type: "foo_thing", Identity: id, Source: "plugin1", ProviderSource: "hashicorp/foo"},
+		{Type: "foo_thing", Identity: id, Source: "plugin2", ProviderSource: "example.com/fork/foo"},
+		{Type: "foo_thing", Identity: id, Source: "plugin3"},
+		{Type: "foo_thing", Identity: id, Source: "plugin4", ProviderSource: "hashicorp/foo"},
+		{Type: "foo_thing", Identity: map[string]any{"id": "y"}, Source: "plugin5"},
+	}
+	for _, order := range [][]int{{0, 1, 2, 3, 4}, {2, 0, 4, 1, 3}, {4, 3, 2, 1, 0}} {
+		var in []model.Resource
+		for _, i := range order {
+			in = append(in, rs[i])
+		}
+		out, members := dedupeMembers(in)
+		seen := map[string]int{}
+		for _, r := range out {
+			for _, m := range members[memberKey(r)] {
+				seen[m.Source]++
+			}
+		}
+		if len(out) != 4 || len(seen) != 5 {
+			t.Errorf("%v: %d kept, members %v", order, len(out), seen)
+		}
+		for s, n := range seen {
+			if n != 1 {
+				t.Errorf("%v: %s in %d groups", order, s, n)
+			}
+		}
+	}
 }

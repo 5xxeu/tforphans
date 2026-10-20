@@ -279,11 +279,12 @@ func adoptTarget(o *options, r model.Resource, roots map[string]bool) string {
 	return ""
 }
 
-// placeOrphans picks for each orphan the copy it is adopted as, from every
-// copy of it the sources listed before dedupe (same provider family): the
+// placeOrphans picks for each orphan the copy it is adopted as, from the
+// results dedupe merged into it (copies, by memberKey): the
 // kept copy when it has a root module, else the copy with a root (the
 // first by path). That copy's source, provider configuration and notes go
-// with it, so the block names the provider the way its root does. Copies
+// with it, and its import ID, so the block names the provider the way its
+// root does and pending imports are looked up as it would write. Copies
 // that point to different roots (two roots share an account, or
 // -adopt-root names two sources that both found it) get a note.
 func placeOrphans(o *options, orphans []model.Resource, copies map[string][]model.Resource, roots map[string]bool, sum *report.Summary) {
@@ -300,10 +301,7 @@ func placeOrphans(o *options, orphans []model.Resource, copies map[string][]mode
 		var dirs []string
 		var pick *model.Resource
 		pickDir := ""
-		for _, c := range copies[originKey(*r)] {
-			if !model.SameProvider(c.ProviderSource, r.ProviderSource) {
-				continue
-			}
+		for _, c := range copies[memberKey(*r)] {
 			d := adoptTarget(o, c, roots)
 			if d == "" {
 				continue
@@ -317,7 +315,7 @@ func placeOrphans(o *options, orphans []model.Resource, copies map[string][]mode
 		}
 		at := own
 		if pick != nil {
-			r.Source, r.ListAddress, r.Provider, r.UndeclaredProvider, r.ImportNote = pick.Source, pick.ListAddress, pick.Provider, pick.UndeclaredProvider, pick.ImportNote
+			r.Source, r.ListAddress, r.Provider, r.UndeclaredProvider, r.ImportNote, r.ImportID = pick.Source, pick.ListAddress, pick.Provider, pick.UndeclaredProvider, pick.ImportNote, pick.ImportID
 			at = pickDir
 		}
 		if own != "" && !slices.Contains(dirs, own) {
