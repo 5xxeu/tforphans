@@ -653,25 +653,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		a := sources[name]
 		// The root -adopt-root names gets the blocks: its pin comes first.
 		versionRoot := dsource.VersionRoot(slices.Concat(adoptRootOf(o, a.Name), o.roots, stateDirs), a.Provider)
-		scope := maps.Clone(o.scanScope)
-		if o.scopeState {
-			if scope == nil {
-				scope = map[string][]string{}
-			}
-			for _, sc := range a.Scopes {
-				if _, ok := scope[sc.Arg]; !ok {
-					// Parent objects (zones) are in state under their own
-					// id; their children carry it as zone_id.
-					vals := idx.Values("", sc.Arg)
-					for _, v := range idx.Values(strings.TrimSuffix(sc.Parent, "s"), "id") {
-						if !slices.Contains(vals, v) {
-							vals = append(vals, v)
-						}
-					}
-					scope[sc.Arg] = vals
-				}
-			}
-		}
+		scope := scanScope(o, a, idx)
 		o.stepf("-scan %s: reading its data sources", name)
 		res, err := withSource(ctx, o, func(ctx context.Context) (*dsource.Result, error) {
 			return dsource.Run(ctx, a, dsource.Options{

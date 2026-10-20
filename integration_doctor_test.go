@@ -123,6 +123,9 @@ func TestIntegrationDoctorScanPlan(t *testing.T) {
 	}{
 		{"selected", nil, 2, 0, "ready"},
 		{"all excluded", []string{"-exclude-types", "*"}, 0, 2, "needs_configuration"},
+		{"parent only", []string{"-types", "fake_record", "-scan-scope", "zone_id="}, 0, 2, "needs_configuration"},
+		{"state without zones", []string{"-types", "fake_record", "-scan-scope", "state"}, 0, 2, "needs_configuration"},
+		{"parent with listing", []string{"-types", "fake_record"}, 1, 0, "ready"},
 		{"no matching types", []string{"-types", "cloudflare_*"}, 0, 2, "needs_configuration"},
 		{"offline selected", []string{"-offline"}, 2, 0, "unknown"},
 		{"offline excluded", []string{"-offline", "-exclude-types", "*"}, 0, 2, "unknown"},

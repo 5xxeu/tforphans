@@ -69,6 +69,7 @@ type doctorCheck struct {
 	Types       []string  `json:"types,omitempty"`
 	Read        *int      `json:"read,omitempty"`
 	Total       *int      `json:"total,omitempty"`
+	Blocks      *int      `json:"blocks,omitempty"`
 	Count       *int      `json:"count,omitempty"`
 	Skipped     []tf.Skip `json:"skipped_types,omitempty"`
 }
@@ -210,6 +211,10 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	if len(snapshots) > 0 {
 		d.Notes = append(d.Notes, "State pull confirms backend access only, not permission to read cloud resources.")
 	}
+	idx := state.NewIndex()
+	if o.scopeState {
+		idx.AddSnapshots(snapshots)
+	}
 	for _, name := range o.scans {
 		a := sources[name]
 		pin := dsource.VersionRoot(checkedRoots, a.Provider)
@@ -218,7 +223,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		} else {
 			d.add("scan."+name+".pin", "ok", "provider version and hashes pinned", pin, "")
 		}
-		d.scanPlan(ctx, o, name, pin)
+		d.scanPlan(ctx, o, name, pin, scanScope(o, a, idx))
 		why := "-check-auth was not requested"
 		if o.offline {
 			why = "offline: authentication disabled"
@@ -795,14 +800,18 @@ func doctorAutoArg(source, name string) bool {
 	return ok && (name == "region" || name == "zone")
 }
 
-func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin string) {
+func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin string, scope map[string][]string) {
 	id := "scan." + name + ".plan"
+	if o.offline && o.scopeState {
+		d.add(id, "skipped", "offline: -scan-scope state requires reading states; scan plan unconfirmed", pin, "")
+		return
+	}
 	if pin == "" {
 		d.add(id, "skipped", "provider is not pinned; scan plan unavailable", "", "Supply a root pinning the scan provider with -state-roots")
 		return
 	}
 	p, err := withSource(ctx, o, func(ctx context.Context) (*dsource.PlanReport, error) {
-		return dsource.InspectPlan(ctx, sources[name], dsource.Options{TerraformBin: o.terraformBin, VersionRoot: pin, Include: o.include, Exclude: o.exclude, Scope: o.scanScope})
+		return dsource.InspectPlan(ctx, sources[name], dsource.Options{TerraformBin: o.terraformBin, VersionRoot: pin, Include: o.include, Exclude: o.exclude, Scope: scope})
 	})
 	if err != nil {
 		status := "failed"
@@ -815,9 +824,10 @@ func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin strin
 		}
 		return
 	}
-	d.scanBlocks += p.Blocks
-	d.add(id, "ok", fmt.Sprintf("%d data source blocks selected; no data sources read", p.Blocks), pin, "")
-	d.Checks[len(d.Checks)-1].Count = &p.Blocks
+	d.scanBlocks += p.Listings
+	d.add(id, "ok", fmt.Sprintf("%d data source blocks selected (%d listing blocks); no data sources read", p.Blocks, p.Listings), pin, "")
+	d.Checks[len(d.Checks)-1].Count = &p.Listings
+	d.Checks[len(d.Checks)-1].Blocks = &p.Blocks
 	for _, sk := range p.Skipped {
 		status := "warning"
 		if sk.Excluded {

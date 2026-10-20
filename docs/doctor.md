@@ -31,7 +31,13 @@ uses an isolated temporary root, the pinned lock entry and `init -plugin-dir`
 pointing to that root's installed providers, without downloading providers.
 It performs no plan, apply or cloud reads. This also works offline when the
 provider is installed. An unavailable schema leaves the scan unconfirmed;
-a scan with no confirmed blocks does not count towards discovery.
+a scan with no confirmed listing blocks does not count towards discovery.
+Only non-hidden blocks with selected resource listings count; context blocks
+and parent blocks without their own listings do not. The plan check's
+`count` is the number of these listing blocks, while `blocks` is the total
+number of data source blocks. `-scan-scope state` uses the same state index
+and parent IDs as the audit, preserving explicit scope overrides. Offline,
+a plan needing state scope is `skipped` and does not confirm discovery.
 A successfully built scan plan is `ok`. Provider and adapter limitations
 (such as missing result identities, unsupported parent arguments or
 pagination) are warnings when they leave coverage incomplete; deliberate
@@ -159,7 +165,7 @@ Offline status is `unknown`, even with exit 0 or 2.
 Every check has `id`, `status` (`ok`, `warning`, `failed`, `skipped`) and
 `message`. Optional fields are `remediation` (a fix command or instructions),
 `root`, `provider` (source address), `category` (plan skip category), `types` (list-capable types), `read` and
-`total` (state counts), `count` (removed stale files, instances without identity, or selected discovery operations), and
+`total` (state counts), `blocks` (total scan data source blocks), `count` (removed stale files, instances without identity, or selected discovery operations), and
 `skipped_types` (the existing query planner's `type`, `reason`, optional
 `root`, `provider`, `excluded`). State totals include all enumerated
 workspaces and explicit sources; a root whose workspace enumeration failed

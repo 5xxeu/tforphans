@@ -14,8 +14,9 @@ var ErrProviderNotInstalled = errors.New("pinned provider is not installed local
 
 // PlanReport describes a scan without reading any data sources.
 type PlanReport struct {
-	Blocks  int
-	Skipped []tf.Skip
+	Blocks   int
+	Listings int // blocks with selected listings, excluding hidden and support-only blocks
+	Skipped  []tf.Skip
 }
 
 // InspectPlan uses the audit planner and only the pinned root's installed provider.
@@ -53,6 +54,11 @@ func InspectPlan(ctx context.Context, a Adapter, opt Options) (*PlanReport, erro
 	if len(p.listings) > 0 {
 		blocks, skipped := limitScope(p.blocks(), opt.Scope)
 		result.Blocks = len(blocks)
+		for _, b := range blocks {
+			if !b.hidden && len(b.listings) > 0 {
+				result.Listings++
+			}
+		}
 		result.Skipped = append(result.Skipped, skipped...)
 	}
 	return result, nil
