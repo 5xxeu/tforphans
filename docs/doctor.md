@@ -68,6 +68,8 @@ to read cloud resources.
 a config file (including `-config`). A targeted identity plan can evaluate
 provider configuration dependencies. `offline` may be set in shared config;
 the audit and adopt commands ignore that key.
+Provider configurations used by user list blocks are included in identity
+checks even with `-no-aliases`; each configuration is checked only once.
 AWS, Google and Azure use the existing identity data sources with targeted
 plans, refresh disabled and locking disabled. Proxmox
 uses only its adapter probe in a temporary root with the pinned provider and

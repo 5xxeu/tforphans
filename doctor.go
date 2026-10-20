@@ -498,6 +498,13 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	for _, q := range p.Queries {
 		configs[q.Ref()] = tf.IdentityConfig{Ref: q.Ref(), Source: q.Source}
 	}
+	for address, list := range userLists {
+		typ := strings.SplitN(address, ".", 3)[1]
+		ref := list.ProviderRef(typ)
+		if _, ok := configs[ref]; !ok {
+			configs[ref] = tf.IdentityConfig{Ref: ref, Source: userListProvider(ref, typ, declared, schemas)}
+		}
+	}
 	for _, ref := range slices.Sorted(maps.Keys(configs)) {
 		c := configs[ref]
 		id := "auth." + ref
