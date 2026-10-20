@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -110,6 +111,16 @@ func TestDecodeJSONUnique(t *testing.T) {
 		if err := DecodeJSONUnique([]byte(bad), &v); err == nil {
 			t.Errorf("%s: no error", bad)
 		}
+	}
+	// Deep nesting is an error, not a stack overflow; what encoding/json
+	// accepts still passes.
+	deep := strings.Repeat("[", 10_000_000)
+	if err := DecodeJSONUnique([]byte(deep), new(any)); err == nil {
+		t.Error("deep nesting: no error")
+	}
+	ok := strings.Repeat("[", 9000) + strings.Repeat("]", 9000)
+	if err := DecodeJSONUnique([]byte(ok), new(any)); err != nil {
+		t.Errorf("nesting 9000: %v", err)
 	}
 }
 

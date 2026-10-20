@@ -203,16 +203,24 @@ func DecodeJSON(data []byte, v any) error {
 func DecodeJSONUnique(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber() // a float64 would overflow on 1e7000000000
-	if err := uniqueKeys(dec); err != nil {
+	if err := uniqueKeys(dec, 0); err != nil {
 		return err
 	}
 	return DecodeJSON(data, v)
 }
 
+// maxDepth is the nesting encoding/json accepts; uniqueKeys stops there
+// too, since it recurses and "[[[[..." in a 64 MiB line would overflow
+// the stack, which no error handling survives.
+const maxDepth = 10000
+
 // uniqueKeys reads one JSON value from dec and checks its objects for
 // repeated keys. Keys come unescaped from the decoder, so "\u0064one" is
 // "done".
-func uniqueKeys(dec *json.Decoder) error {
+func uniqueKeys(dec *json.Decoder, depth int) error {
+	if depth > maxDepth {
+		return errors.New("JSON nested too deeply")
+	}
 	tok, err := dec.Token()
 	if err != nil {
 		return err
@@ -231,7 +239,7 @@ func uniqueKeys(dec *json.Decoder) error {
 				return fmt.Errorf("key %q repeated in one object", key)
 			}
 			seen[folded] = true
-			if err := uniqueKeys(dec); err != nil {
+			if err := uniqueKeys(dec, depth+1); err != nil {
 				return err
 			}
 		}
@@ -239,7 +247,7 @@ func uniqueKeys(dec *json.Decoder) error {
 		return err
 	case json.Delim('['):
 		for dec.More() {
-			if err := uniqueKeys(dec); err != nil {
+			if err := uniqueKeys(dec, depth+1); err != nil {
 				return err
 			}
 		}
