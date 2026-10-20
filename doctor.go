@@ -65,6 +65,7 @@ type doctorCheck struct {
 	Remediation string    `json:"remediation,omitempty"`
 	Root        string    `json:"root,omitempty"`
 	Provider    string    `json:"provider,omitempty"`
+	Category    string    `json:"category,omitempty"`
 	Types       []string  `json:"types,omitempty"`
 	Read        *int      `json:"read,omitempty"`
 	Total       *int      `json:"total,omitempty"`
@@ -81,8 +82,10 @@ type doctorReport struct {
 	incomplete    bool
 	fixes         []string
 	queries       int
+	scanBlocks    int
 	providers     []string
 	argFixes      []doctorArgFix
+	verbose       bool
 }
 
 type doctorArgFix struct {
@@ -132,7 +135,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		ctx, cancel = context.WithTimeout(ctx, o.timeout)
 		defer cancel()
 	}
-	d := doctorReport{SchemaVersion: 1, Checks: []doctorCheck{}}
+	d := doctorReport{SchemaVersion: 1, Checks: []doctorCheck{}, verbose: o.verbose}
 	d.add("config", "ok", "command line and config parsed", "", "")
 	if o.offline {
 		d.add("offline", "warning", "installed provider processes may contact the network during schema startup; offline does not enforce network isolation", "", "")
@@ -171,7 +174,6 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 			d.add("states.read", "skipped", "temporary file cleanup failed", root, "")
 		}
 	}
-	d.discovery(o)
 	var snapshots []state.Snapshot
 	if o.offline {
 		d.add("states.read", "skipped", "offline: workspace list and state pull disabled", "", "")
@@ -216,6 +218,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		} else {
 			d.add("scan."+name+".pin", "ok", "provider version and hashes pinned", pin, "")
 		}
+		d.scanPlan(ctx, o, name, pin)
 		why := "-check-auth was not requested"
 		if o.offline {
 			why = "offline: authentication disabled"
@@ -236,6 +239,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		}
 		d.add("auth."+name, "skipped", why, "", "")
 	}
+	d.discovery(o)
 	if len(o.plugins) > 0 {
 		d.add("plugins", "skipped", "plugins are not executed: the plugin protocol has no diagnostic mode", "", "")
 	}
@@ -394,7 +398,6 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	}
 	d.queries += len(p.Queries) + len(userLists)
 	d.add("query.plan", "ok", fmt.Sprintf("%d generated listings and %d user list blocks selected; no listings executed", len(p.Queries), len(userLists)), root, "")
-	d.Checks[len(d.Checks)-1].Skipped = p.Skipped
 	for _, n := range p.Notes {
 		d.add("query.plan", "warning", n, root, "")
 	}
@@ -409,7 +412,8 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	}
 	argsStatus, aliasStatus := "ok", "ok"
 	for _, sk := range p.Skipped {
-		id, status, fix := "query.plan", "failed", ""
+		id, status, fix := "query.plan", "warning", ""
+		var argFixes []doctorArgFix
 		if sk.Excluded {
 			status = "skipped"
 		} else if strings.HasPrefix(sk.Reason, tf.MissingArgs) {
@@ -434,11 +438,13 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 					if doctorAutoArg(source, name) {
 						value = "auto"
 					}
-					d.argFixes = append(d.argFixes, doctorArgFix{check: len(d.Checks), typ: sk.Type, name: name, value: value})
+					argFixes = append(argFixes, doctorArgFix{typ: sk.Type, name: name, value: value})
 				}
 			}
-			fix = "Write a user list block for " + sk.Type + " supplying " + missing
-		} else if strings.Contains(sk.Reason, "provider") {
+			fix = "Write user list blocks supplying " + missing
+		} else if strings.HasPrefix(sk.Reason, "-arg ") {
+			status, fix = "failed", "Supply an explicit -arg value instead of auto"
+		} else if strings.HasPrefix(sk.Reason, "provider ") || strings.HasPrefix(sk.Reason, "provider configuration ") {
 			id, aliasStatus = "query.aliases", "warning"
 			if o.noAliases && strings.HasSuffix(sk.Reason, " not listed (-no-aliases)") {
 				status = "warning"
@@ -448,7 +454,11 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 			}
 			fix = "Review provider configurations and -no-aliases"
 		}
-		d.add(id, status, sk.Type+": "+sk.Reason, root, fix)
+		check := d.planSkip(id, status, doctorQueryCategory(sk), root, fix, sk)
+		for _, arg := range argFixes {
+			arg.check = check
+			d.argFixes = append(d.argFixes, arg)
+		}
 	}
 	d.updateArgumentFixes()
 	if argsStatus == "ok" {
@@ -623,12 +633,6 @@ func doctorNext(args, fixes []string) []string {
 		if name == "plugin" && strings.Contains(arg, "=") {
 			arg = strings.SplitN(arg, "=", 2)[0] + "=<plugin command>"
 		}
-		if strings.HasPrefix(arg, "-") && strings.Contains(arg, "=") {
-			k, v, _ := strings.Cut(arg, "=")
-			arg = k + "=" + state.Redact(v)
-		} else {
-			arg = state.Redact(arg)
-		}
 		out = append(out, arg)
 	}
 	seen := map[string]bool{}
@@ -639,7 +643,7 @@ func doctorNext(args, fixes []string) []string {
 		}
 	}
 	for i, arg := range out {
-		out[i] = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
+		out[i] = doctorRedactURLs(arg)
 	}
 	return out
 }
@@ -693,7 +697,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	d.NextCommand = slices.Clone(d.NextCommand)
 	unsafe := false
 	for i, arg := range d.NextCommand {
-		arg = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
+		arg = doctorRedactURLs(arg)
 		d.NextCommand[i] = arg
 		if strings.ContainsFunc(arg, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
 			d.NextCommand[i] = "<argument with control characters>"
@@ -713,7 +717,11 @@ func (d doctorReport) write(w io.Writer, format string) error {
 		if c.Root != "" {
 			root = " [" + c.Root + "]"
 		}
-		if _, err := fmt.Fprintf(w, "%-5s %-23s %s%s\n", labels[c.Status], c.ID, c.Message, root); err != nil {
+		message := c.Message
+		if c.Category != "" {
+			message = doctorSkipMessage(c.Category, c.Types, d.verbose)
+		}
+		if _, err := fmt.Fprintf(w, "%-5s %-23s %s%s\n", labels[c.Status], c.ID, message, root); err != nil {
 			return err
 		}
 		if c.Remediation != "" {
@@ -787,14 +795,51 @@ func doctorAutoArg(source, name string) bool {
 	return ok && (name == "region" || name == "zone")
 }
 
+func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin string) {
+	id := "scan." + name + ".plan"
+	if pin == "" {
+		d.add(id, "skipped", "provider is not pinned; scan plan unavailable", "", "Supply a root pinning the scan provider with -state-roots")
+		return
+	}
+	p, err := withSource(ctx, o, func(ctx context.Context) (*dsource.PlanReport, error) {
+		return dsource.InspectPlan(ctx, sources[name], dsource.Options{TerraformBin: o.terraformBin, VersionRoot: pin, Include: o.include, Exclude: o.exclude, Scope: o.scanScope})
+	})
+	if err != nil {
+		status := "failed"
+		if o.offline && errors.Is(err, dsource.ErrProviderNotInstalled) {
+			status = "skipped"
+		}
+		d.add(id, status, report.NewUnreadState(pin, err).Error, pin, "terraform -chdir="+shellQuote(pin)+" init")
+		if doctorResponseError(err) {
+			d.incomplete = true
+		}
+		return
+	}
+	d.scanBlocks += p.Blocks
+	d.add(id, "ok", fmt.Sprintf("%d data source blocks selected; no data sources read", p.Blocks), pin, "")
+	d.Checks[len(d.Checks)-1].Count = &p.Blocks
+	for _, sk := range p.Skipped {
+		status := "warning"
+		if sk.Excluded {
+			status = "skipped"
+		}
+		d.planSkip(id, status, doctorScanCategory(sk), pin, "", sk)
+	}
+}
+
+func doctorRedactURLs(arg string) string {
+	arg = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
+	return doctorURLs.ReplaceAllStringFunc(arg, state.Redact)
+}
+
 func (d *doctorReport) discovery(o *options) {
 	queries := d.queries
 	if o.noQuery {
 		queries = 0
 	}
-	count := queries + len(o.scans) + len(o.plugins)
+	count := queries + d.scanBlocks + len(o.plugins)
 	status, fix := "ok", ""
-	if !hasDiscovery(queries+len(o.scans), len(o.plugins)) {
+	if !hasDiscovery(queries+d.scanBlocks, len(o.plugins)) {
 		status = "failed"
 		fix = "Use -plugin COMMAND or a root with list resources; review -types and -exclude-types"
 		for _, name := range slices.Sorted(maps.Keys(sources)) {
@@ -805,7 +850,7 @@ func (d *doctorReport) discovery(o *options) {
 			}
 		}
 	}
-	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scans, %d plugins selected", queries, len(o.scans), len(o.plugins)), "", fix)
+	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scan blocks, %d plugins selected", queries, d.scanBlocks, len(o.plugins)), "", fix)
 	d.Checks[len(d.Checks)-1].Count = &count
 }
 

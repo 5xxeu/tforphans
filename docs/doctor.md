@@ -18,12 +18,32 @@ refresh-only apply or plugin execution takes place. It does not initialize
 plain Terraform roots or take state locks.
 Before reading each root, including state-only and offline roots, it removes marked temporary files of dead tforphans processes, reports the count as `root.stale`, and stops checking that root if cleanup fails.
 
-The `discovery` check fails when no generated queries, user list blocks, scans
-or plugins are selected. Generated query counts follow `-types`,
+The `discovery` check fails when no generated queries, user list blocks,
+confirmed scan blocks or plugins are selected. Generated query counts follow `-types`,
 `-exclude-types` and the existing planner; user list blocks retain the audit's
 behavior and are not filtered by these flags. `-no-query` leaves out both
 generated queries and user list blocks. A failed check suggests a supported
 `-scan` adapter for the root's provider, or a plugin or another root.
+
+For each scan, `scan.<name>.plan` uses the audit's data source planner and
+reports the block count and skipped types after filters. Schema inspection
+uses an isolated temporary root, the pinned lock entry and `init -plugin-dir`
+pointing to that root's installed providers, without downloading providers.
+It performs no plan, apply or cloud reads. This also works offline when the
+provider is installed. An unavailable schema leaves the scan unconfirmed;
+a scan with no confirmed blocks does not count towards discovery.
+A successfully built scan plan is `ok`. Provider and adapter limitations
+(such as missing result identities, unsupported parent arguments or
+pagination) are warnings when they leave coverage incomplete; deliberate
+adapter exclusions are `skipped`. They do not require configuration fixes
+or prevent readiness. Initialization and schema errors still fail, and
+zero discovery blocks still fail `discovery`.
+
+Query and scan plan skips are grouped by category and status for each root.
+Each group shows the number of types and the first eight names; `-v` shows
+all names in text. JSON always includes the full `types` and `skipped_types`
+with the original reasons. Query skips remain failures when arguments or
+provider configuration can fix them; explicit `-no-aliases` is a warning.
 
 By default it lists workspaces and pulls their stored states, plus `-state`
 sources and roots under `-state-roots`. State reads use `-max-state-size`,
@@ -91,7 +111,8 @@ is global (`-arg NAME=VALUE`). Different suggested values use one
 `-arg TYPE:NAME=VALUE` per type, including in each check's remediation.
 State URLs use the same credential redaction as audit reports. URL lists in
 `-arg` are redacted value by value; userinfo is also removed from every
-embedded URL in all next-command arguments. Plugin commands and potentially
+embedded URL in all next-command arguments. Redaction applies only to URLs;
+globs and paths containing `?` are preserved literally. Plugin commands and potentially
 sensitive argument values are replaced with placeholders. Review and fill placeholders before running the
 command; redacted URLs may also need their original credentials restored.
 User `-arg` values are preserved unless the argument name contains token,
@@ -137,7 +158,7 @@ Offline status is `unknown`, even with exit 0 or 2.
 
 Every check has `id`, `status` (`ok`, `warning`, `failed`, `skipped`) and
 `message`. Optional fields are `remediation` (a fix command or instructions),
-`root`, `provider` (source address), `types` (list-capable types), `read` and
+`root`, `provider` (source address), `category` (plan skip category), `types` (list-capable types), `read` and
 `total` (state counts), `count` (removed stale files, instances without identity, or selected discovery operations), and
 `skipped_types` (the existing query planner's `type`, `reason`, optional
 `root`, `provider`, `excluded`). State totals include all enumerated
@@ -153,7 +174,7 @@ Stable check IDs:
 | `ignore` | Ignore file and preset parsing |
 | `roots` | Root discovery, limits and shared data directory safety |
 | `terraform.version` | Terraform version and, when selected, query support |
-| `discovery` | Selected query, scan and plugin count; fails when zero |
+| `discovery` | Selected query, confirmed scan block and plugin count; fails when zero |
 | `root.stale` | Stale temporary file cleanup and failures |
 | `root.config` | Root configuration availability and parsing |
 | `root.initialized` | Terraform data directory availability |
@@ -165,6 +186,7 @@ Stable check IDs:
 | `query.aliases` | Aliases and provider configuration gaps |
 | `states.read` | State and workspace availability, read counts |
 | `states.identity` | List-capable instances without resource identity |
+| `scan.<name>.plan` | Data source block count, planning skips and schema availability |
 | `scan.<name>.pin` | A version and hashes for the scan provider |
 | `scan.scope` | State-derived scan scope has readable states |
 | `auth.<ref>` | Identity of a local provider reference, including aliases |

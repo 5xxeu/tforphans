@@ -48,6 +48,10 @@ func TestDoctorDiscovery(t *testing.T) {
 			}
 			source := "registry.terraform.io/" + tc.source
 			t.Setenv("DOCTOR_SCHEMA_JSON", doctorTestSchema(t, map[string]map[string][]string{source: tc.types}))
+			terraformBin := bin
+			if tc.name == "no query with scan" {
+				terraformBin = doctorScanFixture(t)
+			}
 			lock := fmt.Sprintf("provider %q {\n version = \"1.0.0\"\n hashes = [\"h1:test\"]\n}\n", source)
 			if err := os.WriteFile(".terraform.lock.hcl", []byte(lock), 0600); err != nil {
 				t.Fatal(err)
@@ -59,7 +63,7 @@ func TestDoctorDiscovery(t *testing.T) {
 				}
 				t.Cleanup(func() { os.Remove("custom.tfquery.hcl") })
 			}
-			args := append([]string{"doctor", "-no-config", "-terraform", bin, "-format", "json", "."}, tc.args...)
+			args := append([]string{"doctor", "-no-config", "-terraform", terraformBin, "-format", "json", "."}, tc.args...)
 			var out, stderr bytes.Buffer
 			code := run(context.Background(), args, &out, &stderr)
 			if code != tc.code {
@@ -83,7 +87,7 @@ func TestDoctorDiscovery(t *testing.T) {
 			if tc.count == 0 {
 				out.Reset()
 				stderr.Reset()
-				auditArgs := append([]string{"-no-config", "-terraform", bin, "-format", "json", "."}, tc.args...)
+				auditArgs := append([]string{"-no-config", "-terraform", terraformBin, "-format", "json", "."}, tc.args...)
 				if code := run(context.Background(), auditArgs, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "no resource types were queried") {
 					t.Fatalf("audit exit %d: %s %s", code, &out, &stderr)
 				}

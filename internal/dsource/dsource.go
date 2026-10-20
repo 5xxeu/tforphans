@@ -587,7 +587,7 @@ func parseSchema(raw []byte, provider string) (*schema, error) {
 		ProviderSchemas map[string]schema `json:"provider_schemas"`
 	}
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, fmt.Errorf("decode provider schema: %w", err)
+		return nil, fmt.Errorf("decode provider schema: %w", &model.ResponseError{Err: err})
 	}
 	s, ok := all.ProviderSchemas[provider]
 	if !ok {

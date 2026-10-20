@@ -236,3 +236,28 @@ func TestDoctorArgumentFixesKeepOtherFlags(t *testing.T) {
 		t.Fatal(d.fixes)
 	}
 }
+
+func TestDoctorNextPreservesNonURLs(t *testing.T) {
+	args := []string{"-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "root?name", "-state", "https://user:password@host/state?token=secret", "-state=https://user:password@host/other?signature=secret"}
+	want := []string{"tforphans", "-types", "aws_?3_bucket", "-exclude-types=aws_?3_*", "root?name", "-state", "https://host/state?REDACTED", "-state=https://host/other?REDACTED"}
+	got := doctorNext(args, nil)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%q want %q", got, want)
+	}
+	for _, format := range []string{"text", "json"} {
+		var out bytes.Buffer
+		if err := (doctorReport{NextCommand: got}).write(&out, format); err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range []string{"aws_?3_bucket", "aws_?3_*", "root?name", "https://host/state?REDACTED", "https://host/other?REDACTED"} {
+			if !strings.Contains(out.String(), value) {
+				t.Fatalf("%s lost %q: %s", format, value, &out)
+			}
+		}
+		for _, secret := range []string{"password", "token", "signature", "secret"} {
+			if strings.Contains(out.String(), secret) {
+				t.Fatalf("%s leaked %q: %s", format, secret, &out)
+			}
+		}
+	}
+}

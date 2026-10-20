@@ -5,11 +5,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"github.com/5xxeu/tforphans/internal/tf"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 func TestIntegrationDoctor(t *testing.T) {
@@ -65,6 +68,85 @@ terraform {
 			}
 			if left, _ := filepath.Glob("zz_tforphans_*"); len(left) > 0 {
 				t.Fatalf("temporary files left: %v", left)
+			}
+		})
+	}
+}
+
+func TestIntegrationDoctorScanPlan(t *testing.T) {
+	root := scanSetup(t)
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugins := filepath.Join(root, ".terraform", "providers")
+	installed := filepath.Join(plugins, fakeAdapter.Provider, "1.0.0", runtime.GOOS+"_"+runtime.GOARCH)
+	if err := os.MkdirAll(installed, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(filepath.Join(filepath.Dir(root), "bin", "terraform-provider-fake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "terraform-provider-fake_v1.0.0"), binary, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "main.tf"), `terraform {
+ required_providers {
+  fake = { source = "example.com/fake/fake", version = "1.0.0" }
+ }
+}`)
+	write(t, filepath.Join(root, "terraform.tfstate"), `{"version":4,"serial":1,"lineage":"doctor-scan","resources":[]}`)
+	t.Chdir(root)
+	r := tf.Runner{Bin: "terraform", Dir: root}
+	if _, _, err := r.Exec(context.Background(), "providers", "lock", "-fs-mirror="+plugins); err != nil {
+		t.Fatalf("local lock prerequisite: %v", err)
+	}
+	if _, err := r.ProvidersSchema(context.Background()); err != nil {
+		t.Fatalf("provider schema prerequisite: %v", err)
+	}
+	// Only schema inspection and backend reads are allowed.
+	terraform, err := exec.LookPath("terraform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "terraform")
+	write(t, wrapper, "#!/bin/sh\ncase \"$1\" in plan|apply|query) exit 99 ;; esac\nexec "+shellQuote(terraform)+" \"$@\"\n")
+	if err := os.Chmod(wrapper, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name         string
+		args         []string
+		blocks, code int
+		status       string
+	}{
+		{"selected", nil, 2, 0, "ready"},
+		{"all excluded", []string{"-exclude-types", "*"}, 0, 2, "needs_configuration"},
+		{"no matching types", []string{"-types", "cloudflare_*"}, 0, 2, "needs_configuration"},
+		{"offline selected", []string{"-offline"}, 2, 0, "unknown"},
+		{"offline excluded", []string{"-offline", "-exclude-types", "*"}, 0, 2, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"doctor", "-no-config", "-terraform", wrapper, "-format", "json", "-no-query", "-scan", "fake", "-state-roots", root}, tc.args...)
+			code, out, stderr := runTool(args...)
+			if code != tc.code {
+				t.Fatalf("exit %d want %d: %s\n%s", code, tc.code, out, stderr)
+			}
+			var d doctorReport
+			if err := json.Unmarshal([]byte(out), &d); err != nil {
+				t.Fatal(err)
+			}
+			if d.Status != tc.status {
+				t.Fatalf("status: %s", out)
+			}
+			plan := doctorFindCheck(t, d, "scan.fake.plan", root)
+			if plan.Status != "ok" || plan.Count == nil || *plan.Count != tc.blocks {
+				t.Fatalf("plan: %+v", plan)
+			}
+			discovery := doctorFindCheck(t, d, "discovery", "")
+			if discovery.Count == nil || *discovery.Count != tc.blocks || tc.blocks == 0 && discovery.Status != "failed" {
+				t.Fatalf("discovery: %+v", discovery)
 			}
 		})
 	}
