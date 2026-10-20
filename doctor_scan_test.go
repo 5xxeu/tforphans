@@ -85,6 +85,9 @@ func TestDoctorScanDiscovery(t *testing.T) {
 		}, 0, 0, "skipped", "unknown"},
 		{"init failure", nil, func(t *testing.T) { t.Setenv("DOCTOR_INIT_FAIL", "1") }, 2, 0, "failed", "needs_configuration"},
 		{"malformed schema", nil, func(t *testing.T) { t.Setenv("DOCTOR_SCHEMA_JSON", "invalid") }, 1, 0, "failed", "unknown"},
+		{"empty schema", nil, func(t *testing.T) { t.Setenv("DOCTOR_SCHEMA_JSON", "{}") }, 1, 0, "failed", "unknown"},
+		{"null schemas", nil, func(t *testing.T) { t.Setenv("DOCTOR_SCHEMA_JSON", `{"provider_schemas":null}`) }, 1, 0, "failed", "unknown"},
+		{"empty schemas", nil, func(t *testing.T) { t.Setenv("DOCTOR_SCHEMA_JSON", `{"provider_schemas":{}}`) }, 1, 0, "failed", "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin := doctorScanFixture(t)
@@ -231,5 +234,23 @@ func TestDoctorScanScopeDiscovery(t *testing.T) {
 				t.Fatalf("state attribute leaked: %s", &out)
 			}
 		})
+	}
+}
+
+func TestDoctorEmptyScanSchemaAuditCompatibility(t *testing.T) {
+	bin := doctorScanFixture(t)
+	t.Setenv("DOCTOR_SCHEMA_JSON", "{}")
+	t.Setenv("TF_PLUGIN_CACHE_DIR", t.TempDir())
+	var out, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-no-config", "-terraform", bin, "-no-query", "-scan", "cloudflare", "-state-roots", "."}, &out, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "no resource types were queried") {
+		t.Fatalf("exit %d: %s\n%s", code, &out, &stderr)
+	}
+	commands, err := os.ReadFile(os.Getenv("DOCTOR_SCAN_LOG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "providers schema") || strings.Contains(string(commands), "apply ") {
+		t.Fatalf("commands: %s", commands)
 	}
 }

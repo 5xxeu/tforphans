@@ -589,6 +589,9 @@ func parseSchema(raw []byte, provider string) (*schema, error) {
 	if err := json.Unmarshal(raw, &all); err != nil {
 		return nil, fmt.Errorf("decode provider schema: %w", &model.ResponseError{Err: err})
 	}
+	if len(all.ProviderSchemas) == 0 {
+		return nil, &model.ResponseError{Err: fmt.Errorf("provider schema response has no provider schemas")}
+	}
 	s, ok := all.ProviderSchemas[provider]
 	if !ok {
 		return nil, fmt.Errorf("provider %s not installed", provider)

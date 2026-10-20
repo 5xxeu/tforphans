@@ -795,7 +795,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	for i, a := range d.NextCommand {
 		parts[i] = shellArg(a)
 	}
-	_, err := fmt.Fprintln(w, "Next run:\n  "+report.Clean(strings.Join(parts, " ")))
+	_, err := fmt.Fprintln(w, "Next run:\n  "+strings.Join(parts, " "))
 	return err
 }
 

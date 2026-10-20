@@ -261,3 +261,42 @@ func TestDoctorNextPreservesNonURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorNextUnicodeSpace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "root\u00a0directory")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	unsafe := "root\x1b]52;control"
+	command := doctorNextArgs(t, []string{path, unsafe}, nil)
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := (doctorReport{NextCommand: command}).write(&out, format); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out.String(), "\x1b") {
+				t.Fatalf("raw control character: %q", out.String())
+			}
+			if format == "text" {
+				_, next, ok := strings.Cut(out.String(), "Next run:\n  ")
+				want := "tforphans '" + path + "' '<argument with control characters>'\n"
+				if !ok || next != want {
+					t.Fatalf("command bytes %q want %q", next, want)
+				}
+			} else {
+				var d doctorReport
+				if err := json.Unmarshal(out.Bytes(), &d); err != nil {
+					t.Fatal(err)
+				}
+				want := []string{"tforphans", path, "<argument with control characters>"}
+				if !reflect.DeepEqual(d.NextCommand, want) {
+					t.Fatalf("%q want %q", d.NextCommand, want)
+				}
+				if len(d.Notes) != 1 {
+					t.Fatalf("missing control-character note: %+v", d)
+				}
+			}
+		})
+	}
+}

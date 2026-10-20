@@ -2,6 +2,7 @@ package dsource
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -461,5 +462,20 @@ func TestErrorMessages(t *testing.T) {
 	}
 	if _, fatal := applyErrors(out); len(fatal) != 1 || strings.HasSuffix(fatal[0], " 401") {
 		t.Errorf("applyErrors still cuts messages: %q", fatal)
+	}
+}
+
+func TestParseSchemaEmptyResponse(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"provider_schemas":null}`, `{"provider_schemas":{}}`} {
+		_, err := parseSchema([]byte(raw), Cloudflare.Provider)
+		var response *model.ResponseError
+		if !errors.As(err, &response) {
+			t.Errorf("%s: want ResponseError, got %v", raw, err)
+		}
+	}
+	_, err := parseSchema([]byte(`{"provider_schemas":{"example.com/other/other":{}}}`), Cloudflare.Provider)
+	var response *model.ResponseError
+	if errors.As(err, &response) || err == nil || err.Error() != "provider "+Cloudflare.Provider+" not installed" {
+		t.Fatalf("missing provider: %v", err)
 	}
 }
