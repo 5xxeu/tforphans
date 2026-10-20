@@ -70,6 +70,9 @@ each one. Put the blocks into the root module and generate the configuration:
   tforphans adopt -o imports.tf
   terraform plan -generate-config-out=generated.tf
 
+With several root modules, -out-dir DIR writes a file per root module
+(DIR/<root path>/imports.tf) to copy into it.
+
 Objects that state may manage but cannot confirm (uncertain) get no block.
 When a state could not be read, adopt stops: objects of that state would show
 as unmanaged and be imported a second time (-allow-incomplete writes anyway).
@@ -150,8 +153,10 @@ type options struct {
 	exclude                glob.List
 	limit                  int
 	format                 string
-	adopt                  bool   // "adopt" subcommand: write import blocks
-	out                    string // adopt: output file, empty for stdout
+	adopt                  bool              // "adopt" subcommand: write import blocks
+	out                    string            // adopt: output file, empty for stdout
+	outDir                 string            // adopt: directory with a file per root module
+	adoptRoots             map[string]string // adopt -adopt-root: -scan provider or pluginN to root module directory
 	baselinePath           string
 	environment            string
 	ignorePath             string
@@ -232,7 +237,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		fmt.Fprint(stderr, help)
 		fs.PrintDefaults()
 	}
-	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore listFlag
+	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots listFlag
 	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.IntVar(&o.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
 	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
@@ -262,6 +267,8 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.IntVar(&o.limit, "limit", 100000, "maximum results per list query")
 	if o.adopt {
 		fs.StringVar(&o.out, "o", "", "write the import blocks to this new file instead of stdout")
+		fs.StringVar(&o.outDir, "out-dir", "", "write the import blocks to this new directory, one imports.tf per root module at its path from the current directory")
+		fs.Var(&adoptRoots, "adopt-root", "with -out-dir: put what a -scan provider or plugin found into this root module's file, e.g. cloudflare=zones/example.com or plugin1=vault; without it they go to _unassigned/NAME.tf; repeatable")
 		fs.BoolVar(&o.allowIncomplete, "allow-incomplete", false, "write import blocks even when a state could not be read (its objects would be imported a second time)")
 		fs.BoolVar(&o.namesFromTags, "names-from-tags", false, "name the resources after their Name tag where the type has tags (slower: terraform query returns whole objects for those types)")
 	} else {
@@ -398,6 +405,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 			return nil, fmt.Errorf("unknown -scan %q", s)
 		}
 	}
+	if err := adoptRootFlags(o, adoptRoots); err != nil {
+		return nil, err
+	}
 	for _, sc := range scanScopes {
 		if sc == "state" {
 			o.scopeState = true
@@ -442,6 +452,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	}
 	if o.noQuery && len(o.plugins) == 0 && len(o.scans) == 0 {
 		return nil, errors.New("-no-query needs at least one -scan or -plugin")
+	}
+	if err := outDirRoots(o); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
@@ -622,7 +635,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	for _, name := range o.scans {
 		a := sources[name]
-		versionRoot := dsource.VersionRoot(slices.Concat(o.roots, stateDirs), a.Provider)
+		// The root -adopt-root names gets the blocks: its pin comes first.
+		versionRoot := dsource.VersionRoot(slices.Concat(adoptRootOf(o, a.Name), o.roots, stateDirs), a.Provider)
 		scope := maps.Clone(o.scanScope)
 		if o.scopeState {
 			if scope == nil {
@@ -675,13 +689,20 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Skipped = append(sum.Skipped, res.Skipped...)
 		// Import blocks need the provider's local name in that root when it
 		// is not the type prefix (cf = { source = "cloudflare/cloudflare" }).
-		local := ""
-		if versionRoot != "" {
-			names, err := tf.LocalNames(versionRoot)
+		// With -adopt-root the blocks go to that root: its name counts.
+		local, nameRoot := "", versionRoot
+		target, assigned := o.adoptRoots[a.Name]
+		if assigned {
+			nameRoot = target
+		}
+		undeclared := false
+		if nameRoot != "" {
+			names, err := tf.LocalNames(nameRoot)
 			if err != nil {
 				return err
 			}
 			local = names[a.Provider]
+			undeclared = assigned && local == ""
 		}
 		for i := range res.Resources {
 			r := &res.Resources[i]
@@ -691,6 +712,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			}
 			if local != "" && !strings.HasPrefix(r.Type, local+"_") {
 				r.Provider = local
+			}
+			if undeclared {
+				r.UndeclaredProvider = a.Provider
 			}
 			// The scan cannot tell which account or cluster the root's own
 			// provider block points to.
@@ -754,7 +778,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			origins[originKey(r)] = append(origins[originKey(r)], r)
 		}
 	}
-	live = dedupe(live)
+	// adopt places an object by every source that listed it: dedupe keeps
+	// one copy, and -adopt-root may name the source of another.
+	live, copies := dedupeMembers(live)
 	c := classify(o, idx, live, origins, &sum)
 	orphans, uncertain := c.orphans, c.uncertain
 	sortResources(orphans)
@@ -823,7 +849,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	case o.adopt:
 		reserved := maps.Clone(idx.RootAddresses())
 		var imports []tf.Import
-		for _, dir := range slices.Concat(o.roots, stateDirs) {
+		for _, dir := range slices.Concat(o.roots, stateDirs, adoptRootDirs(o)) {
 			cfg, err := tf.ConfigAddresses(dir)
 			if err != nil {
 				return err
@@ -832,6 +858,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			ims, err := tf.ConfigImports(dir)
 			if err != nil {
 				return err
+			}
+			for i := range ims {
+				ims[i].Dir = canonDir(ims[i].Dir)
 			}
 			imports = append(imports, ims...)
 		}
@@ -846,8 +875,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		for _, r := range o.roots {
 			roots[r] = true
 		}
+		placeOrphans(o, orphans, copies, roots, &sum)
 		n := len(orphans)
-		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, roots) })
+		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, adoptTarget(o, r, roots)) })
 		if n > len(orphans) {
 			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
 		}
@@ -944,14 +974,22 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 // dropped copies are kept: one copy may come from a list block that did
 // not ask for them.
 func dedupe(rs []model.Resource) []model.Resource {
+	out, _ := dedupeMembers(rs)
+	return out
+}
+
+// dedupeMembers is dedupe that also returns, by memberKey of each kept
+// result, every result merged into it (the kept one too).
+func dedupeMembers(rs []model.Resource) ([]model.Resource, map[string][]model.Resource) {
 	// One slot per key and provider family; "" collects the results
 	// without a provider. The order of the results must not matter, so
 	// those join a known family only when it is the only one: an object of
 	// unknown provider could be either of two, and swallowing both would
 	// hide one.
 	type slot struct {
-		r     model.Resource
-		first int // position of the first result in the slot
+		r       model.Resource
+		first   int // position of the first result in the slot
+		members []model.Resource
 	}
 	slots := map[string]map[string]*slot{}
 	var keys []string
@@ -970,9 +1008,10 @@ func dedupe(rs []model.Resource) []model.Resource {
 		}
 		if s := slots[k][family]; s != nil {
 			mergeResult(&s.r, r)
+			s.members = append(s.members, r)
 			continue
 		}
-		slots[k][family] = &slot{r, i}
+		slots[k][family] = &slot{r, i, []model.Resource{r}}
 	}
 	var out []*slot
 	for _, k := range keys {
@@ -982,6 +1021,7 @@ func dedupe(rs []model.Resource) []model.Resource {
 			for _, known := range group {
 				mergeResult(&known.r, unknown.r)
 				known.first = min(known.first, unknown.first)
+				known.members = append(known.members, unknown.members...)
 			}
 		}
 		for _, s := range group {
@@ -990,10 +1030,22 @@ func dedupe(rs []model.Resource) []model.Resource {
 	}
 	slices.SortFunc(out, func(a, b *slot) int { return a.first - b.first })
 	res := make([]model.Resource, len(out))
+	members := map[string][]model.Resource{}
 	for i, s := range out {
 		res[i] = s.r
+		members[memberKey(s.r)] = s.members
 	}
-	return res
+	return res, members
+}
+
+// memberKey tells the results dedupe kept apart: one slot per originKey and
+// provider family.
+func memberKey(r model.Resource) string {
+	family := ""
+	if r.ProviderSource != "" {
+		family = model.ProviderFamily(r.ProviderSource)
+	}
+	return originKey(r) + "\x00" + family
 }
 
 // originKey keys the listings of an object as dedupe's slots: with an

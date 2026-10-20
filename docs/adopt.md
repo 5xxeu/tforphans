@@ -23,8 +23,10 @@ their addresses, and objects they target are not written again: same type,
 same provider configuration (`provider = vault.other` is not the default
 one), the same literal `id` or `identity`, and, for objects listed by a root
 module, a block in that root. Objects found by `-scan` or a plugin have no
-root, so a block in any root with their provider configuration counts. With several roots or plugins the blocks are grouped under
+root, so a block in any root with their provider configuration counts
+(with `-adopt-root`, only a block in that root). With several roots or plugins the blocks are grouped under
 `# Found by <source>` comments: each group belongs in its own root module.
+`-out-dir DIR` splits them for you (see below).
 Narrow down what to adopt with `-types` or the ignore file, and review
 `generated.tf` before applying.
 
@@ -51,5 +53,35 @@ missing values; fill them in by hand before applying.
 `adopt` exits 0 whether or not it found anything (1 on errors, and with
 `-strict` on incomplete coverage); the plain command is the one for CI
 checks.
+
+## A file per root module: `-out-dir`
+
+```sh
+tforphans adopt -out-dir imports -scan cloudflare -adopt-root cloudflare=zones/example.com zones/*
+```
+
+`-out-dir` writes a new directory with one `imports.tf` per root module that
+found something, at the root's path from the current directory
+(`imports/zones/example.com/imports.tf`). Copy each file into its root module
+and run `terraform plan -generate-config-out=generated.tf` there. Nothing is
+written into the root modules themselves; the directory must not exist yet,
+and it appears whole or not at all. Every root module must be under the
+current directory.
+
+Objects found by `-scan` or a plugin have no root module: the provider read
+them with the credentials of its own environment, which may point at
+another account than any root. They go to `_unassigned/<name>.tf`
+(`_unassigned/cloudflare.tf`, `_unassigned/plugin1.tf`) with a note. When you
+know where they belong, name the root module with `-adopt-root NAME=DIR`:
+`cloudflare=zones/example.com` for `-scan cloudflare`, `plugin1=vault` for
+the first `-plugin`. Their blocks then go to that root's file under
+`# Found by` comments, their names avoid the addresses of that root's
+configuration, and a `-scan` provider is named as that root declares it (a
+note says when it does not). An object that several sources found goes
+where any of them points (a plugin assigned to a root counts even when
+dedupe kept another plugin's copy, and the block then names that plugin's
+provider configuration); when they point to different root
+modules, it is written once and a note names them. `-out-dir` and `-adopt-root` are accepted only on the command
+line.
 
 [Back to the README](../README.md) · [All guides](README.md)
