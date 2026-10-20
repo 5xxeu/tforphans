@@ -17,6 +17,13 @@ are counted but never executed. No resource listing, `terraform query`,
 refresh-only apply or plugin execution takes place. It does not initialize
 plain Terraform roots or take state locks.
 
+The `discovery` check fails when no generated queries, user list blocks, scans
+or plugins are selected. Generated query counts follow `-types`,
+`-exclude-types` and the existing planner; user list blocks retain the audit's
+behavior and are not filtered by these flags. `-no-query` leaves out both
+generated queries and user list blocks. A failed check suggests a supported
+`-scan` adapter for the root's provider, or a plugin or another root.
+
 By default it lists workspaces and pulls their stored states, plus `-state`
 sources and roots under `-state-roots`. State reads use `-max-state-size`,
 `-state-parallelism`, `-source-timeout` and `-timeout`. Independent checks
@@ -27,7 +34,8 @@ to read cloud resources.
 
 `-check-auth` is opt-in and accepted only on the command line, never from
 a config file (including `-config`). A targeted identity plan can evaluate
-provider configuration dependencies. `offline` may be set in config.
+provider configuration dependencies. `offline` may be set in shared config;
+the audit and adopt commands ignore that key.
 AWS, Google and Azure use the existing identity data sources with targeted
 plans, refresh disabled and locking disabled. Proxmox
 uses only its adapter probe in a temporary root with the pinned provider and
@@ -84,7 +92,11 @@ User `-arg` values are preserved unless the argument name contains token,
 secret, password or credential, or ends in a separate key component (for
 example `key`, `api_key`, `private-key` or camel-case `apiKey`). Names such as `key_vault_name`,
 `key_name` and `keyboard` are preserved. Only arguments needing shell quoting
-are quoted in text output.
+are quoted in text output. Remediation and command text are cleaned before
+printing. Next-command arguments with control or Unicode format characters
+are replaced with placeholders in both formats, with an explanatory note.
+JSON otherwise retains exact remediation and command values, escaping
+control characters during encoding.
 
 A state-only root has one `root.query` skip instead of individual query and
 authentication skips. When any states were read, the result includes one
@@ -120,7 +132,7 @@ Offline status is `unknown`, even with exit 0 or 2.
 Every check has `id`, `status` (`ok`, `warning`, `failed`, `skipped`) and
 `message`. Optional fields are `remediation` (a fix command or instructions),
 `root`, `provider` (source address), `types` (list-capable types), `read` and
-`total` (state counts), `count` (instances without identity), and
+`total` (state counts), `count` (instances without identity, or selected discovery operations), and
 `skipped_types` (the existing query planner's `type`, `reason`, optional
 `root`, `provider`, `excluded`). State totals include all enumerated
 workspaces and explicit sources; a root whose workspace enumeration failed
@@ -135,6 +147,7 @@ Stable check IDs:
 | `ignore` | Ignore file and preset parsing |
 | `roots` | Root discovery, limits and shared data directory safety |
 | `terraform.version` | Terraform version and, when selected, query support |
+| `discovery` | Selected query, scan and plugin count; fails when zero |
 | `root.config` | Root configuration availability and parsing |
 | `root.initialized` | Terraform data directory availability |
 | `root.lock` | Local provider lock file syntax and availability |

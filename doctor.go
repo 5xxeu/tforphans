@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/model"
@@ -78,6 +79,8 @@ type doctorReport struct {
 	Notes         []string      `json:"notes,omitempty"`
 	incomplete    bool
 	fixes         []string
+	queries       int
+	providers     []string
 }
 
 func (d *doctorReport) add(id, status, message, root, remediation string) {
@@ -156,6 +159,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		o.stepf("checking %s", root)
 		d.root(ctx, o, root, slices.Contains(o.roots, root) && !o.noQuery, listable)
 	}
+	d.discovery(o)
 	var snapshots []state.Snapshot
 	if o.offline {
 		d.add("states.read", "skipped", "offline: workspace list and state pull disabled", "", "")
@@ -283,6 +287,9 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	r := tf.Runner{Bin: o.terraformBin, Dir: root, MaxStateSize: o.maxStateSize}
 	init := "terraform -chdir=" + shellQuote(root) + " init"
 	declared, err := tf.LocalNames(root)
+	if query {
+		d.providers = append(d.providers, slices.Collect(maps.Keys(declared))...)
+	}
 	if err != nil || !tf.HasConfig(root) {
 		d.add("root.config", "failed", "root configuration is missing or invalid", root, "Check the root's Terraform configuration")
 	} else {
@@ -337,6 +344,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.add("providers.schema", "ok", "no providers in this root", root, "")
 	}
 	for _, addr := range slices.Sorted(maps.Keys(schemas.ProviderSchemas)) {
+		d.providers = append(d.providers, addr)
 		ps := schemas.ProviderSchemas[addr]
 		types := slices.Sorted(maps.Keys(ps.ListResourceSchemas))
 		d.add("providers.schema", "ok", fmt.Sprintf("%s: %d list resource types", addr, len(types)), root, "")
@@ -362,6 +370,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 	if err != nil {
 		d.add("query.plan", "failed", "user list blocks could not be parsed", root, "Check .tfquery.hcl files")
 	}
+	d.queries += len(p.Queries) + len(userLists)
 	d.add("query.plan", "ok", fmt.Sprintf("%d generated listings and %d user list blocks selected; no listings executed", len(p.Queries), len(userLists)), root, "")
 	d.Checks[len(d.Checks)-1].Skipped = p.Skipped
 	for _, n := range p.Notes {
@@ -642,9 +651,30 @@ func shellArg(s string) string {
 	return shellQuote(s)
 }
 
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+func shellQuote(s string) string {
+	if strings.Contains(s, "  ") {
+		parts := strings.Split(s, " ")
+		for i, part := range parts {
+			parts[i] = "'" + strings.ReplaceAll(part, "'", "'\"'\"'") + "'"
+		}
+		return strings.Join(parts, "' '")
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
 
 func (d doctorReport) write(w io.Writer, format string) error {
+	d.NextCommand = slices.Clone(d.NextCommand)
+	unsafe := false
+	for i, arg := range d.NextCommand {
+		if strings.ContainsFunc(arg, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
+			d.NextCommand[i] = "<argument with control characters>"
+			unsafe = true
+		}
+	}
+	if unsafe {
+		d.Notes = append(slices.Clone(d.Notes), "Next run contains a placeholder for an argument with control characters; supply it manually.")
+	}
+
 	if format == "json" {
 		return json.NewEncoder(w).Encode(d)
 	}
@@ -658,7 +688,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 			return err
 		}
 		if c.Remediation != "" {
-			if _, err := fmt.Fprintln(w, "      Fix:", c.Remediation); err != nil {
+			if _, err := fmt.Fprintln(w, "      Fix:", report.Clean(c.Remediation)); err != nil {
 				return err
 			}
 		}
@@ -667,7 +697,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 		return err
 	}
 	for _, note := range d.Notes {
-		if _, err := fmt.Fprintln(w, note); err != nil {
+		if _, err := fmt.Fprintln(w, report.Clean(note)); err != nil {
 			return err
 		}
 	}
@@ -675,7 +705,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	for i, a := range d.NextCommand {
 		parts[i] = shellArg(a)
 	}
-	_, err := fmt.Fprintln(w, "Next run:\n  "+strings.Join(parts, " "))
+	_, err := fmt.Fprintln(w, "Next run:\n  "+report.Clean(strings.Join(parts, " ")))
 	return err
 }
 
@@ -726,4 +756,26 @@ func doctorAutoArg(source, name string) bool {
 	family := model.ProviderFamily(source)
 	_, ok := tf.AutoSources[family[strings.LastIndex(family, "/")+1:]]
 	return ok && (name == "region" || name == "zone")
+}
+
+func (d *doctorReport) discovery(o *options) {
+	queries := d.queries
+	if o.noQuery {
+		queries = 0
+	}
+	count := queries + len(o.scans) + len(o.plugins)
+	status, fix := "ok", ""
+	if !hasDiscovery(queries+len(o.scans), len(o.plugins)) {
+		status = "failed"
+		fix = "Use -plugin COMMAND or a root with list resources; review -types and -exclude-types"
+		for _, name := range slices.Sorted(maps.Keys(sources)) {
+			if slices.ContainsFunc(d.providers, func(addr string) bool { return tf.NormalizeSource(addr) == tf.NormalizeSource(sources[name].Provider) }) {
+				fix = "tforphans -scan " + name
+				d.fixes = append(d.fixes, "-scan", name)
+				break
+			}
+		}
+	}
+	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scans, %d plugins selected", queries, len(o.scans), len(o.plugins)), "", fix)
+	d.Checks[len(d.Checks)-1].Count = &count
 }

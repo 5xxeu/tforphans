@@ -38,9 +38,9 @@ var configOnlyExplicit = []string{"init", "refresh", "allow-unpinned", "include-
 // configPathKeys hold paths, which are relative to the config file.
 var configPathKeys = []string{"state-roots", "terragrunt-unit", "state", "ignore", "baseline"}
 
-// modeOnly are flags of one mode (adopt or not): a config file shared by
-// both may set them, and the other mode skips them.
-var modeOnly = []string{"format", "allow-incomplete", "names-from-tags"}
+// modeOnly are flags of one mode: commands sharing a config file skip
+// keys that belong only to another mode.
+var modeOnly = []string{"format", "allow-incomplete", "names-from-tags", "offline"}
 
 // applyConfig sets the flags a config file gives and the command line does
 // not. Keys are flag names; a list stands for a repeated flag, and roots for

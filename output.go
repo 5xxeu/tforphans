@@ -152,7 +152,12 @@ func printScopes(w io.Writer, live []model.Resource) {
 // nothing is unmanaged.
 func nothingChecked(o *options, s report.Summary) bool {
 	// Empty plugin answers without done are recorded as failed sources.
-	return s.Ran == 0 && len(o.plugins) == 0 && !o.printQuery
+	return !hasDiscovery(s.Ran, len(o.plugins)) && !o.printQuery
+}
+
+// hasDiscovery accepts either planned listings or listings that actually ran.
+func hasDiscovery(listings, plugins int) bool {
+	return listings != 0 || plugins != 0
 }
 
 func printSummary(w io.Writer, o *options, s report.Summary) {
