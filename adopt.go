@@ -204,6 +204,14 @@ func adoptRootFlags(o *options, pairs []string) error {
 	return nil
 }
 
+// adoptRootOf is the directory -adopt-root names for a -scan provider, if any.
+func adoptRootOf(o *options, name string) []string {
+	if d, ok := o.adoptRoots[name]; ok {
+		return []string{d}
+	}
+	return nil
+}
+
 // adoptRootDirs are the directories -adopt-root names, in a fixed order.
 func adoptRootDirs(o *options) []string {
 	var dirs []string
@@ -342,11 +350,21 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 		file := filepath.Join(rel, "imports.tf")
 		files[file] = append(files[file], r)
 	}
-	out := filepath.Clean(o.outDir)
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+	// Split without Clean: in jump/../imports the link counts first.
+	raw := strings.TrimRight(o.outDir, string(filepath.Separator))
+	parent, base := ".", raw
+	if i := strings.LastIndex(raw, string(filepath.Separator)); i >= 0 {
+		parent, base = raw[:i+1], raw[i+1:]
+	}
+	if base == "" || base == "." || base == ".." {
+		return 0, fmt.Errorf("-out-dir %s: name a new directory", o.outDir)
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return 0, err
 	}
-	tmp, err := os.MkdirTemp(filepath.Dir(out), "."+filepath.Base(out)+".tmp-")
+	parent = canonDir(parent)
+	out := filepath.Join(parent, base)
+	tmp, err := os.MkdirTemp(parent, "."+base+".tmp-")
 	if err != nil {
 		return 0, err
 	}

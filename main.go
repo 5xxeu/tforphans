@@ -635,7 +635,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	for _, name := range o.scans {
 		a := sources[name]
-		versionRoot := dsource.VersionRoot(slices.Concat(o.roots, stateDirs), a.Provider)
+		// The root -adopt-root names gets the blocks: its pin comes first.
+		versionRoot := dsource.VersionRoot(slices.Concat(adoptRootOf(o, a.Name), o.roots, stateDirs), a.Provider)
 		scope := maps.Clone(o.scanScope)
 		if o.scopeState {
 			if scope == nil {

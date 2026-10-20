@@ -198,3 +198,26 @@ func TestCanonDirLink(t *testing.T) {
 		t.Errorf("%q %v", got, err)
 	}
 }
+
+// -out-dir resolves a link before .. like the system does: jump/../imports
+// is team/imports.
+func TestAdoptOutDirLink(t *testing.T) {
+	t.Chdir(t.TempDir())
+	put(t, "team/sub/x", "")
+	if err := os.Symlink(filepath.Join("team", "sub"), "jump"); err != nil {
+		t.Skip(err)
+	}
+	put(t, "empty.tfstate", `{"version": 4, "serial": 1, "lineage": "x", "resources": []}`)
+	plugin := `echo '{"type": "vault_policy", "identity": {"id": "ci"}, "import_id": "ci"}'`
+	sep := string(filepath.Separator)
+	var stderr bytes.Buffer
+	if code := run(context.Background(), []string{"adopt", "-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", plugin, "-out-dir", "jump" + sep + ".." + sep + "imports"}, io.Discard, &stderr); code != exitOK {
+		t.Fatalf("exit %d\n%s", code, stderr.String())
+	}
+	if _, err := os.Stat("team/imports/_unassigned/plugin1.tf"); err != nil {
+		t.Errorf("%v\n%s", err, stderr.String())
+	}
+	if _, err := os.Stat("imports"); err == nil {
+		t.Error("written to ./imports")
+	}
+}
