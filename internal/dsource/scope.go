@@ -171,7 +171,7 @@ func limitScope(blocks []block, limit map[string][]string) ([]block, []tf.Skip) 
 				}
 				if len(vals) == 0 {
 					for _, l := range b.listings {
-						skipped = append(skipped, tf.Skip{Type: l.resourceType, Reason: "-scan-scope names no " + b.scope.Arg, Excluded: true})
+						skipped = append(skipped, tf.Skip{ReasonDetails: model.Reason("scope_excluded"), Type: l.resourceType, Reason: "-scan-scope names no " + b.scope.Arg, Excluded: true})
 					}
 					continue
 				}

@@ -157,7 +157,7 @@ func PrintFindings(w io.Writer, rs []Finding, limit int) error {
 		}
 		reason := ""
 		if r.Reason != "" {
-			reason = ": " + Clean(r.Reason)
+			reason = ": " + Clean(r.Reason) + reasonReference(r.ReasonCode)
 		}
 		if _, err := fmt.Fprintf(w, "  %s%s\n", findingLabel(r.Type, identity, r.Scope), reason); err != nil {
 			return err

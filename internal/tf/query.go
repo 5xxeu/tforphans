@@ -554,3 +554,19 @@ func (l *sizeLimit) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+// ReasonDetails maps classified failures to stable output codes.
+func (f Failure) ReasonDetails() model.ReasonDetails {
+	codes := map[string]string{
+		FailMissingArg: "missing_argument", FailAPIOff: "api_disabled",
+		FailDenied: "permission_denied", FailNotFound: "not_found",
+		FailTruncated: "limit_reached", FailCrash: "provider_crashed",
+		FailRetired: "api_retired", FailProvider: "provider_error",
+		FailRejected: "request_rejected",
+	}
+	code := codes[f.Category]
+	if code == "" {
+		code = "listing_failed"
+	}
+	return model.Reason(code)
+}

@@ -405,8 +405,15 @@ type Coverage struct {
 	// Reasons are the failure categories (see failed_queries), the
 	// reason a type was skipped, or GapPrefix and the reason a type that
 	// needed a check was skipped.
-	Reasons []string `json:"reasons,omitempty"`
+	Reasons       []string         `json:"reasons,omitempty"`
+	ReasonDetails []CoverageReason `json:"reason_details,omitempty"`
 	TypeCount
+}
+
+// CoverageReason pairs stable metadata with one existing human reason.
+type CoverageReason struct {
+	model.ReasonDetails
+	Reason string `json:"reason"`
 }
 
 // GapPrefix starts the reason of a type that needed a check and was
@@ -453,7 +460,28 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			entry(c.Type, "")
 		}
 	}
-	addReason := func(c *Coverage, why string) {
+	details := map[[2]string]map[string][]model.ReasonDetails{}
+	remember := func(c *Coverage, why string, d model.ReasonDetails) {
+		k := [2]string{c.Type, c.Scope}
+		if details[k] == nil {
+			details[k] = map[string][]model.ReasonDetails{}
+		}
+		if d.ReasonCode == "" {
+			d = model.Reason("listing_skipped", d.MissingKeys...)
+		}
+		// Human wording is not unique to a cause. Keep different codes
+		// and actions, merging key names only for the same cause.
+		for i, previous := range details[k][why] {
+			if previous.ReasonCode == d.ReasonCode && previous.Action == d.Action {
+				d.MissingKeys = model.Reason(d.ReasonCode, append(slices.Clone(previous.MissingKeys), d.MissingKeys...)...).MissingKeys
+				details[k][why][i] = d
+				return
+			}
+		}
+		details[k][why] = append(details[k][why], d)
+	}
+	addReason := func(c *Coverage, why string, d model.ReasonDetails) {
+		remember(c, why, d)
 		c.Status = Incomplete
 		if !slices.Contains(c.Reasons, why) {
 			c.Reasons = append(c.Reasons, why)
@@ -465,12 +493,12 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			why = tf.FailOther
 		}
 		if f.Scope != "" || !types[f.Type] {
-			addReason(entry(f.Type, f.Scope), why)
+			addReason(entry(f.Type, f.Scope), why, f.ReasonDetails())
 			continue
 		}
 		for _, c := range byKey {
 			if c.Type == f.Type {
-				addReason(c, why)
+				addReason(c, why, f.ReasonDetails())
 			}
 		}
 	}
@@ -484,7 +512,7 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			if sk.Root != "" {
 				scope = "root " + sk.Root
 			}
-			addReason(entry(sk.Type, scope), GapPrefix+sk.Reason)
+			addReason(entry(sk.Type, scope), GapPrefix+sk.Reason, sk.ReasonDetails)
 			continue
 		}
 		// A disabled API in one root says nothing about another root
@@ -502,6 +530,7 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			if c.Status == Complete {
 				c.Status = Skipped
 			}
+			remember(c, sk.Reason, sk.ReasonDetails)
 			if !slices.Contains(c.Reasons, sk.Reason) {
 				c.Reasons = append(c.Reasons, sk.Reason)
 			}
@@ -515,6 +544,7 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 		if c.Status == Complete {
 			c.Status = Skipped
 		}
+		remember(c, sk.Reason, sk.ReasonDetails)
 		if !slices.Contains(c.Reasons, sk.Reason) {
 			c.Reasons = append(c.Reasons, sk.Reason)
 		}
@@ -522,6 +552,18 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 	out := make([]Coverage, 0, len(byKey))
 	for _, c := range byKey {
 		slices.Sort(c.Reasons)
+		for _, why := range c.Reasons {
+			causes := details[[2]string{c.Type, c.Scope}][why]
+			slices.SortFunc(causes, func(a, b model.ReasonDetails) int {
+				if cmp := strings.Compare(a.ReasonCode, b.ReasonCode); cmp != 0 {
+					return cmp
+				}
+				return strings.Compare(a.Action, b.Action)
+			})
+			for _, d := range causes {
+				c.ReasonDetails = append(c.ReasonDetails, CoverageReason{ReasonDetails: d, Reason: why})
+			}
+		}
 		out = append(out, *c)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -715,6 +757,7 @@ func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summar
 // Explanation says why a live object counts as managed, uncertain,
 // ignored or unmanaged (-explain).
 type Explanation struct {
+	model.ReasonDetails
 	Type         string         `json:"type"`
 	Identity     map[string]any `json:"identity"`
 	DisplayName  string         `json:"display_name"`
@@ -737,7 +780,7 @@ func ExplainText(w io.Writer, es []Explanation) error {
 	fmt.Fprintln(tw, "STATUS\tTYPE\tNAME\tIDENTITY\tWHY")
 	for _, e := range es {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Status, Clean(e.Type), Clean(e.DisplayName),
-			Clean((model.Resource{Identity: e.Identity}).IdentityString()), Clean(e.Reason))
+			Clean((model.Resource{Identity: e.Identity}).IdentityString()), Clean(e.Reason)+reasonReference(e.ReasonCode))
 	}
 	return tw.Flush()
 }

@@ -34,6 +34,22 @@ format it does not know; new fields do not change it.
 
 Empty lists and zero counters marked above as optional may be left out.
 
+## Stable reasons
+
+`explain[].reason`, `summary.skipped_types[].reason` and baseline
+`unverified_findings[].reason` have additive `reason_code`, optional `action`
+and optional `missing_keys` (names only, sorted and unique). Human sentences
+may change; use the [reason code reference](reasons.md) for the stable enum
+and action semantics. Unknown codes must not be interpreted as success.
+
+`summary.coverage[].reasons` remains an array of strings. Its optional
+`reason_details` array pairs each string with `{reason, reason_code, action?,
+missing_keys?}`, sorted by reason, then code and action. Distinct causes with
+identical wording have separate entries; repeated causes merge their key names.
+Rows without reasons omit it.
+The `diff` command uses the same metadata on its unverified findings.
+These additions keep `schema_version` at `1`.
+
 ## Explanations
 
 With `-explain`, the top-level array `explain` has one entry per live

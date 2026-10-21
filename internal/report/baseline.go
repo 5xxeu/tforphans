@@ -62,6 +62,7 @@ func ReadSnapshot(ctx context.Context, path string, maxSize int64) (*Snapshot, e
 
 // Finding retains the baseline fields needed to identify and show an object.
 type Finding struct {
+	model.ReasonDetails
 	Type           string         `json:"type"`
 	Identity       map[string]any `json:"identity"`
 	Scope          string         `json:"scope,omitempty"`
@@ -87,10 +88,11 @@ func finding(r model.Resource, reason string) Finding {
 // Seen is a live object of the current run that is no orphan: managed,
 // ignored or uncertain.
 type Seen struct {
-	Resource     model.Resource
-	Status       string
-	StateAddress string
-	Rule         string
+	ReasonDetails model.ReasonDetails
+	Resource      model.Resource
+	Status        string
+	StateAddress  string
+	Rule          string
 }
 
 // Transitions for missing findings.
@@ -262,11 +264,11 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 	newListings := indexListings(currentSummary.Listings)
 	for _, r := range old {
 		if b.EnvironmentChanged {
-			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, environmentChanged))
+			b.UnverifiedFindings = append(b.UnverifiedFindings, unverifiedFinding(r, environmentChanged, "environment_changed"))
 			continue
 		}
 		if _, ok := keyFinding(r); !ok {
-			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, "identity and import_id missing"))
+			b.UnverifiedFindings = append(b.UnverifiedFindings, unverifiedFinding(r, "identity and import_id missing", "no_identity"))
 			continue
 		}
 		if now.contains(r) {
@@ -285,11 +287,15 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 				b.ResolvedFindings = append(b.ResolvedFindings, f)
 			default:
 				f.Transition, f.StateAddress, f.Reason = BecameUnsure, s.StateAddress, "now uncertain"
+				f.ReasonDetails = s.ReasonDetails
+				if f.ReasonCode == "" {
+					f.ReasonDetails = model.Reason("scope_unverified")
+				}
 				b.UnverifiedFindings = append(b.UnverifiedFindings, f)
 			}
 			continue
 		}
-		reason := missingReason(r, oldListings, newListings)
+		reason, code := missingReason(r, oldListings, newListings)
 		if reason == "" {
 			f := finding(r, "")
 			if live {
@@ -297,7 +303,7 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 			}
 			b.ResolvedFindings = append(b.ResolvedFindings, f)
 		} else {
-			b.UnverifiedFindings = append(b.UnverifiedFindings, finding(r, reason))
+			b.UnverifiedFindings = append(b.UnverifiedFindings, unverifiedFinding(r, reason, code))
 		}
 	}
 	b.Resolved, b.Unverified = len(b.ResolvedFindings), len(b.UnverifiedFindings)
@@ -316,33 +322,39 @@ func indexListings(listings []Listing) map[[2]string]Listing {
 	return out
 }
 
-func missingReason(r model.Resource, old, current map[[2]string]Listing) string {
+func missingReason(r model.Resource, old, current map[[2]string]Listing) (string, string) {
 	if pluginSource.MatchString(r.Source) {
-		return "plugin results cannot be verified"
+		return "plugin results cannot be verified", "plugin_unverifiable"
 	}
 	key := [2]string{r.Source, r.ListAddress}
 	before, ok := old[key]
 	if r.ListAddress == "" || !ok || before.Fingerprint == "" {
-		return "no listing evidence"
+		return "no listing evidence", "listing_evidence_missing"
 	}
 	now, ok := current[key]
 	if !ok {
-		return "not listed this run"
+		return "not listed this run", "listing_not_run"
 	}
 	if !model.SameProvider(before.Provider, now.Provider) {
-		return "listed by another provider"
+		return "listed by another provider", "provider_changed"
 	}
 	if !now.Complete {
-		return "listing incomplete"
+		return "listing incomplete", "listing_incomplete"
 	}
 	if now.Fingerprint != before.Fingerprint {
-		return "listing configuration changed"
+		return "listing configuration changed", "configuration_changed"
 	}
 	if before.Scope == nil || now.Scope == nil {
-		return "listing scope not confirmed"
+		return "listing scope not confirmed", "scope_unverified"
 	}
 	if !maps.Equal(before.Scope, now.Scope) {
-		return "listing scope changed"
+		return "listing scope changed", "scope_changed"
 	}
-	return ""
+	return "", ""
+}
+
+func unverifiedFinding(r model.Resource, reason, code string) Finding {
+	f := finding(r, reason)
+	f.ReasonDetails = model.Reason(code)
+	return f
 }

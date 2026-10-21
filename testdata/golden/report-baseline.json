@@ -95,6 +95,7 @@
     "resolved_findings": [],
     "unverified_findings": [
       {
+        "reason_code": "plugin_unverifiable",
         "type": "vault_policy",
         "identity": {
           "id": "ci"

@@ -1080,14 +1080,14 @@ type classified struct {
 // type and scope). It fills in the scope names of live.
 func classify(o *options, idx *state.Index, live []model.Resource, origins map[string][]model.Resource, sum *report.Summary) classified {
 	c := classified{byTypeScope: map[[2]string]*report.TypeCount{}}
-	addSeen := func(r model.Resource, status, address, rule string) {
+	addSeen := func(r model.Resource, status, address, rule string, details model.ReasonDetails) {
 		for _, origin := range origins[originKey(r)] {
 			if !model.SameProvider(origin.ProviderSource, r.ProviderSource) {
 				continue
 			}
 			cp := r
 			cp.Source, cp.ListAddress = origin.Source, origin.ListAddress
-			c.seen = append(c.seen, report.Seen{Resource: cp, Status: status, StateAddress: address, Rule: rule})
+			c.seen = append(c.seen, report.Seen{ReasonDetails: details, Resource: cp, Status: status, StateAddress: address, Rule: rule})
 		}
 	}
 	sum.ByType = map[string]*report.TypeCount{}
@@ -1130,7 +1130,7 @@ func classify(o *options, idx *state.Index, live []model.Resource, origins map[s
 		}
 		switch {
 		case m.Managed && m.Verified:
-			addSeen(*r, "managed", m.Address, "")
+			addSeen(*r, "managed", m.Address, "", model.ReasonDetails{})
 			sum.Managed++
 			if m.ByIdentity {
 				sum.ManagedByIdentity++
@@ -1139,13 +1139,13 @@ func classify(o *options, idx *state.Index, live []model.Resource, origins map[s
 				tc.Managed++
 			}
 		case ignored:
-			addSeen(*r, report.BecameIgnored, "", rule)
+			addSeen(*r, report.BecameIgnored, "", rule, model.ReasonDetails{})
 			sum.Ignored++
 			for _, tc := range counts {
 				tc.Ignored++
 			}
 		case m.Managed:
-			addSeen(*r, report.BecameUnsure, m.Address, "")
+			addSeen(*r, report.BecameUnsure, m.Address, "", uncertainReason(m))
 			sum.Uncertain++
 			c.uncertain = append(c.uncertain, report.Uncertain{Resource: *r, StateAddress: m.Address})
 			for _, tc := range counts {
@@ -1195,7 +1195,7 @@ func coverageInputs(o *options, sum *report.Summary) (counting []tf.Failure, ski
 		for _, f := range sum.Failed {
 			switch {
 			case f.Category == tf.FailAPIOff && !o.strictAPI:
-				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
+				skipped = append(skipped, tf.Skip{ReasonDetails: f.ReasonDetails(), Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
 				// The listing ran far enough to learn there is nothing:
 				// it stands for the check (an aliased block of the user's
 				// covers the alias-only skip of its provider).
@@ -1203,7 +1203,7 @@ func coverageInputs(o *options, sum *report.Summary) (counting []tf.Failure, ski
 					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
 				}
 			case o.strictIgnore.Match(f.Type):
-				skipped = append(skipped, tf.Skip{Type: f.Type, Reason: report.StrictIgnored + f.Category, Excluded: true, Root: f.Root})
+				skipped = append(skipped, tf.Skip{ReasonDetails: f.ReasonDetails(), Type: f.Type, Reason: report.StrictIgnored + f.Category, Excluded: true, Root: f.Root})
 				sum.StrictIgnored++
 			default:
 				counting = append(counting, f)
@@ -1325,12 +1325,15 @@ func explain(r model.Resource, m state.Match, rejected []state.Rejection, ofType
 	switch {
 	case m.Managed && m.Verified:
 		e.Status, e.Reason = "managed", where(m)
+		e.ReasonDetails = model.Reason("state_match")
 	case ignored:
+		e.ReasonDetails = model.Reason("ignore_rule")
 		e.Status, e.Rule, e.Reason = "ignored", rule, "ignore rule "+rule
 		if m.Managed {
 			e.Reason += "; it also matches " + m.Address + " without confirmation"
 		}
 	case m.Managed:
+		e.ReasonDetails = uncertainReason(m)
 		e.Status, e.Reason = "uncertain", "matches "+where(m)+", but "
 		switch {
 		case m.ScopeUnknown:
@@ -1346,10 +1349,13 @@ func explain(r model.Resource, m state.Match, rejected []state.Rejection, ofType
 		e.Status = "unmanaged"
 		switch {
 		case ofType == 0:
+			e.ReasonDetails = model.Reason("no_state_instance")
 			e.Reason = "no state instance of " + r.Type + " was read"
 		case len(rejected) == 0:
+			e.ReasonDetails = model.Reason("identity_not_matched")
 			e.Reason = fmt.Sprintf("none of the %d state instances of %s shares its identity", ofType, r.Type)
 		default:
+			e.ReasonDetails = model.Reason("identity_conflict")
 			var near []string
 			for _, x := range rejected {
 				s := x.Address
@@ -1387,4 +1393,17 @@ func transitionSummary(fs []report.Finding) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+func uncertainReason(m state.Match) model.ReasonDetails {
+	code := "scope_unverified"
+	if !m.ScopeUnknown {
+		switch {
+		case len(m.Unknown) > 0:
+			code = "discovery_identity_missing"
+		case len(m.Unconfirmed) > 0:
+			code = "state_identity_missing"
+		}
+	}
+	return model.Reason(code, append(slices.Clone(m.Unknown), m.Unconfirmed...)...)
 }
