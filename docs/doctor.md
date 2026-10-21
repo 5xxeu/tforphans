@@ -234,3 +234,6 @@ plan gaps fail diagnostics. Explicit `-no-aliases` skips are warnings in
 doctor because they are the user's choice; the audit counts them as coverage
 gaps. No list queries run, so doctor cannot confirm whether a user list block
 will execute successfully or cover a generated plan skip.
+
+Skipped-type details also carry audit [reason codes](reasons.md):
+`reason_code`, optional `action`, and optional `missing_keys` (names only).

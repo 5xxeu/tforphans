@@ -400,7 +400,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			// an empty parent list may be a token that sees none.
 			if b.scope != nil && len(keys) == 0 {
 				kind := strings.TrimSuffix(b.scope.Arg, "_id")
-				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: fmt.Sprintf("no %s was listed to read it in (the credentials may see none)", kind), Kind: kind})
+				res.Skipped = append(res.Skipped, tf.Skip{ReasonDetails: model.Reason("scope_empty"), Type: l.resourceType, Reason: fmt.Sprintf("no %s was listed to read it in (the credentials may see none)", kind), Kind: kind})
 				continue
 			}
 			listed[l.resourceType] = true
@@ -748,29 +748,29 @@ func buildPlan(s *schema, a Adapter, opt Options) plan {
 	}
 	for _, t := range types {
 		if reason, ok := a.Skip[t]; ok {
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: reason, Excluded: true})
+			p.skipped = append(p.skipped, tf.Skip{ReasonDetails: model.Reason("adapter_excluded"), Type: t, Reason: reason, Excluded: true})
 			continue
 		}
 		ds := plural(s, t)
 		if ds == "" {
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: "no list resource or plural data source", Excluded: true})
+			p.skipped = append(p.skipped, tf.Skip{ReasonDetails: model.Reason("listing_unsupported"), Type: t, Reason: "no list resource or plural data source", Excluded: true})
 			continue
 		}
 		attrs := s.DataSources[ds].Block.Attributes
 		spec := a.spec(ds)
 		if spec.IDs != "" {
 			if _, ok := attrs[spec.IDs]; !ok {
-				p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: ds + " has no " + spec.IDs})
+				p.skipped = append(p.skipped, tf.Skip{ReasonDetails: model.Reason("result_schema_unsupported", spec.IDs), Type: t, Reason: ds + " has no " + spec.IDs})
 				continue
 			}
 		} else {
 			items, ok := attrs[spec.Items]
 			if !ok {
-				p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: ds + " has no " + spec.Items + " list"})
+				p.skipped = append(p.skipped, tf.Skip{ReasonDetails: model.Reason("result_schema_unsupported", spec.Items), Type: t, Reason: ds + " has no " + spec.Items + " list"})
 				continue
 			}
 			if !items.hasField(spec.Field) {
-				p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: ds + " results carry no " + spec.Field})
+				p.skipped = append(p.skipped, tf.Skip{ReasonDetails: model.Reason("no_identity", spec.Field), Type: t, Reason: ds + " results carry no " + spec.Field})
 				continue
 			}
 		}
@@ -782,7 +782,7 @@ func buildPlan(s *schema, a Adapter, opt Options) plan {
 		}
 		if len(missing) > 0 {
 			sort.Strings(missing)
-			p.skipped = append(p.skipped, tf.Skip{Type: t, Reason: ds + " requires " + strings.Join(missing, ", ")})
+			p.skipped = append(p.skipped, tf.Skip{ReasonDetails: model.Reason("missing_argument", missing...), Type: t, Reason: ds + " requires " + strings.Join(missing, ", ")})
 			continue
 		}
 		p.ds[t] = ds
@@ -1248,7 +1248,7 @@ func unsupported(failures []failure, all []block, a Adapter, res *Result) []fail
 		}
 		for _, l := range all[i].listings {
 			if !slices.ContainsFunc(res.Skipped, func(s tf.Skip) bool { return s.Type == l.resourceType && s.Reason == why }) {
-				res.Skipped = append(res.Skipped, tf.Skip{Type: l.resourceType, Reason: why, Excluded: true})
+				res.Skipped = append(res.Skipped, tf.Skip{ReasonDetails: model.Reason("adapter_unsupported"), Type: l.resourceType, Reason: why, Excluded: true})
 			}
 		}
 	}

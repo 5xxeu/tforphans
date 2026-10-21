@@ -637,7 +637,9 @@ func TestDoctorPlanSkipCoverage(t *testing.T) {
 				if want == "failed" {
 					wantCode = 2
 				}
-				i := slices.IndexFunc(d.Checks, func(c doctorCheck) bool { return slices.Contains(c.Skipped, sk) })
+				i := slices.IndexFunc(d.Checks, func(c doctorCheck) bool {
+					return slices.ContainsFunc(c.Skipped, func(got tf.Skip) bool { return reflect.DeepEqual(got, sk) })
+				})
 				if i < 0 || d.Checks[i].Status != want {
 					t.Fatalf("skip %+v: want %s, checks %+v", sk, want, d.Checks)
 				}

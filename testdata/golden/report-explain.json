@@ -105,6 +105,7 @@
   },
   "explain": [
     {
+      "reason_code": "state_match",
       "type": "vault_policy",
       "identity": {
         "id": "kept"
@@ -117,6 +118,7 @@
       "state_source": "state.json"
     },
     {
+      "reason_code": "state_match",
       "type": "vault_policy",
       "identity": {
         "id": "legacy"
@@ -129,6 +131,7 @@
       "state_source": "state.json"
     },
     {
+      "reason_code": "identity_not_matched",
       "type": "vault_policy",
       "identity": {
         "id": "ci"
@@ -139,6 +142,7 @@
       "reason": "none of the 2 state instances of vault_policy shares its identity"
     },
     {
+      "reason_code": "ignore_rule",
       "type": "vault_policy",
       "identity": {
         "id": "tmp-1"
@@ -150,6 +154,7 @@
       "rule": "ignore:1: vault_policy:tmp-*"
     },
     {
+      "reason_code": "scope_unverified",
       "type": "vault_mount",
       "identity": {
         "path": "kv"
@@ -162,6 +167,7 @@
       "state_source": "state.json"
     },
     {
+      "reason_code": "identity_not_matched",
       "type": "vault_mount",
       "identity": {
         "n": 12345678901234567890,

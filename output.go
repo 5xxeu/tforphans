@@ -181,13 +181,22 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 			if sk.Root != "" {
 				where = " in " + report.Clean(sk.Root)
 			}
-			fmt.Fprintf(w, "  skipped %s%s: %s\n", report.Clean(sk.Type), where, report.Clean(sk.Reason))
+			fmt.Fprintf(w, "  skipped %s%s: %s\n", report.Clean(sk.Type), where, report.Clean(sk.Reason)+reasonLink(sk.ReasonCode))
 		}
 		for _, p := range slices.Compact(slices.Sorted(slices.Values(s.NoList))) {
 			fmt.Fprintf(w, "  no list resources: %s\n", report.Clean(p))
 		}
 	}
 	printFailed(w, o, s.Failed)
+	links := map[string]bool{}
+	for _, c := range s.Coverage {
+		for _, d := range c.ReasonDetails {
+			if !links[d.ReasonCode] {
+				links[d.ReasonCode] = true
+				fmt.Fprintf(w, "  reason %s: %s\n", d.ReasonCode, model.ReasonLink(d.ReasonCode))
+			}
+		}
+	}
 	printOwnership(w, s.Ownership, s.InState)
 	for _, msg := range s.Warnings {
 		fmt.Fprintln(w, "warning:", report.Clean(msg))
@@ -464,4 +473,11 @@ func printOwnership(w io.Writer, ownership, inState []state.Duplicate) {
 		fmt.Fprintf(w, "  %s %s%s: %s %s: %s\n", d.Confidence, what, why, report.Clean(d.Type), report.Clean(identity), report.Clean(strings.Join(owners, "; ")))
 	}
 	fmt.Fprintln(w, "  use -format json for all objects and their state sources")
+}
+
+func reasonLink(code string) string {
+	if code == "" {
+		return ""
+	}
+	return " (" + model.ReasonLink(code) + ")"
 }

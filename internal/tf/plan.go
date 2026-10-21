@@ -88,8 +88,9 @@ func ParseArg(s string) (Arg, error) {
 
 // Query is one generated list block.
 type Query struct {
-	Type     string
-	Provider string // local name
+	SkipReason model.ReasonDetails
+	Type       string
+	Provider   string // local name
 	// Alias is the provider configuration's alias ("" for the default):
 	// each configuration may look at another account.
 	Alias string
@@ -105,6 +106,7 @@ type Query struct {
 
 // Skip is a list-capable type that was not queried.
 type Skip struct {
+	model.ReasonDetails
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
 	// Root is the root module the type was skipped in ("" for -scan).
@@ -232,11 +234,11 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 			}
 			for _, t := range types {
 				if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
-					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
+					p.Skipped = append(p.Skipped, Skip{ReasonDetails: model.Reason("opt_in_required"), Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 					continue
 				}
 				for _, ref := range refs {
-					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider " + addr + " is required under several local names (" + names + ")", Provider: ref})
+					p.Skipped = append(p.Skipped, Skip{ReasonDetails: model.Reason("provider_ambiguous"), Type: t, Reason: "provider " + addr + " is required under several local names (" + names + ")", Provider: ref})
 				}
 			}
 			p.Notes = append(p.Notes, fmt.Sprintf("provider %s is required under several local names (%s), and terraform resolves its configurations unreliably then: its %d list-capable types were not queried; give it one local name", addr, names, len(types)))
@@ -263,12 +265,12 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 		configs = append(configs, aliases...)
 		for _, t := range types {
 			if reason, ok := OptIn[t]; ok && !opt.Include.Names(t) {
-				p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
+				p.Skipped = append(p.Skipped, Skip{ReasonDetails: model.Reason("opt_in_required"), Type: t, Reason: reason + "; name it in -types to list it", Excluded: true})
 				continue
 			}
 			for _, c := range configs {
 				if c.Alias != "" && opt.NoAliases {
-					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: "provider configuration " + c.Ref() + " not listed (-no-aliases)", Provider: c.Ref()})
+					p.Skipped = append(p.Skipped, Skip{ReasonDetails: model.Reason("aliases_disabled"), Type: t, Reason: "provider configuration " + c.Ref() + " not listed (-no-aliases)", Provider: c.Ref()})
 					continue
 				}
 				q, reason := planType(t, c.Local, addr, ps.ListResourceSchemas[t], opt.Args)
@@ -278,7 +280,7 @@ func BuildPlan(s *Schemas, declared map[string]string, opt PlanOptions) Plan {
 					if c.Alias != "" {
 						reason += " (provider " + q.Ref() + ")"
 					}
-					p.Skipped = append(p.Skipped, Skip{Type: t, Reason: reason, Provider: q.Ref()})
+					p.Skipped = append(p.Skipped, Skip{ReasonDetails: q.SkipReason, Type: t, Reason: reason, Provider: q.Ref()})
 					continue
 				}
 				q.Source, q.Temporary = addr, temporary
@@ -337,7 +339,7 @@ func (p *Plan) dropTwins(configs map[string]string) {
 		if !q.Temporary && cur.Temporary || q.Temporary == cur.Temporary && isFamilyName(q.Source, fam) && !isFamilyName(cur.Source, fam) {
 			drop, kept[i] = cur, q
 		}
-		p.Skipped = append(p.Skipped, Skip{Type: drop.Type, Reason: fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Ref(), drop.Ref()), Excluded: true})
+		p.Skipped = append(p.Skipped, Skip{ReasonDetails: model.Reason("equivalent_listing"), Type: drop.Type, Reason: fmt.Sprintf("listed through %s, which lists the same objects as %s with the same configuration", kept[i].Ref(), drop.Ref()), Excluded: true})
 	}
 	p.Queries = kept
 	for local := range p.Declare {
@@ -390,6 +392,7 @@ func planType(typ, local, addr string, ls ListSchema, args []Arg) (Query, string
 		// auto covers every value; another -arg of the same name adds none.
 		q.Args[i].Values = []string{Auto}
 		if _, ok := AutoSources[family(addr)]; !ok || a.Name != "region" && a.Name != "zone" {
+			q.SkipReason = model.Reason("invalid_argument")
 			return q, fmt.Sprintf("-arg %s=%s works only for %s", a.Name, Auto, autoHelp())
 		}
 	}
@@ -406,6 +409,10 @@ func planType(typ, local, addr string, ls ListSchema, args []Arg) (Query, string
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
+		q.SkipReason = model.Reason("missing_argument")
+		for _, name := range missing {
+			q.SkipReason.MissingKeys = append(q.SkipReason.MissingKeys, strings.TrimSuffix(name, " {}"))
+		}
 		return q, MissingArgs + strings.Join(missing, ", ")
 	}
 	return q, ""
