@@ -3,6 +3,7 @@ package tf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/5xxeu/tforphans/internal/model"
 )
 
 func TestIdentityHCL(t *testing.T) {
@@ -213,5 +216,22 @@ func TestIdentitiesProviderReferences(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseIdentitiesResponseError(t *testing.T) {
+	configs := []IdentityConfig{{Ref: "aws", Source: "hashicorp/aws"}, {Ref: "aws.prod", Source: "hashicorp/aws"}}
+	for _, data := range []string{"invalid sensitive", `{"prior_state":`, `{"prior_state":[]}`, `{} {}`} {
+		scopes, failed := parseIdentities([]byte(data), configs)
+		if len(scopes) != 0 || len(failed) != len(configs) {
+			t.Fatalf("scopes %v, failures %v", scopes, failed)
+		}
+		for _, c := range configs {
+			err := failed[c.Ref]
+			var response *model.ResponseError
+			if !errors.As(err, &response) || err.Error() != "could not decode identity plan" {
+				t.Fatalf("%s: %v", c.Ref, err)
+			}
+		}
 	}
 }

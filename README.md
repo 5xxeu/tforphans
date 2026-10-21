@@ -81,6 +81,10 @@ GitHub (`-scan github`), then plugins for Helm and Kubernetes.
    terraform plan -generate-config-out=generated.tf
    ```
 
+Check readiness before scanning with `tforphans doctor` (see
+[diagnostics](docs/doctor.md)). Exit 0 means ready in the selected scope,
+not that no orphans exist or that a future scan will succeed.
+
 For Cloudflare or Proxmox, no root module is needed:
 
 ```sh

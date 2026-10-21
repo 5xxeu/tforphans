@@ -18,13 +18,13 @@ import (
 const defaultConfigFile = ".tforphans.yaml"
 
 // commandLineOnly are keys no config file may set, not even one given with
-// -config: they run any command (plugin, terraform, terragrunt, which runs
-// the run_cmd and hooks of the units), send credentials to
-// an address of the file's choosing (state URLs, allow-http) or overwrite
-// any file (adopt -o). Config files live in repositories and change in
-// pull requests that a CI job then runs; such a change has to show in the
+// -config: they run commands (plugin, terraform, terragrunt, check-auth),
+// including units' run_cmd and hooks or provider configuration dependencies,
+// send credentials to an address of the file's choosing (state URLs, allow-http)
+// or overwrite any file (adopt -o). Config files live in repositories and
+// change in pull requests that a CI job then runs; such a change has to show in the
 // command itself.
-var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o", "out-dir", "adopt-root"}
+var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o", "out-dir", "adopt-root", "check-auth"}
 
 // configOnlyExplicit are keys a config file found on its own may not set,
 // one given with -config may: they run the root's data sources (refresh
@@ -38,9 +38,9 @@ var configOnlyExplicit = []string{"init", "refresh", "allow-unpinned", "include-
 // configPathKeys hold paths, which are relative to the config file.
 var configPathKeys = []string{"state-roots", "terragrunt-unit", "state", "ignore", "baseline"}
 
-// modeOnly are flags of one mode (adopt or not): a config file shared by
-// both may set them, and the other mode skips them.
-var modeOnly = []string{"format", "allow-incomplete", "names-from-tags"}
+// modeOnly are flags of one mode: commands sharing a config file skip
+// keys that belong only to another mode.
+var modeOnly = []string{"format", "allow-incomplete", "names-from-tags", "offline"}
 
 // applyConfig sets the flags a config file gives and the command line does
 // not. Keys are flag names; a list stands for a repeated flag, and roots for
@@ -84,6 +84,9 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
+		if o.doctor && o.doctorConfigFlags[key] && !slices.Contains(commandLineOnly, key) && !doctorIgnoreKey(key) {
+			continue
+		}
 		vals, err := configValues(doc[key])
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", path, key, err)
@@ -101,6 +104,9 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			continue
 		}
 		f := fs.Lookup(key)
+		if o.doctor && doctorIgnoreKey(key) {
+			f = o.doctorIgnoreFlags.Lookup(key)
+		}
 		switch {
 		case slices.Contains(commandLineOnly, key):
 			return fmt.Errorf("%s: %s is accepted only on the command line: it runs a command, sends credentials or writes a file, and a change to a config file should not be enough for that", path, key)
@@ -141,7 +147,11 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 				}
 				v = p
 			}
-			if err := fs.Set(key, v); err != nil {
+			target := fs
+			if o.doctor && doctorIgnoreKey(key) {
+				target = o.doctorIgnoreFlags
+			}
+			if err := target.Set(key, v); err != nil {
 				return fmt.Errorf("%s: %s: %w", path, key, err)
 			}
 		}

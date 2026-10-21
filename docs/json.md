@@ -1,5 +1,8 @@
 # JSON Output
 
+`tforphans doctor -format json` has a separate diagnostic schema described in
+[Readiness diagnostics](doctor.md#json-schema-version-1).
+
 `-format json` prints one object. `schema_version` (now `1`) goes up when a
 field is removed or changes its type or meaning, so a consumer can refuse a
 format it does not know; new fields do not change it.

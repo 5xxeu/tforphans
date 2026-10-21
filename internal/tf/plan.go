@@ -56,25 +56,32 @@ func (a Arg) IsAuto() bool { return len(a.Values) == 1 && a.Values[0] == Auto }
 
 func ParseArg(s string) (Arg, error) {
 	name, vals, ok := strings.Cut(s, "=")
+	if !ok {
+		return Arg{}, fmt.Errorf("invalid -arg, want [TYPE_GLOB:]name=value[,value...]")
+	}
 	types, name, scoped := strings.Cut(name, ":")
 	if !scoped {
 		types, name = "", types
 	}
 	types, name = strings.TrimSpace(types), strings.TrimSpace(name)
-	if !ok || name == "" || scoped && types == "" {
-		return Arg{}, fmt.Errorf("invalid -arg %q, want [TYPE_GLOB:]name=value[,value...]", s)
+	if name == "" || scoped && types == "" {
+		return Arg{}, fmt.Errorf("invalid -arg, want [TYPE_GLOB:]name=value[,value...]")
 	}
 	a := Arg{Types: types, Name: name}
+	key := name
+	if scoped {
+		key = types + ":" + name
+	}
 	for _, v := range strings.Split(vals, ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			a.Values = append(a.Values, v)
 		}
 	}
 	if len(a.Values) == 0 {
-		return Arg{}, fmt.Errorf("invalid -arg %q: no values", s)
+		return Arg{}, fmt.Errorf("invalid -arg %q: no values", key)
 	}
 	if len(a.Values) > 1 && slices.Contains(a.Values, Auto) {
-		return Arg{}, fmt.Errorf("invalid -arg %q: %s stands for every value and takes no others", s, Auto)
+		return Arg{}, fmt.Errorf("invalid -arg %q: %s stands for every value and takes no others", key, Auto)
 	}
 	return a, nil
 }

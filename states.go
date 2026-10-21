@@ -21,6 +21,10 @@ import (
 // the snapshots and the number of states read. A workspace that fails does
 // not stop the others: the snapshots read so far come back with the error.
 func pullRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, int, error) {
+	return pullRootCount(ctx, o, dir, nil)
+}
+
+func pullRootCount(ctx context.Context, o *options, dir string, total *int) ([]state.Snapshot, int, error) {
 	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion, MaxStateSize: o.maxStateSize}
 	// "" is the selected workspace (no TF_WORKSPACE).
 	workspaces := []string{""}
@@ -29,6 +33,9 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, in
 		if workspaces, err = r.Workspaces(ctx); err != nil {
 			return nil, 0, err
 		}
+	}
+	if total != nil {
+		*total = len(workspaces)
 	}
 	var all []state.Snapshot
 	var errs []error
@@ -88,6 +95,142 @@ func inWorkspace(ws string, err error) error {
 // directories. A state that cannot be read is a warning: coverage is
 // incomplete, not wrong.
 func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *report.Summary) ([]string, error) {
+	dirs, err := discoverStateRoots(o, sum)
+	if err != nil {
+		return nil, err
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, o.stateParallelism)
+	done := 0
+	for _, d := range dirs {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			var n int
+			snapshots, err := withSource(ctx, o, func(ctx context.Context) ([]state.Snapshot, error) {
+				snapshots, read, err := pullStateRoot(ctx, o, d)
+				n = read
+				return snapshots, err
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			// The workspaces that were read still count.
+			idx.AddSnapshots(snapshots)
+			sum.States += n
+			if err != nil {
+				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(d, err))
+			}
+			done++
+			o.stepf("read state of %s (%d/%d roots)", d, done, len(dirs))
+		}()
+	}
+	wg.Wait()
+	return dirs, ctx.Err()
+}
+
+func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, int, error) {
+	return pullStateRootCount(ctx, o, dir, nil)
+}
+
+func pullStateRootCount(ctx context.Context, o *options, dir string, total *int) ([]state.Snapshot, int, error) {
+	if err := tf.RemoveStale(dir); err != nil {
+		return nil, 0, err
+	}
+	// A Terragrunt unit: terragrunt renders the backend and initializes
+	// on its own. One state (units do not use workspaces), never refreshed.
+	unit := false
+	if o.terragrunt {
+		kind, err := tf.TerragruntKind(dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		// FindRoots kept only the parents with no units below.
+		unit = kind != tf.TerragruntNone
+	}
+	if unit {
+		if total != nil {
+			*total = 1
+		}
+		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir, o.maxStateSize)
+		if err != nil {
+			return nil, 0, err
+		}
+		snapshot, err := state.ParseSnapshot(raw, dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		return []state.Snapshot{snapshot}, 1, nil
+	}
+	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
+	if !r.Initialized() {
+		if !o.init {
+			return nil, 0, errors.New("not initialized (run terraform init there, or pass -init)")
+		}
+		if err := r.Init(ctx); err != nil {
+			return nil, 0, err
+		}
+	}
+	return pullRootCount(ctx, o, dir, total)
+}
+
+// sameDir reports whether two paths name one directory.
+func sameDir(a, b string) bool {
+	x, err1 := filepath.Abs(a)
+	y, err2 := filepath.Abs(b)
+	return err1 == nil && err2 == nil && x == y
+}
+
+// firstN returns at most n elements and a count of the rest.
+func firstN(xs []string, n int) []string {
+	if len(xs) <= n {
+		return xs
+	}
+	return append(slices.Clone(xs[:n]), fmt.Sprintf("and %d more", len(xs)-n))
+}
+
+// inWorkspaceName names a root and, when not the selected one, its
+// workspace.
+func inWorkspaceName(dir, ws string) string {
+	if ws == "" {
+		return dir
+	}
+	return dir + " (workspace " + ws + ")"
+}
+
+// stepf prints a progress line when steps are shown (see options.steps).
+func (o *options) stepf(format string, args ...any) {
+	if o.steps == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintln(o.steps, report.Clean(fmt.Sprintf(format, args...)))
+}
+
+// isTerminal reports whether w is a terminal.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// progressf prints a progress line on stderr for long steps.
+func (o *options) progressf(format string, args ...any) {
+	if o.progress == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprintln(o.progress, report.Clean(fmt.Sprintf(format, args...)))
+}
+
+func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 	skip := map[string]bool{}
 	// A root argument is queried with terraform, which reads the backend of
 	// its .tf files, not the one terragrunt renders: a unit there would
@@ -164,126 +307,6 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	if d, a, b := tf.SharedDataDir(slices.Concat(o.roots, dirs)); d != "" {
 		return nil, fmt.Errorf("root modules %s and %s share the data directory %s (TF_DATA_DIR): terraform could read one root's state for the other; unset TF_DATA_DIR or use a path inside each root (.terraform-x)", a, b, d)
 	}
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, o.stateParallelism)
-	done := 0
-	for _, d := range dirs {
-		sem <- struct{}{}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			var n int
-			snapshots, err := withSource(ctx, o, func(ctx context.Context) ([]state.Snapshot, error) {
-				snapshots, read, err := pullStateRoot(ctx, o, d)
-				n = read
-				return snapshots, err
-			})
-			mu.Lock()
-			defer mu.Unlock()
-			// The workspaces that were read still count.
-			idx.AddSnapshots(snapshots)
-			sum.States += n
-			if err != nil {
-				sum.UnreadStates = append(sum.UnreadStates, report.NewUnreadState(d, err))
-			}
-			done++
-			o.stepf("read state of %s (%d/%d roots)", d, done, len(dirs))
-		}()
-	}
-	wg.Wait()
-	return dirs, ctx.Err()
-}
 
-func pullStateRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, int, error) {
-	if err := tf.RemoveStale(dir); err != nil {
-		return nil, 0, err
-	}
-	// A Terragrunt unit: terragrunt renders the backend and initializes
-	// on its own. One state (units do not use workspaces), never refreshed.
-	unit := false
-	if o.terragrunt {
-		kind, err := tf.TerragruntKind(dir)
-		if err != nil {
-			return nil, 0, err
-		}
-		// FindRoots kept only the parents with no units below.
-		unit = kind != tf.TerragruntNone
-	}
-	if unit {
-		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir, o.maxStateSize)
-		if err != nil {
-			return nil, 0, err
-		}
-		snapshot, err := state.ParseSnapshot(raw, dir)
-		if err != nil {
-			return nil, 0, err
-		}
-		return []state.Snapshot{snapshot}, 1, nil
-	}
-	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
-	if !r.Initialized() {
-		if !o.init {
-			return nil, 0, errors.New("not initialized (run terraform init there, or pass -init)")
-		}
-		if err := r.Init(ctx); err != nil {
-			return nil, 0, err
-		}
-	}
-	return pullRoot(ctx, o, dir)
-}
-
-// sameDir reports whether two paths name one directory.
-func sameDir(a, b string) bool {
-	x, err1 := filepath.Abs(a)
-	y, err2 := filepath.Abs(b)
-	return err1 == nil && err2 == nil && x == y
-}
-
-// firstN returns at most n elements and a count of the rest.
-func firstN(xs []string, n int) []string {
-	if len(xs) <= n {
-		return xs
-	}
-	return append(slices.Clone(xs[:n]), fmt.Sprintf("and %d more", len(xs)-n))
-}
-
-// inWorkspaceName names a root and, when not the selected one, its
-// workspace.
-func inWorkspaceName(dir, ws string) string {
-	if ws == "" {
-		return dir
-	}
-	return dir + " (workspace " + ws + ")"
-}
-
-// stepf prints a progress line when steps are shown (see options.steps).
-func (o *options) stepf(format string, args ...any) {
-	if o.steps == nil {
-		return
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	fmt.Fprintln(o.steps, report.Clean(fmt.Sprintf(format, args...)))
-}
-
-// isTerminal reports whether w is a terminal.
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
-// progressf prints a progress line on stderr for long steps.
-func (o *options) progressf(format string, args ...any) {
-	if o.progress == nil {
-		return
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	fmt.Fprintln(o.progress, report.Clean(fmt.Sprintf(format, args...)))
+	return dirs, nil
 }

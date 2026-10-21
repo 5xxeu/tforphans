@@ -179,11 +179,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		if q, ok := byAddress[block]; ok {
 			return q.Ref()
 		}
-		if ref := userLists[block].Provider; ref != "" {
-			return ref
-		}
-		local, _, _ := strings.Cut(typ, "_")
-		return local
+		return userLists[block].ProviderRef(typ)
 	}
 	// localOf is its local name (the provider, whatever the alias).
 	localOf := func(address, typ string) string {
@@ -392,10 +388,23 @@ func (o *options) listingFailure(f tf.Failure) bool {
 	return f.Category != tf.FailAPIOff || o.strictAPI
 }
 
-// printQueryFiles prints what a run writes into the root, one temporary
-// file after the other: terraform reads .tf and .tfquery.hcl differently,
+// printQueryFiles prints what a run writes into the root, with argument
+// credentials redacted, one temporary file after the other:
+// terraform reads .tf and .tfquery.hcl differently,
 // so they must not run together into one document.
 func printQueryFiles(w io.Writer, root string, plan tf.Plan, limit int) {
+	plan.Queries = slices.Clone(plan.Queries)
+	for i := range plan.Queries {
+		q := &plan.Queries[i]
+		q.Args = slices.Clone(q.Args)
+		for j := range q.Args {
+			a := &q.Args[j]
+			a.Values = slices.Clone(a.Values)
+			for k, value := range a.Values {
+				_, a.Values[k], _ = strings.Cut(redactArg(a.Name+"="+value), "=")
+			}
+		}
+	}
 	fmt.Fprintf(w, "# root %s\n", root)
 	for _, f := range []struct{ name, text string }{
 		{"zz_tforphans_<pid>_override.tf", string(plan.ProvidersHCL())},

@@ -454,6 +454,10 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 }
 
 func initRoot(ctx context.Context, r *tf.Runner, a Adapter, versionRoot string) error {
+	return initRootCache(ctx, r, a, versionRoot, true)
+}
+
+func initRootCache(ctx context.Context, r *tf.Runner, a Adapter, versionRoot string, cache bool) error {
 	local := a.Name
 	versions := fmt.Sprintf("terraform {\n  required_providers {\n    %s = { source = %s }\n  }\n}\n", local, tf.HCLString(a.Provider))
 	if err := os.WriteFile(filepath.Join(r.Dir, "versions.tf"), []byte(versions), 0o644); err != nil {
@@ -480,7 +484,7 @@ func initRoot(ctx context.Context, r *tf.Runner, a Adapter, versionRoot string) 
 			args = append(args, "-plugin-dir="+plugins)
 		}
 	}
-	if os.Getenv("TF_PLUGIN_CACHE_DIR") == "" {
+	if cache && os.Getenv("TF_PLUGIN_CACHE_DIR") == "" {
 		if cache, err := os.UserCacheDir(); err == nil {
 			cache = filepath.Join(cache, "tforphans", "plugins")
 			if err := os.MkdirAll(cache, 0o755); err == nil {
@@ -583,7 +587,10 @@ func parseSchema(raw []byte, provider string) (*schema, error) {
 		ProviderSchemas map[string]schema `json:"provider_schemas"`
 	}
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, fmt.Errorf("decode provider schema: %w", err)
+		return nil, fmt.Errorf("decode provider schema: %w", &model.ResponseError{Err: err})
+	}
+	if len(all.ProviderSchemas) == 0 {
+		return nil, &model.ResponseError{Err: fmt.Errorf("provider schema response has no provider schemas")}
 	}
 	s, ok := all.ProviderSchemas[provider]
 	if !ok {

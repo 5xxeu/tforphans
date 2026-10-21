@@ -420,7 +420,7 @@ func parseWorkspaces(out string) ([]string, error) {
 		}
 		if n > 0 {
 			if ws != nil {
-				return nil, errors.New("unexpected output of terraform workspace list: more than one list")
+				return nil, &model.ResponseError{Err: errors.New("unexpected output of terraform workspace list: more than one list")}
 			}
 			for _, l := range block {
 				ws = append(ws, l[2:])
@@ -430,7 +430,7 @@ func parseWorkspaces(out string) ([]string, error) {
 		block = nil
 	}
 	if selected != 1 {
-		return nil, errors.New("unexpected output of terraform workspace list: no single selected workspace (* name)")
+		return nil, &model.ResponseError{Err: errors.New("unexpected output of terraform workspace list: no single selected workspace (* name)")}
 	}
 	return ws, nil
 }
@@ -450,6 +450,15 @@ type UserList struct {
 	// Limit is the block's limit: 100 (Terraform's default) when unset, 0
 	// when it is an expression that cannot be read without evaluation.
 	Limit int
+}
+
+// ProviderRef returns the provider configuration used by a user list block.
+func (l UserList) ProviderRef(typ string) string {
+	if l.Provider != "" {
+		return l.Provider
+	}
+	local, _, _ := strings.Cut(typ, "_")
+	return local
 }
 
 // DefaultListLimit is Terraform's limit for list blocks without one.
@@ -855,11 +864,16 @@ func (r Runner) QueryVersion(ctx context.Context) error {
 	if json.Unmarshal(out, &v) != nil {
 		return nil
 	}
-	major, minor, ok := majorMinor(v.Version)
+	return CheckQueryVersion(r.Bin, v.Version)
+}
+
+// CheckQueryVersion checks whether the version supports list resources.
+func CheckQueryVersion(bin, version string) error {
+	major, minor, ok := majorMinor(version)
 	if !ok || major > 1 || major == 1 && minor >= 14 {
 		return nil
 	}
-	return fmt.Errorf("%s %s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(r.Bin), v.Version)
+	return fmt.Errorf("%s %s has no query command: list resources need Terraform 1.14 or newer (OpenTofu has none yet). Upgrade, or pass -no-query and list objects with -scan or -plugin instead", filepath.Base(bin), version)
 }
 
 // majorMinor reads "1.13.5" or "1.14.0-beta1".

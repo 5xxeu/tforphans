@@ -69,7 +69,7 @@ func parseIdentities(data []byte, configs []IdentityConfig) (map[string]map[stri
 	scopes, failed := map[string]map[string]string{}, map[string]error{}
 	if err := model.DecodeJSON(data, &plan); err != nil {
 		for _, c := range configs {
-			failed[c.Ref] = errors.New("could not decode identity plan")
+			failed[c.Ref] = &model.ResponseError{Err: errors.New("could not decode identity plan")}
 		}
 		return scopes, failed
 	}

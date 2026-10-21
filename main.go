@@ -57,6 +57,7 @@ Exit status: 0 nothing new found, 2 unmanaged resources found (only new with
 ownership with -strict-ownership).
 
 Run "tforphans adopt -h" to generate import blocks for what it finds.
+Run "tforphans doctor -h" to check readiness before an audit.
 Run "tforphans diff -h" to compare two saved JSON reports.
 
 Flags:
@@ -197,6 +198,12 @@ type options struct {
 	terragrunt       bool
 	tgUnits          listFlag // -terragrunt-unit
 	configFile       string   // flags read from this file
+
+	doctor, offline, checkAuth bool
+	doctorConfigFlags          map[string]bool
+	doctorIgnoreFlags          *flag.FlagSet
+	doctorFlagSet              *flag.FlagSet
+	doctorArgs                 []commandArg
 }
 
 // version is set by release builds; go install builds take the module
@@ -230,6 +237,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	if len(argv) > 0 && argv[0] == "adopt" {
 		o.adopt, argv = true, argv[1:]
 		name, help = "tforphans adopt", adoptUsage
+	} else if len(argv) > 0 && argv[0] == "doctor" {
+		o.doctor, argv = true, argv[1:]
+		name, help = "tforphans doctor", doctorUsage
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -293,17 +303,29 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	noConfig := fs.Bool("no-config", false, "do not read "+defaultConfigFile)
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
-	// Allow flags after positional arguments.
-	for rest := argv; ; {
-		if err := fs.Parse(rest); err != nil {
-			return nil, err
+	if o.doctor {
+		fs = doctorFlags(fs, o)
+		fs.SetOutput(stderr)
+		fs.Usage = func() { fmt.Fprint(stderr, doctorUsage); fs.PrintDefaults() }
+	}
+	// Allow flags after positional arguments, until --.
+	args := commandArgs(fs, argv)
+	var flags []string
+	for _, arg := range args {
+		if !arg.positional && !arg.end {
+			flags = append(flags, arg.parts()...)
 		}
-		rest = fs.Args()
-		if len(rest) == 0 {
-			break
+	}
+	if err := fs.Parse(flags); err != nil {
+		return nil, err
+	}
+	for _, arg := range args {
+		if arg.positional {
+			o.roots = append(o.roots, arg.raw)
 		}
-		o.roots = append(o.roots, rest[0])
-		rest = rest[1:]
+	}
+	if o.doctor {
+		o.doctorArgs = args
 	}
 	if *showVersion {
 		fmt.Fprintln(stderr, "tforphans", buildVersion())
@@ -460,6 +482,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 }
 
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
+	if len(argv) > 0 && argv[0] == "doctor" {
+		return runDoctor(ctx, argv, stdout, stderr)
+	}
 	if len(argv) > 0 && argv[0] == "diff" {
 		return runDiff(argv[1:], stdout, stderr)
 	}
@@ -637,25 +662,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		a := sources[name]
 		// The root -adopt-root names gets the blocks: its pin comes first.
 		versionRoot := dsource.VersionRoot(slices.Concat(adoptRootOf(o, a.Name), o.roots, stateDirs), a.Provider)
-		scope := maps.Clone(o.scanScope)
-		if o.scopeState {
-			if scope == nil {
-				scope = map[string][]string{}
-			}
-			for _, sc := range a.Scopes {
-				if _, ok := scope[sc.Arg]; !ok {
-					// Parent objects (zones) are in state under their own
-					// id; their children carry it as zone_id.
-					vals := idx.Values("", sc.Arg)
-					for _, v := range idx.Values(strings.TrimSuffix(sc.Parent, "s"), "id") {
-						if !slices.Contains(vals, v) {
-							vals = append(vals, v)
-						}
-					}
-					scope[sc.Arg] = vals
-				}
-			}
-		}
+		scope := scanScope(o, a, idx)
 		o.stepf("-scan %s: reading its data sources", name)
 		res, err := withSource(ctx, o, func(ctx context.Context) (*dsource.Result, error) {
 			return dsource.Run(ctx, a, dsource.Options{

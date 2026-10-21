@@ -70,10 +70,10 @@ func ParseSnapshot(data []byte, source string) (Snapshot, error) {
 	}
 	var st rawState
 	if err := model.DecodeJSON(data, &st); err != nil {
-		return Snapshot{}, fmt.Errorf("decode state: %w", err)
+		return Snapshot{}, fmt.Errorf("decode state: %w", &model.ResponseError{Err: err})
 	}
 	if st.Version != 4 {
-		return Snapshot{}, fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)
+		return Snapshot{}, &model.ResponseError{Err: fmt.Errorf("unsupported state format version %d (want 4; pass raw state, not `terraform show -json`)", st.Version)}
 	}
 	var out []Instance
 	for _, r := range st.Resources {
