@@ -102,6 +102,11 @@ func TestIntegrationDoctorScanPlan(t *testing.T) {
  }
 }`)
 	write(t, filepath.Join(root, "terraform.tfstate"), `{"version":4,"serial":1,"lineage":"doctor-scan","resources":[]}`)
+	// Like a real root: the provider comes from .terraform, not dev_overrides,
+	// which terraform 1.15 rejects with -lockfile=readonly.
+	rc := filepath.Join(t.TempDir(), "tf.rc")
+	write(t, rc, "")
+	t.Setenv("TF_CLI_CONFIG_FILE", rc)
 	t.Chdir(root)
 	r := tf.Runner{Bin: "terraform", Dir: root}
 	if _, _, err := r.Exec(context.Background(), "providers", "lock", "-fs-mirror="+plugins); err != nil {
