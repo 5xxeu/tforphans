@@ -15,8 +15,9 @@ The field is omitted when those names are unknown.
 `explain`, `summary.skipped_types`, and baseline `unverified_findings` carry
 these fields beside `reason`. Coverage can have several causes:
 `summary.coverage[].reason_details` contains `{reason, reason_code, action?,
-missing_keys?}` in the same order as the existing `reasons` array. Complete
-coverage rows omit both arrays. `diff` findings use the same fields.
+missing_keys?}`, sorted by reason, then code and action. Distinct codes or
+actions with the same wording are retained as separate entries; repeated
+causes merge their key names. Complete coverage rows omit both arrays. `diff` findings use the same fields.
 
 <a id="scope_unverified"></a>
 

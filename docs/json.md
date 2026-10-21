@@ -44,7 +44,9 @@ and action semantics. Unknown codes must not be interpreted as success.
 
 `summary.coverage[].reasons` remains an array of strings. Its optional
 `reason_details` array pairs each string with `{reason, reason_code, action?,
-missing_keys?}` in the same order. Rows without reasons omit it.
+missing_keys?}`, sorted by reason, then code and action. Distinct causes with
+identical wording have separate entries; repeated causes merge their key names.
+Rows without reasons omit it.
 The `diff` command uses the same metadata on its unverified findings.
 These additions keep `schema_version` at `1`.
 

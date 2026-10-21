@@ -460,15 +460,25 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 			entry(c.Type, "")
 		}
 	}
-	details := map[[2]string]map[string]model.ReasonDetails{}
+	details := map[[2]string]map[string][]model.ReasonDetails{}
 	remember := func(c *Coverage, why string, d model.ReasonDetails) {
 		k := [2]string{c.Type, c.Scope}
 		if details[k] == nil {
-			details[k] = map[string]model.ReasonDetails{}
+			details[k] = map[string][]model.ReasonDetails{}
 		}
-		previous := details[k][why]
-		d.MissingKeys = model.Reason(d.ReasonCode, append(slices.Clone(previous.MissingKeys), d.MissingKeys...)...).MissingKeys
-		details[k][why] = d
+		if d.ReasonCode == "" {
+			d = model.Reason("listing_skipped", d.MissingKeys...)
+		}
+		// Human wording is not unique to a cause. Keep different codes
+		// and actions, merging key names only for the same cause.
+		for i, previous := range details[k][why] {
+			if previous.ReasonCode == d.ReasonCode && previous.Action == d.Action {
+				d.MissingKeys = model.Reason(d.ReasonCode, append(slices.Clone(previous.MissingKeys), d.MissingKeys...)...).MissingKeys
+				details[k][why][i] = d
+				return
+			}
+		}
+		details[k][why] = append(details[k][why], d)
 	}
 	addReason := func(c *Coverage, why string, d model.ReasonDetails) {
 		remember(c, why, d)
@@ -543,11 +553,16 @@ func BuildCoverage(counts map[[2]string]*TypeCount, checks []tf.Check, skipped [
 	for _, c := range byKey {
 		slices.Sort(c.Reasons)
 		for _, why := range c.Reasons {
-			d := details[[2]string{c.Type, c.Scope}][why]
-			if d.ReasonCode == "" {
-				d = model.Reason("listing_skipped")
+			causes := details[[2]string{c.Type, c.Scope}][why]
+			slices.SortFunc(causes, func(a, b model.ReasonDetails) int {
+				if cmp := strings.Compare(a.ReasonCode, b.ReasonCode); cmp != 0 {
+					return cmp
+				}
+				return strings.Compare(a.Action, b.Action)
+			})
+			for _, d := range causes {
+				c.ReasonDetails = append(c.ReasonDetails, CoverageReason{ReasonDetails: d, Reason: why})
 			}
-			c.ReasonDetails = append(c.ReasonDetails, CoverageReason{ReasonDetails: d, Reason: why})
 		}
 		out = append(out, *c)
 	}

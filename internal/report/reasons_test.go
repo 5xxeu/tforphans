@@ -110,3 +110,23 @@ func TestFailureReasonReference(t *testing.T) {
 		}
 	}
 }
+
+func TestCoverageSameTextDifferentCauses(t *testing.T) {
+	skips := []tf.Skip{
+		{Type: "thing", Reason: "same text", ReasonDetails: model.Reason("state_identity_missing", "project")},
+		{Type: "thing", Reason: "same text", ReasonDetails: model.Reason("permission_denied")},
+	}
+	a := BuildCoverage(nil, nil, skips, nil)
+	skips[0], skips[1] = skips[1], skips[0]
+	b := BuildCoverage(nil, nil, skips, nil)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("source order changes metadata: %+v vs %+v", a, b)
+	}
+	if len(a) != 1 || len(a[0].Reasons) != 1 || len(a[0].ReasonDetails) != 2 {
+		t.Fatalf("lost cause: %+v", a)
+	}
+	causes := a[0].ReasonDetails
+	if causes[0].ReasonCode != "permission_denied" || causes[0].Action != "grant_permission" || len(causes[0].MissingKeys) != 0 || causes[1].ReasonCode != "state_identity_missing" || causes[1].Action != "refresh_state" || !reflect.DeepEqual(causes[1].MissingKeys, []string{"project"}) {
+		t.Fatalf("mixed metadata: %+v", causes)
+	}
+}

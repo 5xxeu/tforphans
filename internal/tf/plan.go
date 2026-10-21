@@ -409,10 +409,11 @@ func planType(typ, local, addr string, ls ListSchema, args []Arg) (Query, string
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		q.SkipReason = model.Reason("missing_argument")
+		keys := make([]string, 0, len(missing))
 		for _, name := range missing {
-			q.SkipReason.MissingKeys = append(q.SkipReason.MissingKeys, strings.TrimSuffix(name, " {}"))
+			keys = append(keys, strings.TrimSuffix(name, " {}"))
 		}
+		q.SkipReason = model.Reason("missing_argument", keys...)
 		return q, MissingArgs + strings.Join(missing, ", ")
 	}
 	return q, ""
