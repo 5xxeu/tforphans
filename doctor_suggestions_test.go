@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,56 @@ import (
 
 	"github.com/5xxeu/tforphans/internal/tf"
 )
+
+func TestDoctorArgumentFixesBySchema(t *testing.T) {
+	for _, tc := range []struct {
+		name, block string
+		args        []string
+		userList    bool
+	}{
+		{"string", `{"attributes":{"region":{"type":"string","required":true}}}`, []string{"region=..."}, false},
+		{"number", `{"attributes":{"count":{"type":"number","required":true}}}`, nil, true},
+		{"bool", `{"attributes":{"enabled":{"type":"bool","required":true}}}`, nil, true},
+		{"string and number", `{"attributes":{"region":{"type":"string","required":true},"count":{"type":"number","required":true}}}`, []string{"region=..."}, true},
+		{"string and block", `{"attributes":{"region":{"type":"string","required":true}},"block_types":{"filter":{"min_items":1}}}`, []string{"region=..."}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := doctorFixture(t)
+			t.Setenv("DOCTOR_SCHEMA_JSON", fmt.Sprintf(`{"provider_schemas":{"registry.terraform.io/hashicorp/aws":{"list_resource_schemas":{"aws_thing":{"block":%s}}}}}`, tc.block))
+			var out, stderr bytes.Buffer
+			if code := run(context.Background(), []string{"doctor", "-no-config", "-terraform", bin, "-format", "json"}, &out, &stderr); code != 2 {
+				t.Fatalf("exit %d: %s %s", code, &out, &stderr)
+			}
+			var d doctorReport
+			if err := json.Unmarshal(out.Bytes(), &d); err != nil {
+				t.Fatal(err)
+			}
+			c := doctorFindCheck(t, d, "query.arguments", ".")
+			if c.Status != "failed" || strings.Contains(c.Remediation, "Write user list blocks supplying") != tc.userList {
+				t.Fatalf("remediation: %+v", c)
+			}
+			var args []string
+			for i, arg := range d.NextCommand {
+				if arg == "-arg" {
+					args = append(args, d.NextCommand[i+1])
+				}
+			}
+			if !slices.Equal(args, tc.args) {
+				t.Fatalf("suggested args %v want %v", args, tc.args)
+			}
+			for _, arg := range tc.args {
+				if !strings.Contains(c.Remediation, "-arg "+arg) {
+					t.Fatalf("missing string argument suggestion: %+v", c)
+				}
+			}
+			for _, name := range []string{"count", "enabled", "filter"} {
+				if strings.Contains(c.Remediation, "-arg "+name+"=") {
+					t.Fatalf("unsupported argument suggestion: %+v", c)
+				}
+			}
+		})
+	}
+}
 
 func TestDoctorURLCredentials(t *testing.T) {
 	for _, tc := range []struct{ arg, want string }{
@@ -26,7 +77,7 @@ func TestDoctorURLCredentials(t *testing.T) {
 		{"endpoint=https://user:pa@ssword@two.example/b", "endpoint=https://two.example/b"},
 	} {
 		t.Run(tc.arg, func(t *testing.T) {
-			if got := doctorArg(tc.arg); got != tc.want {
+			if got := redactArg(tc.arg); got != tc.want {
 				t.Fatalf("arg: %q, want %q", got, tc.want)
 			}
 			for _, args := range [][]string{{"-arg", tc.arg}, {"--arg=" + tc.arg}} {

@@ -461,13 +461,13 @@ func TestDoctorShellArguments(t *testing.T) {
 
 func TestDoctorArgumentValues(t *testing.T) {
 	for _, arg := range []string{"key_vault_name=vault-prod", "monkey_name=George", "hockey_team=team", "key_name=name", "key_id=id", "project=prod", "folder=123", "custom=a,b", "aws_*:key_vault_name=prod", "keyboard=layout", "ssh_key_name=prod", "encryption_key_version=2", "pattern=a?b#c", "filter=a:b", "name=hello world"} {
-		if got := doctorArg(arg); got != arg {
+		if got := redactArg(arg); got != arg {
 			t.Errorf("%q: %q", arg, got)
 		}
 	}
 	for _, name := range []string{"token", "api_token", "SECRET", "client_secret", "password", "db_password", "credential", "credentials", "key", "api_key", "private-key", "aws_*:access_key", "google_*:private_key", "apiKey", "privateKey", "APIKey"} {
 		arg := name + "=sensitive"
-		if got := doctorArg(arg); got != name+"=<redacted>" {
+		if got := redactArg(arg); got != name+"=<redacted>" {
 			t.Errorf("%q: %q", arg, got)
 		}
 	}
@@ -779,7 +779,7 @@ func TestDoctorArgumentNameNormalization(t *testing.T) {
 	} {
 		t.Run(arg, func(t *testing.T) {
 			key, _, _ := strings.Cut(arg, "=")
-			if got := doctorArg(arg); got != key+"=<redacted>" {
+			if got := redactArg(arg); got != key+"=<redacted>" {
 				t.Fatalf("%q became %q", arg, got)
 			}
 			for _, argv := range [][]string{{"-arg", arg}, {"--arg=" + arg}} {
@@ -797,12 +797,12 @@ func TestDoctorArgumentNameNormalization(t *testing.T) {
 		})
 	}
 	for _, arg := range []string{"api_key=sensitive,auto", ":api_key=sensitive", "api_key=", "invalid sensitive"} {
-		if got := doctorArg(arg); got != "<redacted>" {
+		if got := redactArg(arg); got != "<redacted>" {
 			t.Fatalf("invalid %q became %q", arg, got)
 		}
 	}
 	for _, arg := range []string{" key_vault_name =prod", "type : key_name =name", " type : custom =value"} {
-		if got := doctorArg(arg); got != arg {
+		if got := redactArg(arg); got != arg {
 			t.Fatalf("safe %q became %q", arg, got)
 		}
 	}

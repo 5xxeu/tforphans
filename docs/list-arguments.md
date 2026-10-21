@@ -88,4 +88,8 @@ tforphans -exclude-types 'aws_cloudwatch_log_*'
 tforphans -print-query      # show the temporary files (list blocks and helpers) and exit
 ```
 
+`-print-query` redacts values whose argument names indicate secrets, as well
+as URL credentials and queries. The executable query uses the original
+values. Argument parsing errors never include values.
+
 [Back to the README](../README.md) · [All guides](README.md)

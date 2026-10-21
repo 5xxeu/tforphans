@@ -10,7 +10,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -93,6 +92,7 @@ type doctorReport struct {
 type doctorArgFix struct {
 	check            int
 	typ, name, value string
+	userList         string
 }
 
 func (d *doctorReport) add(id, status, message, root, remediation string) {
@@ -437,7 +437,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 			id, status, argsStatus = "query.arguments", "failed", "failed"
 			missing := strings.Split(strings.TrimPrefix(sk.Reason, tf.MissingArgs), " (provider ")[0]
 			for _, name := range strings.Split(missing, ", ") {
-				if !strings.Contains(name, " ") {
+				if !strings.Contains(name, " ") && doctorStringArg(schemas, userListProvider(sk.Provider, sk.Type, declared, schemas), sk.Type, name) {
 					value := "..."
 					source := userListProvider(sk.Provider, sk.Type, declared, schemas)
 					if source == "" {
@@ -459,6 +459,11 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 				}
 			}
 			fix = "Write user list blocks supplying " + missing
+			if len(argFixes) != len(strings.Split(missing, ", ")) {
+				for i := range argFixes {
+					argFixes[i].userList = fix
+				}
+			}
 		} else if strings.HasPrefix(sk.Reason, "-arg ") {
 			status, fix = "failed", "Supply an explicit -arg value instead of auto"
 		} else if strings.HasPrefix(sk.Reason, "provider ") || strings.HasPrefix(sk.Reason, "provider configuration ") {
@@ -655,9 +660,9 @@ func doctorNext(args []commandArg, fixes []string) []string {
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(fixes); i += 2 {
 		if !seen[fixes[i+1]] {
-			value := doctorRedactURLs(fixes[i+1])
+			value := redactArgURLs(fixes[i+1])
 			if fixes[i] == "-arg" {
-				value = doctorArg(fixes[i+1])
+				value = redactArg(fixes[i+1])
 			}
 			extra = append(extra, fixes[i], value)
 			seen[fixes[i+1]] = true
@@ -669,7 +674,7 @@ func doctorNext(args []commandArg, fixes []string) []string {
 			continue
 		}
 		if arg.positional {
-			roots = append(roots, doctorRedactURLs(arg.raw))
+			roots = append(roots, redactArgURLs(arg.raw))
 			continue
 		}
 		if arg.name == "offline" || arg.name == "check-auth" || arg.name == "format" {
@@ -678,11 +683,11 @@ func doctorNext(args []commandArg, fixes []string) []string {
 		value := arg.value
 		switch arg.name {
 		case "arg":
-			value = doctorArg(value)
+			value = redactArg(value)
 		case "plugin":
 			value = "<plugin command>"
 		default:
-			value = doctorRedactURLs(value)
+			value = redactArgURLs(value)
 		}
 		if arg.separate {
 			out = append(out, arg.raw, value)
@@ -698,33 +703,9 @@ func doctorNext(args []commandArg, fixes []string) []string {
 	}
 	out = append(out, roots...)
 	for i, arg := range out {
-		out[i] = doctorRedactURLs(arg)
+		out[i] = redactArgURLs(arg)
 	}
 	return out
-}
-
-func doctorArg(arg string) string {
-	parsed, err := tf.ParseArg(arg)
-	if err != nil {
-		return "<redacted>"
-	}
-	key, _, _ := strings.Cut(arg, "=")
-	name := parsed.Name
-	camelKey := strings.HasSuffix(name, "Key")
-	name = strings.ToLower(name)
-	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' || r == '.' })
-	secret := strings.Contains(name, "token") || strings.Contains(name, "secret") || strings.Contains(name, "password") || strings.Contains(name, "credential")
-	if secret || camelKey || name == "key" || len(words) > 0 && words[len(words)-1] == "key" {
-		return key + "=<redacted>"
-	}
-	if strings.Contains(arg, "://") {
-		values := slices.Clone(parsed.Values)
-		for i, value := range values {
-			values[i] = doctorRedactURLs(value)
-		}
-		return doctorRedactURLs(key + "=" + strings.Join(values, ","))
-	}
-	return arg
 }
 
 func shellArg(s string) string {
@@ -751,7 +732,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	d.NextCommand = slices.Clone(d.NextCommand)
 	unsafe := false
 	for i, arg := range d.NextCommand {
-		arg = doctorRedactURLs(arg)
+		arg = redactArgURLs(arg)
 		d.NextCommand[i] = arg
 		if strings.ContainsFunc(arg, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
 			d.NextCommand[i] = "<argument with control characters>"
@@ -886,44 +867,6 @@ func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin strin
 	}
 }
 
-func doctorRedactURLs(arg string) string {
-	if name, value, ok := strings.Cut(arg, "="); ok && (name == "-state" || name == "--state") {
-		return name + "=" + doctorRedactURLs(value)
-	}
-	arg = doctorURLUserinfo.ReplaceAllString(arg, "${1}")
-	urls := doctorURLScheme.FindAllStringIndex(arg, -1)
-	if len(urls) == 0 {
-		return arg
-	}
-	if urls[0][0] == 0 {
-		return state.Redact(arg)
-	}
-	var out strings.Builder
-	out.WriteString(arg[:urls[0][0]])
-	for i, loc := range urls {
-		end := len(arg)
-		if i+1 < len(urls) {
-			end = urls[i+1][0]
-		}
-		value := arg[loc[0]:end]
-		// A URL embedded inside a query belongs to that query too.
-		if i+1 < len(urls) && strings.ContainsAny(value, "?#") && !strings.HasSuffix(value, ",") {
-			out.WriteString(state.Redact(arg[loc[0]:]))
-			break
-		}
-		separator := ""
-		if i+1 < len(urls) && strings.HasSuffix(value, ",") {
-			value, separator = strings.TrimSuffix(value, ","), ","
-		}
-		if strings.ContainsAny(value, "?#") {
-			value = state.Redact(value)
-		}
-		out.WriteString(value)
-		out.WriteString(separator)
-	}
-	return out.String()
-}
-
 func (d *doctorReport) discovery(o *options) {
 	queries := d.queries
 	if o.noQuery {
@@ -946,11 +889,6 @@ func (d *doctorReport) discovery(o *options) {
 	d.Checks[len(d.Checks)-1].Count = &count
 }
 
-var (
-	doctorURLScheme   = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://`)
-	doctorURLUserinfo = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@`)
-)
-
 func (d *doctorReport) updateArgumentFixes() {
 	values := map[string]map[string]bool{}
 	for _, fix := range d.argFixes {
@@ -967,8 +905,12 @@ func (d *doctorReport) updateArgumentFixes() {
 	}
 	d.fixes = kept
 	byCheck := map[int][]string{}
+	userLists := map[int]string{}
 	seen := map[string]bool{}
 	for _, fix := range d.argFixes {
+		if fix.userList != "" {
+			userLists[fix.check] = fix.userList
+		}
 		name := fix.name
 		if len(values[name]) > 1 {
 			name = fix.typ + ":" + name
@@ -984,5 +926,26 @@ func (d *doctorReport) updateArgumentFixes() {
 	}
 	for check, args := range byCheck {
 		d.Checks[check].Remediation = "tforphans -arg " + strings.Join(args, " -arg ")
+		if userLists[check] != "" {
+			d.Checks[check].Remediation = userLists[check] + "; " + d.Checks[check].Remediation
+		}
 	}
+}
+
+func doctorStringArg(schemas *tf.Schemas, source, typ, name string) bool {
+	found := false
+	for addr, ps := range schemas.ProviderSchemas {
+		if source != "" && addr != source {
+			continue
+		}
+		ls, ok := ps.ListResourceSchemas[typ]
+		if !ok {
+			continue
+		}
+		if at, ok := ls.Block.Attributes[name]; !ok || string(at.Type) != `"string"` {
+			return false
+		}
+		found = true
+	}
+	return found
 }

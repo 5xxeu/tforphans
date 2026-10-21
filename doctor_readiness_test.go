@@ -33,7 +33,7 @@ func TestDoctorURLQueryRedaction(t *testing.T) {
 		}
 	}
 	// Queries between embedded URLs must be redacted independently.
-	got := doctorRedactURLs(`prefix=https://one/state?filter=a,b&token=SECRET,https://user:password@two/state?filter="a,b"&token=SECRET`)
+	got := redactArgURLs(`prefix=https://one/state?filter=a,b&token=SECRET,https://user:password@two/state?filter="a,b"&token=SECRET`)
 	if strings.Contains(got, "SECRET") || strings.Contains(got, "password") || strings.Count(got, "REDACTED") != 2 {
 		t.Fatal(got)
 	}
