@@ -485,20 +485,6 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.add("query.aliases", "ok", "selected provider configurations can be planned", root, "")
 	}
 	configs := map[string]tf.IdentityConfig{}
-	for addr, c := range sc {
-		local := declared[addr]
-		if local == "" {
-			continue
-		}
-		if c.Plain || len(c.Aliases) == 0 {
-			configs[local] = tf.IdentityConfig{Ref: local, Source: addr}
-		}
-		if !o.noAliases {
-			for _, a := range c.Aliases {
-				configs[a.Ref()] = tf.IdentityConfig{Ref: a.Ref(), Source: addr}
-			}
-		}
-	}
 	for _, q := range p.Queries {
 		configs[q.Ref()] = tf.IdentityConfig{Ref: q.Ref(), Source: q.Source}
 	}

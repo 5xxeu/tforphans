@@ -12,6 +12,85 @@ import (
 	"testing"
 )
 
+func TestDoctorAuthenticationScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, include string
+		code          int
+		azure         bool
+	}{
+		{"selected AWS", "aws_*", 0, false},
+		{"all providers", "*", 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := doctorFixture(t)
+			config := `terraform {
+ required_providers {
+  aws = { source = "hashicorp/aws" }
+  azurerm = { source = "hashicorp/azurerm" }
+ }
+}
+provider "aws" {}
+provider "azurerm" {}
+`
+			if err := os.WriteFile("main.tf", []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("DOCTOR_SCHEMA_JSON", doctorTestSchema(t, map[string]map[string][]string{
+				"registry.terraform.io/hashicorp/aws":     {"aws_thing": nil},
+				"registry.terraform.io/hashicorp/azurerm": {"azurerm_thing": nil},
+			}))
+			t.Setenv("DOCTOR_IDENTITY_JSON", `{"prior_state":{"values":{"root_module":{"resources":[{"mode":"data","address":"data.aws_caller_identity.tfo_id_0_0","values":{"account_id":"123"}},{"mode":"data","address":"data.aws_region.tfo_id_0_1","values":{"region":"eu"}}]}}}}`)
+			log := filepath.Join(filepath.Dir(bin), "azure-auth")
+			t.Setenv("DOCTOR_AZURE_AUTH_LOG", log)
+			script, err := os.ReadFile(bin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			script = bytes.Replace(script, []byte(` "plan "*)`), []byte(` "plan "*)
+  if grep -F 'provider = azurerm' zz_tforphans_*_identity.tf >/dev/null; then
+   printf 'attempted' >> "$DOCTOR_AZURE_AUTH_LOG"
+   printf 'Azure credentials unavailable' >&2
+   exit 1
+  fi`), 1)
+			if err := os.WriteFile(bin, script, 0700); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			args := []string{"doctor", "-no-config", "-terraform", bin, "-format", "json", "-types", tc.include, "-check-auth"}
+			if code := run(context.Background(), args, &out, io.Discard); code != tc.code {
+				t.Fatalf("exit %d want %d: %s", code, tc.code, &out)
+			}
+			var d doctorReport
+			if err := json.Unmarshal(out.Bytes(), &d); err != nil {
+				t.Fatal(err)
+			}
+			if c := doctorFindCheck(t, d, "auth.aws", "."); c.Status != "ok" {
+				t.Fatal(c)
+			}
+			if tc.azure {
+				if c := doctorFindCheck(t, d, "auth.azurerm", "."); c.Status != "failed" {
+					t.Fatal(c)
+				}
+				if _, err := os.Stat(log); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				for _, c := range d.Checks {
+					if c.ID == "auth.azurerm" {
+						t.Fatalf("excluded provider checked: %+v", c)
+					}
+				}
+				if _, err := os.Stat(log); !os.IsNotExist(err) {
+					t.Fatalf("excluded provider identity plan ran: %v", err)
+				}
+				if d.Status != "ready" {
+					t.Fatalf("status %s: %s", d.Status, &out)
+				}
+			}
+		})
+	}
+}
+
 func TestDoctorUserListAuthentication(t *testing.T) {
 	for _, tc := range []struct {
 		name, provider                      string
