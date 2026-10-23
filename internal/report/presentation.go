@@ -38,17 +38,25 @@ func Accent(w io.Writer, tone Tone, text string) string {
 }
 
 // Write accents diagnostic labels without buffering progress or changing its
-// timing. Data in the message is already sanitized by the caller.
+// timing. Data in the message is already sanitized by the caller. A label is
+// recognized only at the start of a write: callers print each diagnostic line
+// with one call.
 func (w *colorWriter) Write(p []byte) (int, error) {
 	s := string(p)
 	opening, prefix := 0, 0
+	// Complete with exceptions ("complete for what can be listed; not
+	// checked: ...") is not the all-clear.
+	complete := Attention
+	if s == "coverage: complete\n" {
+		complete = Good
+	}
 	for _, label := range []struct {
 		prefix string
 		tone   Tone
 	}{
 		{"error:", Failure}, {"warning:", Attention}, {"note:", Heading},
 		{"plan:", Heading}, {"coverage: INCOMPLETE", Attention},
-		{"coverage: complete", Good},
+		{"coverage: complete", complete},
 	} {
 		if strings.HasPrefix(s, label.prefix) {
 			opening, prefix = len("\x1b["+string(label.tone)+"m"), len(label.prefix)

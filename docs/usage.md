@@ -25,8 +25,8 @@ coverage: complete
 
 Human-readable output separates findings, totals, diagnostics and coverage
 into labeled blocks. In a terminal, cyan headings mark sections, green marks
-managed counts and complete coverage, yellow marks findings, uncertainty and
-warnings, and red marks errors. Labels remain visible without color.
+managed counts and complete coverage, yellow marks findings, uncertainty,
+warnings and coverage with exceptions, and red marks errors. Labels remain visible without color.
 Colors are disabled for redirected streams, `TERM=dumb`, or a nonempty
 `NO_COLOR` environment variable (`NO_COLOR=1 tforphans ...`). JSON, generated
 queries and import blocks contain no presentation codes.

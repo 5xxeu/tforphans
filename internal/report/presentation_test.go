@@ -61,6 +61,11 @@ func TestPresentationDiagnosticsAndCoverage(t *testing.T) {
 		}
 	}
 	b.Reset()
+	fmt.Fprintln(w, "coverage: complete for what can be listed; not checked: 1 types")
+	if !strings.HasPrefix(b.String(), "\x1b[1;33mcoverage: complete\x1b[0m") {
+		t.Fatalf("qualified coverage marked as complete: %q", b.String())
+	}
+	b.Reset()
 	if err := writeTable(w, "TYPE  COVERAGE\nx     incomplete\ny     complete\n", true); err != nil {
 		t.Fatal(err)
 	}
