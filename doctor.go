@@ -746,7 +746,9 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	if format == "json" {
 		return json.NewEncoder(w).Encode(d)
 	}
-	report.Section(w, "Readiness checks")
+	if _, err := fmt.Fprintln(w, report.SectionLine(w, "Readiness checks")); err != nil {
+		return err
+	}
 	tones := map[string]report.Tone{"ok": report.Good, "warning": report.Attention, "failed": report.Failure, "skipped": report.Muted}
 	labels := map[string]string{"ok": "OK", "warning": "WARN", "failed": "FAIL", "skipped": "SKIP"}
 	for _, c := range d.Checks {
@@ -767,8 +769,9 @@ func (d doctorReport) write(w io.Writer, format string) error {
 			}
 		}
 	}
-	fmt.Fprintln(w)
-	report.Section(w, "Readiness result")
+	if _, err := fmt.Fprint(w, "\n"+report.SectionLine(w, "Readiness result")+"\n"); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintln(w, "Result:", strings.ReplaceAll(d.Status, "_", " ")); err != nil {
 		return err
 	}

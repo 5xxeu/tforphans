@@ -856,3 +856,32 @@ func TestDoctorIdentityResponseErrors(t *testing.T) {
 		})
 	}
 }
+
+// failOnce fails only write number n, so an error that is not checked is
+// not caught by a later write.
+type failOnce struct{ n int }
+
+func (f *failOnce) Write(p []byte) (int, error) {
+	f.n--
+	if f.n == -1 {
+		return 0, io.ErrShortWrite
+	}
+	return len(p), nil
+}
+
+func TestDoctorTextReportsEveryWriteError(t *testing.T) {
+	d := doctorReport{Status: "ready", Checks: []doctorCheck{{ID: "terraform.version", Status: "ok", Message: "1.15"}}, NextCommand: []string{"tforphans"}}
+	count := &countWrites{}
+	if err := d.write(count, "text"); err != nil {
+		t.Fatal(err)
+	}
+	for n := range count.n {
+		if err := d.write(&failOnce{n: n}, "text"); err == nil {
+			t.Fatalf("write %d failed silently", n)
+		}
+	}
+}
+
+type countWrites struct{ n int }
+
+func (c *countWrites) Write(p []byte) (int, error) { c.n++; return len(p), nil }

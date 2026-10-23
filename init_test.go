@@ -462,3 +462,75 @@ func TestInitUpdateReportsRemovedRoots(t *testing.T) {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
 	}
 }
+
+func TestInitUpdateReportsRemovedStateRoots(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, dir := range []string{"prod", "dev"} {
+		initFixture(t, dir+"/main.tf", `terraform {
+ backend "local" {}
+}`)
+	}
+	initFixture(t, defaultConfigFile, "roots: [prod, dev]\nstate-roots: [prod, ./dev]\n")
+	code, out, stderr := invokeInit(t, "-update", "prod")
+	if code != 0 || !strings.Contains(out, "Removed from state-roots: dev (") || strings.Contains(out, "Removed from state-roots: prod") {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+	// Reusing the saved directories removes nothing.
+	code, out, stderr = invokeInit(t, "-update")
+	if code != 0 || strings.Contains(out, "Removed from") {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+}
+
+func TestInitUpdateReadsMaxRootsAsTheLoader(t *testing.T) {
+	t.Chdir(t.TempDir())
+	initFixture(t, "main.tf", `terraform {
+ backend "local" {}
+}`)
+	for _, value := range []string{`"5"`, "5", "[7, 5]", "0x5"} {
+		initFixture(t, defaultConfigFile, "max-roots: "+value+"\nroots: [.]\n")
+		if o, err := parseFlags(nil, &bytes.Buffer{}); err != nil || o.maxRoots != 5 {
+			t.Fatalf("%s: loader read %+v %v", value, o.maxRoots, err)
+		}
+		if n, ok, err := initPreviousMaxRoots([]byte("max-roots: " + value + "\n")); err != nil || !ok || n != 5 {
+			t.Fatalf("%s: init read %d %v %v", value, n, ok, err)
+		}
+		if code, out, stderr := invokeInit(t, "-update", "-dry-run"); code != 0 {
+			t.Fatalf("%s: %d\n%s%s", value, code, out, stderr)
+		}
+	}
+	for _, value := range []string{`"five"`, "-1", "true", "{a: 1}", "[]"} {
+		if _, _, err := initPreviousMaxRoots([]byte("max-roots: " + value + "\n")); err == nil {
+			t.Fatalf("%s accepted", value)
+		}
+	}
+}
+
+func TestInitUpdateWaitsForNoOtherInit(t *testing.T) {
+	t.Chdir(t.TempDir())
+	original := []byte("roots: [.]\n")
+	initFixture(t, defaultConfigFile, string(original))
+	info, err := os.Lstat(defaultConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initFixture(t, initLockFile, "1\n")
+	if err := writeInitConfig([]byte("roots: [new]\n"), original, info); err == nil || !strings.Contains(err.Error(), "another tforphans init") {
+		t.Fatalf("lock ignored: %v", err)
+	}
+	if raw, _ := os.ReadFile(defaultConfigFile); !bytes.Equal(raw, original) {
+		t.Fatal("config replaced while locked")
+	}
+	if err := os.Remove(initLockFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInitConfig([]byte("roots: [new]\n"), original, info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(initLockFile); !os.IsNotExist(err) {
+		t.Fatalf("lock left behind: %v", err)
+	}
+	if entries, _ := filepath.Glob(".tforphans-init-*"); len(entries) > 0 {
+		t.Fatalf("temporary files left: %v", entries)
+	}
+}
