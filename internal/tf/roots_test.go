@@ -238,6 +238,9 @@ func TestFindRootsBrokenConfig(t *testing.T) {
 		"link/main.tf":        "variable \"a\" {}\n",
 		"subdir/root/main.tf": backend,
 		"subdir/bad.tf":       "}\n",
+		// Parsers quote the offending token in the diagnostic detail.
+		"j2/main.tf.json": `{"provider": {"x": {"token": secretJSON}}}`,
+		"h2/main.tf":      "locals {\n  a = \"x\" secretHCL\n}\n",
 	}
 	for name, body := range files {
 		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
@@ -257,11 +260,11 @@ func TestFindRootsBrokenConfig(t *testing.T) {
 	var paths []string
 	for _, u := range unread {
 		paths = append(paths, u.Path)
-		if !strings.HasPrefix(u.Reason, "configuration could not be read: ") || !strings.Contains(u.Reason, u.Path+string(filepath.Separator)) {
+		if !strings.HasPrefix(u.Reason, "configuration could not be read: ") || !strings.Contains(u.Reason, u.Path+string(filepath.Separator)) || strings.Contains(u.Reason, "secret") {
 			t.Errorf("%s: %s", u.Path, u.Reason)
 		}
 	}
-	if want := []string{"json", "link", "stray", "subdir"}; !reflect.DeepEqual(paths, want) {
+	if want := []string{"h2", "j2", "json", "link", "stray", "subdir"}; !reflect.DeepEqual(paths, want) {
 		t.Errorf("unread %v", unread)
 	}
 }

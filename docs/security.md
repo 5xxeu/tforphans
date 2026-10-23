@@ -1,5 +1,11 @@
 # Security
 
+`tforphans init` reads local configuration and provider lock files and writes
+`.tforphans.yaml`. It does not start Terraform, providers or plugins, read
+state contents, fetch modules, check credentials or contact backends. Existing
+configs require `-update`; symlink targets are refused and updates retain the
+file permissions. See [initialization](init.md).
+
 - tforphans only reads. It runs `terraform providers schema`, `state pull`
   (only for workspaces `workspace list` printed as list lines),
   `workspace list`, `query`, and `apply -refresh-only` on a temporary root

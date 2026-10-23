@@ -58,6 +58,7 @@ Exit status: 0 nothing new found, 2 unmanaged resources found (only new with
 ownership with -strict-ownership).
 
 Run "tforphans adopt -h" to generate import blocks for what it finds.
+Run "tforphans init" to discover roots and create .tforphans.yaml.
 Run "tforphans doctor -h" to check readiness before an audit.
 Run "tforphans diff -h" to compare two saved JSON reports.
 
@@ -483,6 +484,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 }
 
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
+	if len(argv) > 0 && argv[0] == "init" {
+		return runInit(ctx, argv[1:], stdout, stderr)
+	}
 	if len(argv) > 0 && argv[0] == "doctor" {
 		return runDoctor(ctx, argv, stdout, stderr)
 	}
