@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -1413,6 +1414,7 @@ func uncertainReason(m state.Match) model.ReasonDetails {
 
 // colorEnabled checks each stream separately: redirecting JSON stdout must not
 // affect terminal diagnostics, and redirected output must contain no ANSI codes.
+// Windows consoles show the codes as text unless VT processing is enabled.
 func colorEnabled(w io.Writer) bool {
-	return isTerminal(w) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	return runtime.GOOS != "windows" && isTerminal(w) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 }

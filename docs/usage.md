@@ -26,10 +26,11 @@ coverage: complete
 Human-readable output separates findings, totals, diagnostics and coverage
 into labeled blocks. In a terminal, cyan headings mark sections, green marks
 managed counts and complete coverage, yellow marks findings, uncertainty,
-warnings and coverage with exceptions, and red marks errors. Labels remain visible without color.
-Colors are disabled for redirected streams, `TERM=dumb`, or a nonempty
-`NO_COLOR` environment variable (`NO_COLOR=1 tforphans ...`). JSON, generated
-queries and import blocks contain no presentation codes.
+warnings and coverage with exceptions, and red marks errors. Labels remain
+visible without color. Colors are disabled on Windows, for redirected
+streams, `TERM=dumb`, or a nonempty `NO_COLOR` environment variable
+(`NO_COLOR=1 tforphans ...`). JSON, generated queries and import blocks
+contain no presentation codes.
 
 `-max-state-size` limits each state read to 1 GiB by default, including
 `-state` files, stdin and HTTP responses, Terraform and Terragrunt state

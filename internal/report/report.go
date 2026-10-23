@@ -704,7 +704,12 @@ func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summa
 func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 	if len(orphans) == 0 {
 		Section(w, "Unmanaged resources (0)")
-		fmt.Fprintln(w, Accent(w, Good, "No unmanaged resources found."))
+		// Uncertain objects below may be unmanaged: no all-clear color then.
+		tone := Good
+		if len(uncertain) > 0 {
+			tone = ""
+		}
+		fmt.Fprintln(w, Accent(w, tone, "No unmanaged resources found."))
 	} else {
 		Section(w, fmt.Sprintf("Unmanaged resources (%d)", len(orphans)))
 		scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
