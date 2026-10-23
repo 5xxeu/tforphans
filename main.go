@@ -938,9 +938,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			}
 			fmt.Fprintln(w)
 			report.Section(w, "Baseline")
-			if _, err := fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why); err != nil {
-				return err
-			}
+			fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
 			if o.verbose {
 				if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
 					return err
