@@ -233,7 +233,10 @@ stdout and stderr, SIGTERM and SIGINT with plugin children, and (with
 temporary file in the root. `testdata/golden` holds JSON reports of a fixed
 state and plugin output; after an intended change of the format, rewrite
 them with `TFORPHANS_UPDATE_GOLDEN=1 go test -run TestGoldenJSON .` and
-review the diff. Every key of these reports must be described in
+review the diff. `coverage-incomplete.json` pins the coverage of a run with a
+failed listing and a type that needs an argument, reason codes included; it
+needs Terraform (`TFORPHANS_UPDATE_GOLDEN=1 go test -tags integration -run
+TestIntegrationGoldenIncompleteCoverage .`). Every key of these reports must be described in
 `docs/json.md`.
 
 Fuzz targets check that plugin output always becomes import blocks that

@@ -158,7 +158,8 @@ tforphans -baseline baseline.json -strict
 
 With `-baseline FILE`, exit `2` means new orphans exist. Known orphans stay
 in JSON, marked `"baseline": "known"`, and are hidden in text output.
-A summary line counts new, known, resolved and not verified findings.
+A line in the `Baseline` block, before `Coverage`, counts new, known,
+resolved and not verified findings (`-v` lists the not verified ones).
 `-strict` still exits `1` for incomplete coverage or uncertain matches,
 even when every orphan is known. `adopt` does not accept `-baseline`.
 An automatic `.tforphans.yaml` may set `baseline: baseline.json`, with the

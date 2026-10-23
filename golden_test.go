@@ -137,29 +137,6 @@ func checkReport(t *testing.T, data []byte, docs string) {
 	}
 }
 
-// jsonKeys collects object keys, except inside maps keyed by data (identity
-// keys, type names, scopes).
-func jsonKeys(v any, keys []string) []string {
-	switch v := v.(type) {
-	case map[string]any:
-		for k, e := range v {
-			if !slices.Contains(keys, k) {
-				keys = append(keys, k)
-			}
-			switch k {
-			case "identity", "attributes", "by_type", "by_scope", "scope":
-				continue
-			}
-			keys = jsonKeys(e, keys)
-		}
-	case []any:
-		for _, e := range v {
-			keys = jsonKeys(e, keys)
-		}
-	}
-	return keys
-}
-
 func TestGoldenListingJSON(t *testing.T) {
 	s := report.Summary{}
 	s.AddListing(report.Listing{Source: "infra", Address: "list.aws_instance.all", Provider: "hashicorp/aws", Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": "123456789012", "region": "eu-north-1"}, Fingerprint: report.ListingFingerprint("block", "", "aws", "", "default")})
