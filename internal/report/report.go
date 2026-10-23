@@ -3,6 +3,7 @@ package report
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -593,6 +594,7 @@ func typeStatus(cov []Coverage) map[string]string {
 // SummaryTable prints the counts per type, types with orphans first, and
 // the types that were not fully listed.
 func SummaryTable(w io.Writer, s Summary) error {
+	Section(w, "Resources by type")
 	// Incomplete types without objects get a row too: a skipped or failed
 	// type is where unmanaged objects may hide.
 	byType := maps.Clone(s.ByType)
@@ -610,6 +612,7 @@ func SummaryTable(w io.Writer, s Summary) error {
 	}
 	if len(s.ByScope) > 0 {
 		fmt.Fprintln(w)
+		Section(w, "Resources by scope")
 		if err := countTable(w, "SCOPE", s.ByScope, s, nil); err != nil {
 			return err
 		}
@@ -667,7 +670,8 @@ func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summa
 		}
 		return keys[i] < keys[j]
 	})
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', tabwriter.AlignRight)
+	var table bytes.Buffer
+	tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', tabwriter.AlignRight)
 	fmt.Fprint(tw, title+"\tLIVE\tMANAGED\tUNCERTAIN\tIGNORED\tUNMANAGED\t")
 	if status != nil {
 		fmt.Fprint(tw, "COVERAGE\t")
@@ -690,21 +694,34 @@ func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summa
 		fmt.Fprintf(tw, "%s\t", total)
 	}
 	fmt.Fprintln(tw)
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	return writeTable(w, table.String())
 }
 
 // Text prints the unmanaged objects, then those that may be managed.
 func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 	if len(orphans) == 0 {
-		fmt.Fprintln(w, "No unmanaged resources found.")
+		Section(w, "Unmanaged resources (0)")
+		fmt.Fprintln(w, Accent(w, Good, "No unmanaged resources found."))
 	} else {
+		Section(w, fmt.Sprintf("Unmanaged resources (%d)", len(orphans)))
 		scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
-		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		var table bytes.Buffer
+		tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
 		if scoped {
 			fmt.Fprint(tw, "SCOPE\t")
 		}
 		fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE")
-		for _, r := range orphans {
+		for i, r := range orphans {
+			if i > 0 && (r.ScopeName != orphans[i-1].ScopeName || r.Type != orphans[i-1].Type) {
+				tabs := 3
+				if scoped {
+					tabs++
+				}
+				fmt.Fprintln(tw, strings.Repeat("\t", tabs))
+			}
 			if scoped {
 				fmt.Fprintf(tw, "%s\t", Clean(r.ScopeName))
 			}
@@ -713,17 +730,27 @@ func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 		if err := tw.Flush(); err != nil {
 			return err
 		}
+		if err := writeTable(w, table.String()); err != nil {
+			return err
+		}
 	}
 	if len(uncertain) == 0 {
 		return nil
 	}
-	fmt.Fprintln(w, "\nUncertain (matched to state, but the state cannot confirm the account or cluster):")
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w)
+	Section(w, fmt.Sprintf("Uncertain resources (%d)", len(uncertain)))
+	fmt.Fprintln(w, "Matched to state, but the account or cluster could not be confirmed.")
+	fmt.Fprintln(w)
+	var table bytes.Buffer
+	tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE\tSTATE ADDRESS")
 	for _, u := range uncertain {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", Clean(u.Type), Clean(u.DisplayName), Clean(u.IdentityString()), Clean(u.Source), Clean(u.StateAddress))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	return writeTable(w, table.String())
 }
 
 func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summary, baseline ...*Baseline) error {
@@ -775,14 +802,19 @@ func ExplainText(w io.Writer, es []Explanation) error {
 	if len(es) == 0 {
 		return nil
 	}
-	fmt.Fprintln(w, "\nWhy (-explain):")
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w)
+	Section(w, "Why (-explain):")
+	var table bytes.Buffer
+	tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "STATUS\tTYPE\tNAME\tIDENTITY\tWHY")
 	for _, e := range es {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Status, Clean(e.Type), Clean(e.DisplayName),
 			Clean((model.Resource{Identity: e.Identity}).IdentityString()), Clean(e.Reason)+reasonReference(e.ReasonCode))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	return writeTable(w, table.String())
 }
 
 // SchemaVersion of the JSON output. It goes up when a field is removed or

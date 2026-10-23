@@ -262,7 +262,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	}
 	d.NextCommand = doctorNext(doctorConfiguredArgs(o, d.fixes), d.fixes)
 	code := d.result(o.offline)
-	if err := d.write(stdout, o.format); err != nil {
+	if err := d.write(report.WithColor(stdout, colorEnabled(stdout)), o.format); err != nil {
 		fmt.Fprintln(stderr, "error:", report.Clean(err.Error()))
 		return 1
 	}
@@ -746,6 +746,8 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	if format == "json" {
 		return json.NewEncoder(w).Encode(d)
 	}
+	report.Section(w, "Readiness checks")
+	tones := map[string]report.Tone{"ok": report.Good, "warning": report.Attention, "failed": report.Failure, "skipped": report.Muted}
 	labels := map[string]string{"ok": "OK", "warning": "WARN", "failed": "FAIL", "skipped": "SKIP"}
 	for _, c := range d.Checks {
 		root := ""
@@ -756,7 +758,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 		if c.Category != "" {
 			message = doctorSkipMessage(c.Category, c.Types, d.verbose)
 		}
-		if _, err := fmt.Fprintf(w, "%-5s %-23s %s%s\n", labels[c.Status], c.ID, message, root); err != nil {
+		if _, err := fmt.Fprintf(w, "%s %-23s %s%s\n", report.Accent(w, tones[c.Status], fmt.Sprintf("%-5s", labels[c.Status])), c.ID, message, root); err != nil {
 			return err
 		}
 		if c.Remediation != "" {
@@ -765,6 +767,8 @@ func (d doctorReport) write(w io.Writer, format string) error {
 			}
 		}
 	}
+	fmt.Fprintln(w)
+	report.Section(w, "Readiness result")
 	if _, err := fmt.Fprintln(w, "Result:", strings.ReplaceAll(d.Status, "_", " ")); err != nil {
 		return err
 	}

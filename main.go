@@ -488,6 +488,8 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	if len(argv) > 0 && argv[0] == "diff" {
 		return runDiff(argv[1:], stdout, stderr)
 	}
+	terminalErr := isTerminal(stderr)
+	stderr = report.WithColor(stderr, colorEnabled(stderr))
 	o, err := parseFlags(argv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return exitOK
@@ -498,7 +500,7 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	}
 	if !o.quiet {
 		o.progress = stderr
-		if isTerminal(stderr) {
+		if terminalErr {
 			o.steps = stderr
 		}
 	}
@@ -895,11 +897,12 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	case o.format == "json":
 		err = report.JSON(stdout, orphans, uncertain, sum, baseline)
 	case o.format == "summary":
-		err = report.SummaryTable(stdout, sum)
+		err = report.SummaryTable(report.WithColor(stdout, colorEnabled(stdout)), sum)
 	default:
-		err = report.Text(stdout, shown, uncertain)
+		textOut := report.WithColor(stdout, colorEnabled(stdout))
+		err = report.Text(textOut, shown, uncertain)
 		if err == nil {
-			err = report.ExplainText(stdout, sum.Explain)
+			err = report.ExplainText(textOut, sum.Explain)
 		}
 	}
 	if err != nil {
@@ -1406,4 +1409,10 @@ func uncertainReason(m state.Match) model.ReasonDetails {
 		}
 	}
 	return model.Reason(code, append(slices.Clone(m.Unknown), m.Unconfirmed...)...)
+}
+
+// colorEnabled checks each stream separately: redirecting JSON stdout must not
+// affect terminal diagnostics, and redirected output must contain no ANSI codes.
+func colorEnabled(w io.Writer) bool {
+	return isTerminal(w) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 }

@@ -24,11 +24,17 @@ writes the `import` blocks to bring them under Terraform.
 
 ```
 $ tforphans -state-roots ~/work/infra
+== Unmanaged resources (2) =================================
 SCOPE                    TYPE           NAME             IDENTITY                                               SOURCE
 account_id 123456789012  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1  .
+
 account_id 123456789012  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...   .
 
-512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged; 41 states read, 187 resource types queried, 58 skipped (-v to list)
+== Summary =================================================
+512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged
+41 states read, 187 resource types queried, 58 skipped (-v to list)
+
+== Coverage ================================================
 coverage: complete
 ```
 

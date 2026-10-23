@@ -270,7 +270,7 @@ resource "fake_thing" "x" { name = var.name }
 
 	t.Chdir(root)
 	code, stdout, stderr := runTool("-types", "fake_thing", "-state-roots", tree)
-	if code != exitOrphans || !strings.Contains(stderr, "4 live, 3 managed, 0 uncertain, 0 ignored, 1 unmanaged; 3 states read") {
+	if code != exitOrphans || !strings.Contains(stderr, "4 live, 3 managed, 0 uncertain, 0 ignored, 1 unmanaged\n3 states read") {
 		t.Fatalf("exit %d\n%s%s", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "stray") || strings.Contains(stdout, "other-") {
@@ -301,7 +301,7 @@ resource "fake_thing" "x" { name = var.name }
 	// A workspace whose state cannot be read does not lose the others.
 	write(t, filepath.Join(other, "terraform.tfstate.d", "prod", "terraform.tfstate"), "not json")
 	code, stdout, stderr = runTool("-types", "fake_thing", "-state-roots", tree)
-	if code != exitOrphans || !strings.Contains(stderr, "4 live, 2 managed, 0 uncertain, 0 ignored, 2 unmanaged; 2 states read") || !strings.Contains(stderr, "workspace prod") {
+	if code != exitOrphans || !strings.Contains(stderr, "4 live, 2 managed, 0 uncertain, 0 ignored, 2 unmanaged\n2 states read") || !strings.Contains(stderr, "workspace prod") {
 		t.Fatalf("broken workspace: exit %d\n%s%s", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "other-prod") || strings.Contains(stdout, "other-default") {
