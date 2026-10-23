@@ -161,8 +161,13 @@ func hasDiscovery(listings, plugins int) bool {
 }
 
 func printSummary(w io.Writer, o *options, s report.Summary) {
-	fmt.Fprintf(w, "\n%d live, %d managed, %d uncertain, %d ignored, %d unmanaged; %d states read, %d resource types queried, %d skipped",
-		s.Live, s.Managed, s.Uncertain, s.Ignored, s.Orphans, s.States, s.Queried, len(s.Skipped))
+	fmt.Fprintln(w)
+	report.Section(w, "Summary")
+	fmt.Fprintf(w, "%d live, %s managed, %s uncertain, %d ignored, %s unmanaged\n",
+		s.Live, report.Accent(w, report.Good, fmt.Sprint(s.Managed)),
+		report.Accent(w, report.Attention, fmt.Sprint(s.Uncertain)), s.Ignored,
+		report.Accent(w, report.Attention, fmt.Sprint(s.Orphans)))
+	fmt.Fprintf(w, "%d states read, %d resource types queried, %d skipped", s.States, s.Queried, len(s.Skipped))
 	if len(s.Skipped) > 0 && !o.verbose {
 		fmt.Fprint(w, " (-v to list)")
 	}
@@ -187,6 +192,11 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 			fmt.Fprintf(w, "  no list resources: %s\n", report.Clean(p))
 		}
 	}
+	hasReasons := slices.ContainsFunc(s.Coverage, func(c report.Coverage) bool { return len(c.ReasonDetails) > 0 })
+	if hasReasons || len(s.Failed) > 0 || len(s.Warnings) > 0 || len(s.Notes) > 0 || s.Uncertain > 0 || len(s.Ownership) > 0 || len(s.InState) > 0 {
+		fmt.Fprintln(w)
+		report.Section(w, "Diagnostics")
+	}
 	printFailed(w, o, s.Failed)
 	links := map[string]bool{}
 	for _, c := range s.Coverage {
@@ -209,8 +219,18 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		if o.adopt || o.format == "summary" {
 			where = "-format json or text lists them"
 		}
-		fmt.Fprintf(w, "warning: %d objects are uncertain (%s): they match state only by ID, so their account, subscription or cluster could not be checked; with states of several accounts or clusters they may be unmanaged. State without resource identity: pass -refresh to read identities without writing anything, or record them with terraform apply -refresh-only and a current provider. Proxmox and plugin results marked unverified: state does not record the cluster; scan one cluster with its own states and pass -proxmox-cluster-states or -plugin-cluster-states.\n", s.Uncertain, where)
+		fmt.Fprintf(w, "warning: %d objects are uncertain (%s).\n", s.Uncertain, where)
+		fmt.Fprintln(w, "  They match state only by ID; their account, subscription or cluster could not be checked.")
+		fmt.Fprintln(w, "  With states from several accounts or clusters, these objects may be unmanaged.")
+		fmt.Fprintln(w, "  State without resource identity:")
+		fmt.Fprintln(w, "    Pass -refresh to read identities without writing, or record them with")
+		fmt.Fprintln(w, "    terraform apply -refresh-only and a current provider.")
+		fmt.Fprintln(w, "  Proxmox and plugins marked unverified (state does not record the cluster):")
+		fmt.Fprintln(w, "    Scan one cluster with its own states, then pass -proxmox-cluster-states")
+		fmt.Fprintln(w, "    or -plugin-cluster-states.")
 	}
+	fmt.Fprintln(w)
+	report.Section(w, "Coverage")
 	// The last line says whether "nothing unmanaged" can be trusted.
 	// Complete covers what can be listed; say what could not be.
 	var out []string

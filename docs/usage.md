@@ -6,16 +6,31 @@ tforphans                     # same as: tforphans .
 ```
 
 ```
+== Unmanaged resources (2) =================================
 SCOPE                    TYPE           NAME             IDENTITY                                                SOURCE
 account_id 123456789012  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1   .
+
 account_id 123456789012  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...    .
 
-512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged; 1 states read, 187 resource types queried, 58 skipped (-v to list)
+== Summary =================================================
+512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged
+1 states read, 187 resource types queried, 58 skipped (-v to list)
 managed objects matched by identity: 470, by attributes: 28
+
+== Coverage ================================================
 coverage: complete
 ```
 
 (Illustrative output.)
+
+Human-readable output separates findings, totals, diagnostics and coverage
+into labeled blocks. In a terminal, cyan headings mark sections, green marks
+managed counts and complete coverage, yellow marks findings, uncertainty,
+warnings and coverage with exceptions, and red marks errors. Labels remain
+visible without color. Colors are disabled on Windows, for redirected
+streams, `TERM=dumb`, or a nonempty `NO_COLOR` environment variable
+(`NO_COLOR=1 tforphans ...`). JSON, generated queries and import blocks
+contain no presentation codes.
 
 `-max-state-size` limits each state read to 1 GiB by default, including
 `-state` files, stdin and HTTP responses, Terraform and Terragrunt state
@@ -81,8 +96,8 @@ state, its account or cluster confirmed), **uncertain** (matched to state,
 but state cannot say whether the instance is in the same account or
 cluster; see below), **ignored** and **unmanaged**. Uncertain objects are
 not counted as managed and get no import block; the text output lists them
-after the unmanaged ones with the state address they matched. The second
-line says how the managed objects were matched: by the resource identity in
+after the unmanaged ones with the state address they matched. The summary
+also says how the managed objects were matched: by the resource identity in
 state (exact) or by attributes.
 
 `-explain` says for every live object why it landed in its group, after the
