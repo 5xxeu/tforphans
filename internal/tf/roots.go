@@ -265,7 +265,7 @@ func isRoot(dir string) (ok bool, unsure string, err error) {
 			continue
 		}
 		if diags.HasErrors() && unsure == "" {
-			unsure = "configuration could not be read: " + firstError(diags)
+			unsure = "configuration could not be read: " + firstError(diags, filepath.Join(dir, name))
 		}
 		if f == nil {
 			continue
@@ -281,22 +281,19 @@ func isRoot(dir string) (ok bool, unsure string, err error) {
 	return false, unsure, nil
 }
 
-// firstError is the first error of diags with its file and line.
-func firstError(diags hcl.Diagnostics) string {
+// firstError is the first error of diags with its file and line. Detail is
+// left out: parsers quote the offending source there, which may be a secret.
+func firstError(diags hcl.Diagnostics, file string) string {
 	for _, d := range diags {
 		if d.Severity != hcl.DiagError {
 			continue
 		}
-		msg := d.Summary
-		if d.Detail != "" {
-			msg += "; " + d.Detail
-		}
 		if d.Subject != nil {
-			msg = fmt.Sprintf("%s:%d: %s", d.Subject.Filename, d.Subject.Start.Line, msg)
+			return fmt.Sprintf("%s:%d: %s", d.Subject.Filename, d.Subject.Start.Line, d.Summary)
 		}
-		return msg
+		return file + ": " + d.Summary
 	}
-	return diags.Error()
+	return file + ": invalid configuration"
 }
 
 // Initialized reports whether terraform init has run in the module.

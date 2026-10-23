@@ -62,7 +62,9 @@ Child modules without root markers are not selected just because they hold
 options; this command does not infer them.
 
 The default limit is 200 discovered roots, including state-only roots.
-`-max-roots N` changes it; `0` removes the limit. An unreadable or malformed
+`-max-roots N` changes it; `0` removes the limit. A limit given on the command
+line is saved as `max-roots`, which the audit applies to `-state-roots`, and an
+update without the flag keeps the saved one. An unreadable or malformed
 configuration that prevents root discovery causes exit `1` and no config
 write. No configuration found is also an error. Only the selected directory
 trees are searched; init cannot infer states in other checkouts or services.
@@ -100,8 +102,11 @@ An existing `.tforphans.yaml` is preserved unless `-update` is given.
 Without new directory arguments, an update reuses the existing `state-roots`,
 falling back to `roots`, then `.` if neither is set. Explicit directory
 arguments replace this selection. Updating replaces `roots` and `state-roots`
-with the discovered query roots and chosen search trees. All other keys and
-comments are preserved; YAML formatting may change. YAML aliases are expanded
+with the discovered query roots and chosen search trees; previous roots not
+found again are listed as `Removed from roots` (pass them as DIR to keep them).
+All other keys and
+comments are preserved, including a file of comments only; YAML formatting may
+change. YAML aliases are expanded
 before editing so that other settings keep their previous values. Existing filters such as
 `types` and `exclude-types` continue to apply. Init does not validate every
 saved audit flag; doctor checks the resulting configuration.

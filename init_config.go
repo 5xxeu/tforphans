@@ -30,7 +30,9 @@ func initExisting(update bool) ([]byte, os.FileInfo, error) {
 	return raw, info, err
 }
 
-func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, error) {
+// maxRoots is saved when given: the audit applies the same limit to
+// -state-roots.
+func initConfig(old []byte, roots, dirs, scans []string, setScan bool, maxRoots *int) ([]byte, error) {
 	var doc yaml.Node
 	var comments []byte
 	if len(old) > 0 {
@@ -65,7 +67,7 @@ func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, 
 	if body.Kind != yaml.MappingNode {
 		return nil, errors.New("existing config must be a YAML mapping")
 	}
-	put := func(key string, values []string) error {
+	paths := func(values []string) []string {
 		values = slices.Clone(values)
 		for i, v := range values {
 			// The loader expands ~/ to the home directory.
@@ -73,8 +75,11 @@ func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, 
 				values[i] = "./" + v
 			}
 		}
+		return values
+	}
+	put := func(key string, v any) error {
 		var value yaml.Node
-		if err := value.Encode(values); err != nil {
+		if err := value.Encode(v); err != nil {
 			return err
 		}
 		for i := 0; i < len(body.Content); i += 2 {
@@ -88,14 +93,19 @@ func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, 
 		body.Content = append(body.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &value)
 		return nil
 	}
-	if err := put("roots", roots); err != nil {
+	if err := put("roots", paths(roots)); err != nil {
 		return nil, err
 	}
-	if err := put("state-roots", dirs); err != nil {
+	if err := put("state-roots", paths(dirs)); err != nil {
 		return nil, err
 	}
 	if setScan {
 		if err := put("scan", scans); err != nil {
+			return nil, err
+		}
+	}
+	if maxRoots != nil {
+		if err := put("max-roots", *maxRoots); err != nil {
 			return nil, err
 		}
 	}
@@ -164,6 +174,23 @@ func writeInitConfig(data, old []byte, previous os.FileInfo) error {
 		return errors.New("config changed during discovery; retry init -update")
 	}
 	return os.Rename(f.Name(), defaultConfigFile)
+}
+
+// initPreviousMaxRoots is the limit an updated config already sets.
+func initPreviousMaxRoots(raw []byte) (int, bool, error) {
+	var config map[string]any
+	if err := yaml.Unmarshal(raw, &config); err != nil {
+		return 0, false, errors.New("existing config must be a YAML mapping with unique keys")
+	}
+	value, ok := config["max-roots"]
+	if !ok {
+		return 0, false, nil
+	}
+	n, ok := value.(int)
+	if !ok || n < 0 {
+		return 0, false, errors.New("existing config: max-roots must be a non-negative integer")
+	}
+	return n, true, nil
 }
 
 // Reuse the selected trees when updating; the caller can change them by

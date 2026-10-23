@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -43,6 +44,7 @@ Flags:
 type initOptions struct {
 	update, dryRun bool
 	maxRoots       int
+	maxRootsSet    bool
 	scans          listFlag
 	dirs           []string
 }
@@ -54,7 +56,7 @@ func runInit(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	var o initOptions
 	fs.BoolVar(&o.update, "update", false, "refresh roots under the previous search directories, preserving other settings")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "show discovery and the proposed config without writing it")
-	fs.IntVar(&o.maxRoots, "max-roots", 200, "maximum discovered root modules (0: no limit)")
+	fs.IntVar(&o.maxRoots, "max-roots", 200, "maximum discovered root modules (0: no limit); saved in the config when given")
 	fs.Var(&o.scans, "scan", "explicitly enable an adapter in the saved config: cloudflare, proxmox; repeatable")
 	args := commandArgs(fs, argv)
 	var flags []string
@@ -71,6 +73,7 @@ func runInit(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		}
 		return exitError
 	}
+	fs.Visit(func(f *flag.Flag) { o.maxRootsSet = o.maxRootsSet || f.Name == "max-roots" })
 	if err := prepareInit(ctx, o, report.WithColor(stdout, colorEnabled(stdout))); err != nil {
 		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return exitError
@@ -81,6 +84,10 @@ func runInit(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	if o.maxRoots < 0 {
 		return errors.New("-max-roots must be non-negative")
+	}
+	var saveMaxRoots *int
+	if o.maxRootsSet {
+		saveMaxRoots = &o.maxRoots
 	}
 	scans := o.scans.csv()
 	for _, name := range scans {
@@ -93,6 +100,13 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	old, info, err := initExisting(o.update)
 	if err != nil {
 		return err
+	}
+	if len(old) > 0 && !o.maxRootsSet {
+		if n, ok, err := initPreviousMaxRoots(old); err != nil {
+			return err
+		} else if ok {
+			o.maxRoots = n
+		}
 	}
 	if len(o.dirs) == 0 && len(old) > 0 {
 		o.dirs, err = initPreviousDirs(old)
@@ -172,7 +186,7 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	if len(queryRoots) == 0 {
 		return errors.New("no Terraform configuration found; pass a root directory explicitly, or use -scan/-plugin for a provider without a root")
 	}
-	config, err := initConfig(old, queryRoots, dirs, scans, o.scans != nil)
+	config, err := initConfig(old, queryRoots, dirs, scans, o.scans != nil, saveMaxRoots)
 	if err != nil {
 		return err
 	}
@@ -180,6 +194,9 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	fmt.Fprintf(w, "Found %d Terraform roots under %s\n", len(queryRoots), report.Clean(strings.Join(dirs, ", ")))
 	for _, root := range stateOnly {
 		fmt.Fprintf(w, "State source: %s (no Terraform configuration; included through state-roots)\n", report.Clean(root))
+	}
+	for _, root := range initRemovedRoots(old, queryRoots, stateOnly) {
+		fmt.Fprintf(w, "%s %s (not found under the selected directories; pass it as DIR to keep it)\n", report.Accent(w, report.Attention, "Removed from roots:"), report.Clean(root))
 	}
 	var saved map[string]any
 	if err := yaml.Unmarshal(config, &saved); err != nil {
@@ -250,6 +267,28 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	report.Section(w, "Result")
 	fmt.Fprintf(w, "%s %s\nNext: tforphans doctor\nThen: tforphans\n", report.Accent(w, report.Good, action), defaultConfigFile)
 	return nil
+}
+
+// initRemovedRoots are roots of the updated config that discovery did not
+// select again, so that a narrower search does not drop them silently.
+func initRemovedRoots(old []byte, roots, stateOnly []string) []string {
+	var config map[string]any
+	if yaml.Unmarshal(old, &config) != nil {
+		return nil
+	}
+	previous, _ := configValues(config["roots"])
+	var removed []string
+	for _, root := range previous {
+		if rel, err := inside(configPath("", root), false); err == nil {
+			root = rel
+		} else {
+			root = filepath.Clean(root)
+		}
+		if !slices.Contains(roots, root) && !slices.Contains(stateOnly, root) && !slices.Contains(removed, root) {
+			removed = append(removed, root)
+		}
+	}
+	return removed
 }
 
 func initDirArg(dir string) string {

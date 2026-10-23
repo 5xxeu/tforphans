@@ -422,3 +422,43 @@ func TestInitSavesTildeDirectoryAsRelative(t *testing.T) {
 		t.Fatalf("update: %d\n%s%s", code, out, stderr)
 	}
 }
+
+func TestInitSavesExplicitMaxRoots(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, dir := range []string{"a", "b", "c"} {
+		initFixture(t, dir+"/main.tf", `terraform {
+ backend "local" {}
+}`)
+	}
+	if code, _, stderr := invokeInit(t, "-max-roots", "2"); code != 1 || !strings.Contains(stderr, "more than 2 roots") {
+		t.Fatalf("%d %q", code, stderr)
+	}
+	if code, out, stderr := invokeInit(t, "-max-roots", "5"); code != 0 {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+	if o, err := parseFlags(nil, &bytes.Buffer{}); err != nil || o.maxRoots != 5 {
+		t.Fatalf("config parsed as %+v %v", o, err)
+	}
+	// The saved limit applies to the update as well.
+	initFixture(t, defaultConfigFile, "max-roots: 2\nroots: [a]\n")
+	if code, _, stderr := invokeInit(t, "-update", "."); code != 1 || !strings.Contains(stderr, "more than 2 roots") {
+		t.Fatalf("%d %q", code, stderr)
+	}
+	if code, out, stderr := invokeInit(t, "-update", "-dry-run"); code != 0 || !strings.Contains(out, "max-roots: 2\n") {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+}
+
+func TestInitUpdateReportsRemovedRoots(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, dir := range []string{"prod", "states/dev"} {
+		initFixture(t, dir+"/main.tf", `terraform {
+ backend "local" {}
+}`)
+	}
+	initFixture(t, defaultConfigFile, "roots: [prod, ./states/dev]\nstate-roots: [states]\n")
+	code, out, stderr := invokeInit(t, "-update")
+	if code != 0 || !strings.Contains(out, "Removed from roots: prod (") || strings.Contains(out, "Removed from roots: states") {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+}
