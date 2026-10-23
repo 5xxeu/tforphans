@@ -87,6 +87,20 @@ GitHub (`-scan github`), then plugins for Helm and Kubernetes.
    terraform plan -generate-config-out=generated.tf
    ```
 
+For a repository with several roots, create a reusable configuration first:
+
+```sh
+cd infrastructure
+tforphans init
+tforphans doctor
+tforphans
+```
+
+`init` discovers roots, provider versions, aliases and backend types from local
+files and writes `.tforphans.yaml`. It works before Terraform is installed or
+initialized and prints any setup steps needed. See [initialization](docs/init.md)
+for selection rules, `-dry-run`, `-update` and explicit scan adapters.
+
 Check readiness before scanning with `tforphans doctor` (see
 [diagnostics](docs/doctor.md)). Exit 0 means ready in the selected scope,
 not that no orphans exist or that a future scan will succeed.

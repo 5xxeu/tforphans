@@ -1,5 +1,9 @@
 # Readiness diagnostics
 
+For a first audit, [`tforphans init`](init.md) can discover roots and save
+`.tforphans.yaml` before running doctor. Init itself reads local files only;
+doctor performs the readiness checks described below.
+
 Run `tforphans doctor` before an audit, with the same roots and scope flags:
 
 ```sh

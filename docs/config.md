@@ -1,5 +1,9 @@
 # Config File
 
+Use [`tforphans init`](init.md) to discover local roots and create this file,
+or write it by hand. `tforphans init -update` refreshes discovered paths while
+preserving other settings and comments.
+
 Flags can live in `.tforphans.yaml` in the current directory, so that a run
 needs no long command line. Keys are flag names without the dash; a list
 repeats a flag; `roots` lists the root modules:

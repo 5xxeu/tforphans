@@ -3,6 +3,7 @@
 - [How it works](how-it-works.md): listing, reading states, matching by resource identity or attributes, `-refresh`
 - [Output, exit status and coverage](usage.md): the four groups of objects, failure causes, the coverage line, progress
 - [JSON output](json.md): fields, coverage rows, `schema_version`
+- [Initialize an audit](init.md): `tforphans init`, root discovery and config updates
 - [Readiness diagnostics](doctor.md): `tforphans doctor`, offline and identity checks
 - [Config file](config.md): `.tforphans.yaml`, `-config`, what a file may set
 - [Roots, modules and states](roots-and-states.md): child modules, `-state-roots`, `-state`, workspaces, Terragrunt
