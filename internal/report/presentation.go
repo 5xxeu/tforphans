@@ -31,7 +31,7 @@ func WithColor(w io.Writer, enabled bool) io.Writer {
 
 // Accent leaves plain writers unchanged.
 func Accent(w io.Writer, tone Tone, text string) string {
-	if _, ok := w.(*colorWriter); !ok || text == "" {
+	if _, ok := w.(*colorWriter); !ok || text == "" || tone == "" {
 		return text
 	}
 	return "\x1b[" + string(tone) + "m" + text + "\x1b[0m"
@@ -41,6 +41,7 @@ func Accent(w io.Writer, tone Tone, text string) string {
 // timing. Data in the message is already sanitized by the caller.
 func (w *colorWriter) Write(p []byte) (int, error) {
 	s := string(p)
+	opening, prefix := 0, 0
 	for _, label := range []struct {
 		prefix string
 		tone   Tone
@@ -50,18 +51,20 @@ func (w *colorWriter) Write(p []byte) (int, error) {
 		{"coverage: complete", Good},
 	} {
 		if strings.HasPrefix(s, label.prefix) {
+			opening, prefix = len("\x1b["+string(label.tone)+"m"), len(label.prefix)
 			s = Accent(w, label.tone, label.prefix) + s[len(label.prefix):]
 			break
 		}
 	}
 	n, err := io.WriteString(w.Writer, s)
-	if err != nil {
-		return 0, err
+	if n < len(s) && err == nil {
+		err = io.ErrShortWrite
 	}
-	if n != len(s) {
-		return 0, io.ErrShortWrite
+	if opening > 0 {
+		// Report consumed input bytes, excluding the inserted SGR sequences.
+		n = min(max(n-opening, 0), prefix) + max(n-opening-prefix-len("\x1b[0m"), 0)
 	}
-	return len(p), nil
+	return n, err
 }
 
 // Section separates report blocks in both terminal output and plain logs.

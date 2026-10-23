@@ -192,7 +192,8 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 			fmt.Fprintf(w, "  no list resources: %s\n", report.Clean(p))
 		}
 	}
-	if len(s.Failed) > 0 || len(s.Warnings) > 0 || len(s.Notes) > 0 || s.Uncertain > 0 || len(s.Ownership) > 0 || len(s.InState) > 0 {
+	hasReasons := slices.ContainsFunc(s.Coverage, func(c report.Coverage) bool { return len(c.ReasonDetails) > 0 })
+	if hasReasons || len(s.Failed) > 0 || len(s.Warnings) > 0 || len(s.Notes) > 0 || s.Uncertain > 0 || len(s.Ownership) > 0 || len(s.InState) > 0 {
 		fmt.Fprintln(w)
 		report.Section(w, "Diagnostics")
 	}

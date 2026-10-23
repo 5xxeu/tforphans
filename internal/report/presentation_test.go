@@ -75,3 +75,35 @@ func TestPresentationWriteFailure(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+type presentationLimitedWriter struct {
+	limit int
+	err   error
+}
+
+func (w presentationLimitedWriter) Write(p []byte) (int, error) { return min(len(p), w.limit), w.err }
+
+func TestPresentationReportsConsumedInput(t *testing.T) {
+	for _, tc := range []struct {
+		name, text  string
+		limit, want int
+		failure     error
+	}{
+		{"plain partial", "hello", 2, 2, nil},
+		{"inside opening color", "warning: partial", 3, 0, nil},
+		{"inside label", "warning: partial", 10, 3, nil},
+		{"inside reset", "warning: partial", 17, 8, nil},
+		{"inside message", "warning: partial", 22, 11, io.ErrClosedPipe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, err := WithColor(presentationLimitedWriter{tc.limit, tc.failure}, true).Write([]byte(tc.text))
+			wantErr := tc.failure
+			if wantErr == nil {
+				wantErr = io.ErrShortWrite
+			}
+			if n != tc.want || !errors.Is(err, wantErr) {
+				t.Fatalf("got %d, %v; want %d, %v", n, err, tc.want, wantErr)
+			}
+		})
+	}
+}
