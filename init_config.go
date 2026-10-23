@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -159,6 +160,13 @@ func writeInitConfig(data, old []byte, previous os.FileInfo) error {
 	if err != nil {
 		return err
 	}
+	// Another init -update could replace the file between the check and
+	// the rename below.
+	unlock, err := lockInitConfig()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	current, err := os.Lstat(defaultConfigFile)
 	if err != nil {
 		return err
@@ -176,6 +184,32 @@ func writeInitConfig(data, old []byte, previous os.FileInfo) error {
 	return os.Rename(f.Name(), defaultConfigFile)
 }
 
+// initLockFile is held while an update checks and replaces the config.
+const initLockFile = defaultConfigFile + ".lock"
+
+// lockInitConfig takes the lock or fails at once: the section it guards is
+// short, so a lock that is there belongs to a running init or is left by
+// one that was killed. A stale lock is not removed automatically, since two
+// processes removing it could each take the lock.
+func lockInitConfig() (func(), error) {
+	f, err := os.OpenFile(initLockFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if os.IsExist(err) {
+		return nil, fmt.Errorf("%s exists: another tforphans init is updating the config; remove the file if none is running", initLockFile)
+	}
+	if err != nil {
+		return nil, err
+	}
+	_, err = fmt.Fprintf(f, "%d\n", os.Getpid())
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(initLockFile)
+		return nil, err
+	}
+	return func() { os.Remove(initLockFile) }, nil
+}
+
 // initPreviousMaxRoots is the limit an updated config already sets.
 func initPreviousMaxRoots(raw []byte) (int, bool, error) {
 	var config map[string]any
@@ -186,8 +220,18 @@ func initPreviousMaxRoots(raw []byte) (int, bool, error) {
 	if !ok {
 		return 0, false, nil
 	}
-	n, ok := value.(int)
-	if !ok || n < 0 {
+	// Parsed as the audit reads the file: "5" and 0x10 count as well.
+	vals, err := configValues(value)
+	limit := flag.NewFlagSet("", flag.ContinueOnError)
+	limit.SetOutput(io.Discard)
+	var n int
+	limit.IntVar(&n, "max-roots", 0, "")
+	for _, v := range vals {
+		if err == nil {
+			err = limit.Set("max-roots", v)
+		}
+	}
+	if err != nil || len(vals) == 0 || n < 0 {
 		return 0, false, errors.New("existing config: max-roots must be a non-negative integer")
 	}
 	return n, true, nil

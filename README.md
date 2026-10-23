@@ -116,6 +116,8 @@ tforphans -scan cloudflare -state-roots ~/work/cloudflare
 
 - [Quick Start](#quick-start), [Why](#why), [Features](#features), [When Not to Use It](#when-not-to-use-it), [Install](#install), [Requirements](#requirements)
 - [How it works](docs/how-it-works.md): listing, reading states, matching by identity or attributes, `-refresh`
+- [Initialize an audit](docs/init.md): `tforphans init`, root discovery and config updates
+- [Readiness diagnostics](docs/doctor.md): `tforphans doctor`, offline and identity checks
 - [Output, exit status and coverage](docs/usage.md), [JSON output](docs/json.md), [config file](docs/config.md)
 - [Roots, modules and states](docs/roots-and-states.md): `-state-roots`, `-state`, workspaces, Terragrunt
 - [Regions, zones and other list arguments](docs/list-arguments.md): `-arg`, `zone=auto`, your own list blocks, `-types`
@@ -146,6 +148,7 @@ the findings to tools that do.
 - 🔎 **No Provider Knowledge to Maintain**: Resource types come from the providers' own list resources, so coverage follows provider releases.
 - 🗂 **Every State Counts**: `-state-roots` finds and reads every root module and workspace in a tree, through any backend Terraform supports; Terragrunt units too.
 - 🪪 **Exact Matching**: Resource identity from state (Terraform 1.12+), checked against the provider that listed the object; older state is matched by attributes, and a match that cannot confirm the account or cluster is reported as uncertain, not as managed.
+- 🧭 **Setup and Readiness**: `tforphans init` finds the roots of a repository and writes `.tforphans.yaml` from local files only; `tforphans doctor` checks Terraform, provider schemas, states and list arguments before the first audit and prints the next command to run.
 - ✅ **Honest Coverage**: The last line says whether "nothing unmanaged" can be trusted, with every failed listing, unread state and skipped type counted; `-strict` turns gaps into a failed CI job.
 - 📥 **Adoption**: `tforphans adopt` writes `import` blocks for `terraform plan -generate-config-out`, with addresses that never collide with existing ones.
 - 🧹 **Little Noise**: Objects the cloud creates on its own (default security groups, GKE nodes, managed rulesets) are hidden by default presets that go only by marks users cannot set; an ignore file covers the rest.
@@ -233,7 +236,10 @@ stdout and stderr, SIGTERM and SIGINT with plugin children, and (with
 temporary file in the root. `testdata/golden` holds JSON reports of a fixed
 state and plugin output; after an intended change of the format, rewrite
 them with `TFORPHANS_UPDATE_GOLDEN=1 go test -run TestGoldenJSON .` and
-review the diff. Every key of these reports must be described in
+review the diff. `coverage-incomplete.json` pins the coverage of a run with a
+failed listing and a type that needs an argument, reason codes included; it
+needs Terraform (`TFORPHANS_UPDATE_GOLDEN=1 go test -tags integration -run
+TestIntegrationGoldenIncompleteCoverage .`). Every key of these reports must be described in
 `docs/json.md`.
 
 Fuzz targets check that plugin output always becomes import blocks that

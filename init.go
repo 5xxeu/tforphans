@@ -195,8 +195,11 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	for _, root := range stateOnly {
 		fmt.Fprintf(w, "State source: %s (no Terraform configuration; included through state-roots)\n", report.Clean(root))
 	}
-	for _, root := range initRemovedRoots(old, queryRoots, stateOnly) {
+	for _, root := range initRemoved(old, "roots", queryRoots, stateOnly) {
 		fmt.Fprintf(w, "%s %s (not found under the selected directories; pass it as DIR to keep it)\n", report.Accent(w, report.Attention, "Removed from roots:"), report.Clean(root))
+	}
+	for _, dir := range initRemoved(old, "state-roots", dirs) {
+		fmt.Fprintf(w, "%s %s (not among the given directories; pass it as DIR to keep it)\n", report.Accent(w, report.Attention, "Removed from state-roots:"), report.Clean(dir))
 	}
 	var saved map[string]any
 	if err := yaml.Unmarshal(config, &saved); err != nil {
@@ -269,23 +272,23 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	return nil
 }
 
-// initRemovedRoots are roots of the updated config that discovery did not
-// select again, so that a narrower search does not drop them silently.
-func initRemovedRoots(old []byte, roots, stateOnly []string) []string {
+// initRemoved are paths under key of the updated config that the update
+// does not keep, so that a narrower search does not drop them silently.
+func initRemoved(old []byte, key string, kept ...[]string) []string {
 	var config map[string]any
 	if yaml.Unmarshal(old, &config) != nil {
 		return nil
 	}
-	previous, _ := configValues(config["roots"])
+	previous, _ := configValues(config[key])
 	var removed []string
-	for _, root := range previous {
-		if rel, err := inside(configPath("", root), false); err == nil {
-			root = rel
+	for _, p := range previous {
+		if rel, err := inside(configPath("", p), false); err == nil {
+			p = rel
 		} else {
-			root = filepath.Clean(root)
+			p = filepath.Clean(p)
 		}
-		if !slices.Contains(roots, root) && !slices.Contains(stateOnly, root) && !slices.Contains(removed, root) {
-			removed = append(removed, root)
+		if !slices.ContainsFunc(kept, func(paths []string) bool { return slices.Contains(paths, p) }) && !slices.Contains(removed, p) {
+			removed = append(removed, p)
 		}
 	}
 	return removed

@@ -1,0 +1,43 @@
+[
+  {
+    "type": "fake_thing",
+    "status": "incomplete",
+    "reasons": [
+      "permission denied"
+    ],
+    "reason_details": [
+      {
+        "reason_code": "permission_denied",
+        "action": "grant_permission",
+        "reason": "permission denied"
+      }
+    ],
+    "live": 0,
+    "managed": 0,
+    "uncertain": 0,
+    "ignored": 0,
+    "orphans": 0
+  },
+  {
+    "type": "fake_zoned",
+    "scope": "root .",
+    "status": "incomplete",
+    "reasons": [
+      "skipped: list config requires zone"
+    ],
+    "reason_details": [
+      {
+        "reason_code": "missing_argument",
+        "missing_keys": [
+          "zone"
+        ],
+        "reason": "skipped: list config requires zone"
+      }
+    ],
+    "live": 0,
+    "managed": 0,
+    "uncertain": 0,
+    "ignored": 0,
+    "orphans": 0
+  }
+]

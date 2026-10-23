@@ -31,7 +31,7 @@ func WithColor(w io.Writer, enabled bool) io.Writer {
 
 // Accent leaves plain writers unchanged.
 func Accent(w io.Writer, tone Tone, text string) string {
-	if _, ok := w.(*colorWriter); !ok || text == "" || tone == "" {
+	if !colored(w) || text == "" || tone == "" {
 		return text
 	}
 	return "\x1b[" + string(tone) + "m" + text + "\x1b[0m"
@@ -75,9 +75,48 @@ func (w *colorWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func colored(w io.Writer) bool {
+	switch w := w.(type) {
+	case *colorWriter:
+		return true
+	case *lazySection:
+		return colored(w.w)
+	}
+	return false
+}
+
 // Section separates report blocks in both terminal output and plain logs.
 func Section(w io.Writer, title string) {
-	fmt.Fprintln(w, Accent(w, Heading, "== "+title+" "+strings.Repeat("=", max(1, 56-len(title)))))
+	fmt.Fprintln(w, SectionLine(w, title))
+}
+
+// SectionLine is the heading Section prints, for callers that check the
+// write.
+func SectionLine(w io.Writer, title string) string {
+	return Accent(w, Heading, "== "+title+" "+strings.Repeat("=", max(1, 56-len(title))))
+}
+
+// LazySection prints a blank line and the section heading before the first
+// write, so that a block with nothing to say has no heading and nothing
+// written there goes without one.
+func LazySection(w io.Writer, title string) io.Writer {
+	return &lazySection{w: w, title: title}
+}
+
+type lazySection struct {
+	w       io.Writer
+	title   string
+	started bool
+}
+
+func (s *lazySection) Write(p []byte) (int, error) {
+	if !s.started {
+		s.started = true
+		if _, err := fmt.Fprint(s.w, "\n"+SectionLine(s.w, s.title)+"\n"); err != nil {
+			return 0, err
+		}
+	}
+	return s.w.Write(p)
 }
 
 // writeTable adds accents after tab expansion, so ANSI codes never alter the

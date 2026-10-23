@@ -24,7 +24,9 @@ coverage: complete
 (Illustrative output.)
 
 Human-readable output separates findings, totals, diagnostics and coverage
-into labeled blocks. In a terminal, cyan headings mark sections, green marks
+into labeled blocks; `Baseline` (with `-baseline`) and `Result scopes`
+(with `-v`) come before `Coverage`, which stays last. A block with nothing
+to report has no heading. In a terminal, cyan headings mark sections, green marks
 managed counts and complete coverage, yellow marks findings, uncertainty,
 warnings and coverage with exceptions, and red marks errors. Labels remain
 visible without color. Colors are disabled on Windows, for redirected
@@ -156,7 +158,8 @@ tforphans -baseline baseline.json -strict
 
 With `-baseline FILE`, exit `2` means new orphans exist. Known orphans stay
 in JSON, marked `"baseline": "known"`, and are hidden in text output.
-A summary line counts new, known, resolved and not verified findings.
+A line in the `Baseline` block, before `Coverage`, counts new, known,
+resolved and not verified findings (`-v` lists the not verified ones).
 `-strict` still exits `1` for incomplete coverage or uncertain matches,
 even when every orphan is known. `adopt` does not accept `-baseline`.
 An automatic `.tforphans.yaml` may set `baseline: baseline.json`, with the

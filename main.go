@@ -854,7 +854,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	switch {
 	case o.adopt && len(sum.UnreadStates) > 0 && !o.allowIncomplete:
-		printSummary(stderr, o, sum)
+		if err := printSummary(stderr, o, sum, nil); err != nil {
+			return err
+		}
 		var roots []string
 		for _, u := range sum.UnreadStates {
 			roots = append(roots, u.Root)
@@ -919,30 +921,37 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Complete = false
 		sum.DiscoveryComplete = false
 	}
-	printSummary(stderr, o, sum)
-	if baseline != nil {
-		why := "their type or scope was not fully listed this run"
-		if baseline.EnvironmentChanged {
-			why = "the baseline is from another environment"
-		}
-		resolved := ""
-		if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
-			resolved = " (" + parts + ")"
-		}
-		if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
-			why = "now uncertain"
-		} else if n > 0 {
-			why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
-		}
-		fmt.Fprintf(stderr, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
-		if o.verbose {
-			if err := report.PrintFindings(stderr, baseline.UnverifiedFindings, 8); err != nil {
-				return err
+	details := func(w io.Writer) error {
+		if baseline != nil {
+			why := "their type or scope was not fully listed this run"
+			if baseline.EnvironmentChanged {
+				why = "the baseline is from another environment"
+			}
+			resolved := ""
+			if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
+				resolved = " (" + parts + ")"
+			}
+			if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
+				why = "now uncertain"
+			} else if n > 0 {
+				why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
+			}
+			fmt.Fprintln(w)
+			report.Section(w, "Baseline")
+			fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
+			if o.verbose {
+				if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
+					return err
+				}
 			}
 		}
+		if o.verbose {
+			printScopes(w, scopes)
+		}
+		return nil
 	}
-	if o.verbose {
-		printScopes(stderr, scopes)
+	if err := printSummary(stderr, o, sum, details); err != nil {
+		return err
 	}
 	if nothingChecked(o, sum) {
 		msg := "no resource types were queried, so nothing could be found"

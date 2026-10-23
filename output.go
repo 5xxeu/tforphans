@@ -125,6 +125,7 @@ func scopeName(identity map[string]any) string {
 // credentials from the environment, a root can list another project than
 // the one its configuration manages.
 func printScopes(w io.Writer, live []model.Resource) {
+	w = report.LazySection(w, "Result scopes")
 	seen := map[string]map[string]bool{}
 	var sources []string
 	for _, r := range live {
@@ -160,7 +161,10 @@ func hasDiscovery(listings, plugins int) bool {
 	return listings != 0 || plugins != 0
 }
 
-func printSummary(w io.Writer, o *options, s report.Summary) {
+// printSummary writes the report to stderr: summary, diagnostics, the
+// blocks details adds, and coverage last. Only the error of details is
+// returned; the report itself does not fail a run on a closed stderr.
+func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Writer) error) error {
 	fmt.Fprintln(w)
 	report.Section(w, "Summary")
 	fmt.Fprintf(w, "%d live, %s managed, %s uncertain, %d ignored, %s unmanaged\n",
@@ -192,42 +196,12 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 			fmt.Fprintf(w, "  no list resources: %s\n", report.Clean(p))
 		}
 	}
-	hasReasons := slices.ContainsFunc(s.Coverage, func(c report.Coverage) bool { return len(c.ReasonDetails) > 0 })
-	if hasReasons || len(s.Failed) > 0 || len(s.Warnings) > 0 || len(s.Notes) > 0 || s.Uncertain > 0 || len(s.Ownership) > 0 || len(s.InState) > 0 {
-		fmt.Fprintln(w)
-		report.Section(w, "Diagnostics")
-	}
-	printFailed(w, o, s.Failed)
-	links := map[string]bool{}
-	for _, c := range s.Coverage {
-		for _, d := range c.ReasonDetails {
-			if !links[d.ReasonCode] {
-				links[d.ReasonCode] = true
-				fmt.Fprintf(w, "  reason %s: %s\n", d.ReasonCode, model.ReasonLink(d.ReasonCode))
-			}
+	printDiagnostics(report.LazySection(w, "Diagnostics"), o, s)
+	if details != nil {
+		// Before coverage, which stays the last line.
+		if err := details(w); err != nil {
+			return err
 		}
-	}
-	printOwnership(w, s.Ownership, s.InState)
-	for _, msg := range s.Warnings {
-		fmt.Fprintln(w, "warning:", report.Clean(msg))
-	}
-	for _, msg := range s.Notes {
-		fmt.Fprintln(w, "note:", report.Clean(msg))
-	}
-	if s.Uncertain > 0 {
-		where := "they are listed in the output"
-		if o.adopt || o.format == "summary" {
-			where = "-format json or text lists them"
-		}
-		fmt.Fprintf(w, "warning: %d objects are uncertain (%s).\n", s.Uncertain, where)
-		fmt.Fprintln(w, "  They match state only by ID; their account, subscription or cluster could not be checked.")
-		fmt.Fprintln(w, "  With states from several accounts or clusters, these objects may be unmanaged.")
-		fmt.Fprintln(w, "  State without resource identity:")
-		fmt.Fprintln(w, "    Pass -refresh to read identities without writing, or record them with")
-		fmt.Fprintln(w, "    terraform apply -refresh-only and a current provider.")
-		fmt.Fprintln(w, "  Proxmox and plugins marked unverified (state does not record the cluster):")
-		fmt.Fprintln(w, "    Scan one cluster with its own states, then pass -proxmox-cluster-states")
-		fmt.Fprintln(w, "    or -plugin-cluster-states.")
 	}
 	fmt.Fprintln(w)
 	report.Section(w, "Coverage")
@@ -262,10 +236,10 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		}
 		if len(beyond) == 0 {
 			fmt.Fprintln(w, "coverage: complete")
-			return
+			return nil
 		}
 		fmt.Fprintf(w, "coverage: complete for what can be listed; not checked: %s (-v lists them)\n", strings.Join(beyond, ", "))
-		return
+		return nil
 	}
 	var gaps []string
 	failed := 0
@@ -304,6 +278,44 @@ func printSummary(w io.Writer, o *options, s report.Summary) {
 		effect += ", and objects of unread states may show as unmanaged"
 	}
 	fmt.Fprintf(w, "coverage: INCOMPLETE (%s): %s; -strict makes this exit 1\n", strings.Join(gaps, ", "), effect)
+	return nil
+}
+
+// printDiagnostics writes to a section that gets its heading on the first
+// line, so a new kind of diagnostic cannot end up under the summary.
+func printDiagnostics(w io.Writer, o *options, s report.Summary) {
+	printFailed(w, o, s.Failed)
+	links := map[string]bool{}
+	for _, c := range s.Coverage {
+		for _, d := range c.ReasonDetails {
+			if !links[d.ReasonCode] {
+				links[d.ReasonCode] = true
+				fmt.Fprintf(w, "  reason %s: %s\n", d.ReasonCode, model.ReasonLink(d.ReasonCode))
+			}
+		}
+	}
+	printOwnership(w, s.Ownership, s.InState)
+	for _, msg := range s.Warnings {
+		fmt.Fprintln(w, "warning:", report.Clean(msg))
+	}
+	for _, msg := range s.Notes {
+		fmt.Fprintln(w, "note:", report.Clean(msg))
+	}
+	if s.Uncertain > 0 {
+		where := "they are listed in the output"
+		if o.adopt || o.format == "summary" {
+			where = "-format json or text lists them"
+		}
+		fmt.Fprintf(w, "warning: %d objects are uncertain (%s).\n", s.Uncertain, where)
+		fmt.Fprintln(w, "  They match state only by ID; their account, subscription or cluster could not be checked.")
+		fmt.Fprintln(w, "  With states from several accounts or clusters, these objects may be unmanaged.")
+		fmt.Fprintln(w, "  State without resource identity:")
+		fmt.Fprintln(w, "    Pass -refresh to read identities without writing, or record them with")
+		fmt.Fprintln(w, "    terraform apply -refresh-only and a current provider.")
+		fmt.Fprintln(w, "  Proxmox and plugins marked unverified (state does not record the cluster):")
+		fmt.Fprintln(w, "    Scan one cluster with its own states, then pass -proxmox-cluster-states")
+		fmt.Fprintln(w, "    or -plugin-cluster-states.")
+	}
 }
 
 // printFailed prints the queries that did not list everything: each one

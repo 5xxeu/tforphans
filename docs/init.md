@@ -103,7 +103,10 @@ Without new directory arguments, an update reuses the existing `state-roots`,
 falling back to `roots`, then `.` if neither is set. Explicit directory
 arguments replace this selection. Updating replaces `roots` and `state-roots`
 with the discovered query roots and chosen search trees; previous roots not
-found again are listed as `Removed from roots` (pass them as DIR to keep them).
+found again are listed as `Removed from roots`, and search trees that explicit
+directory arguments leave out as `Removed from state-roots` (pass them as DIR
+to keep them). A saved `max-roots` is read as the audit reads it, so `"5"`
+counts as 5.
 All other keys and
 comments are preserved, including a file of comments only; YAML formatting may
 change. YAML aliases are expanded
@@ -116,6 +119,10 @@ existing file still needs `-update -dry-run` to preview its update. Config
 symlinks and non-regular files are refused for updates. The replacement is
 prepared beside the config, retains its permissions, and is renamed into
 place only after checking the original has not changed during discovery.
+The check and the rename run under `.tforphans.yaml.lock`, so that two
+updates at the same time cannot both pass the check; the second one fails
+and can be repeated. A lock left by a killed init is not removed
+automatically: delete it when no init is running.
 
 Output is grouped into sections (`Terraform roots`, `Scan adapters`, `Not
 checked`, the proposed file or `Result`) and colored in a terminal under the
