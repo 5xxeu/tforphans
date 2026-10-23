@@ -41,6 +41,9 @@ func TestPresentationPreservesColumns(t *testing.T) {
 	if first < 0 || first != second {
 		t.Fatalf("group spacing broke columns:\n%s", plain.String())
 	}
+	if !strings.Contains(plain.String(), "\n\na_much") {
+		t.Fatalf("group separator is not an empty line:\n%q", plain.String())
+	}
 	if !strings.Contains(colored.String(), "\x1b[1;36m") {
 		t.Fatal("missing heading accent")
 	}
@@ -58,11 +61,19 @@ func TestPresentationDiagnosticsAndCoverage(t *testing.T) {
 		}
 	}
 	b.Reset()
-	if err := writeTable(w, "TYPE  COVERAGE\nx     incomplete\ny     complete\n"); err != nil {
+	if err := writeTable(w, "TYPE  COVERAGE\nx     incomplete\ny     complete\n", true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(b.String(), "\x1b[1;33mincomplete\x1b[0m") || !strings.Contains(b.String(), "\x1b[32mcomplete\x1b[0m") {
 		t.Fatal(b.String())
+	}
+	// Findings may end with these words or start with "total ": data, not labels.
+	b.Reset()
+	if err := writeTable(w, "SCOPE        SOURCE\ntotal cost   complete\n", false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(b.String(), "\x1b[") != 2 {
+		t.Fatalf("data rows were styled: %q", b.String())
 	}
 }
 

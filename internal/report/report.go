@@ -697,7 +697,7 @@ func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summa
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	return writeTable(w, table.String())
+	return writeTable(w, table.String(), true)
 }
 
 // Text prints the unmanaged objects, then those that may be managed.
@@ -730,7 +730,7 @@ func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 		if err := tw.Flush(); err != nil {
 			return err
 		}
-		if err := writeTable(w, table.String()); err != nil {
+		if err := writeTable(w, table.String(), false); err != nil {
 			return err
 		}
 	}
@@ -750,7 +750,7 @@ func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	return writeTable(w, table.String())
+	return writeTable(w, table.String(), false)
 }
 
 func JSON(w io.Writer, orphans []model.Resource, uncertain []Uncertain, s Summary, baseline ...*Baseline) error {
@@ -814,7 +814,7 @@ func ExplainText(w io.Writer, es []Explanation) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	return writeTable(w, table.String())
+	return writeTable(w, table.String(), false)
 }
 
 // SchemaVersion of the JSON output. It goes up when a field is removed or

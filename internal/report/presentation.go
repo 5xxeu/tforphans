@@ -73,15 +73,19 @@ func Section(w io.Writer, title string) {
 }
 
 // writeTable adds accents after tab expansion, so ANSI codes never alter the
-// column widths. Only generated headers, totals and coverage labels are styled.
-func writeTable(w io.Writer, text string) error {
+// column widths. Only generated headers, totals and coverage labels are styled;
+// totals and coverage only in count tables, where the first column is a type or
+// scope and the last one is coverage. Separator rows lose their padding.
+func writeTable(w io.Writer, text string, counts bool) error {
 	for i, line := range strings.SplitAfter(text, "\n") {
 		if line == "" {
 			continue
 		}
-		if i == 0 || strings.HasPrefix(strings.TrimSpace(line), "total ") {
+		if strings.TrimSpace(line) == "" {
+			line = "\n"
+		} else if i == 0 || counts && strings.HasPrefix(strings.TrimSpace(line), "total ") {
 			line = Accent(w, Heading, strings.TrimSuffix(line, "\n")) + "\n"
-		} else {
+		} else if counts {
 			// Summary tables carry coverage in their final column.
 			trimmed := strings.TrimRight(line, " \n")
 			for _, status := range []struct {
