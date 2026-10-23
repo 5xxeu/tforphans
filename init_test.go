@@ -329,6 +329,21 @@ func TestInitColorsOnlyLabels(t *testing.T) {
 	}
 }
 
+func TestInitPreviewSpellsOutFormatCharacters(t *testing.T) {
+	t.Chdir(t.TempDir())
+	initFixture(t, "a\u202eb/main.tf", `terraform {
+ backend "local" {}
+}`)
+	initFixture(t, defaultConfigFile, "# note \u202e\nroots: [old]\n")
+	code, out, stderr := invokeInit(t, "-update", "-dry-run", "a\u202eb")
+	if code != 0 {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+	if strings.ContainsAny(out, "\u202e\x1b") || !strings.Contains(out, `a\u202Eb`) {
+		t.Fatalf("unsafe preview: %q", out)
+	}
+}
+
 func TestInitDoesNotPrintControlSequencesInPaths(t *testing.T) {
 	t.Chdir(t.TempDir())
 	dir := "tenant \x1b[31m"

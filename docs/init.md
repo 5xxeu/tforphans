@@ -115,7 +115,8 @@ place only after checking the original has not changed during discovery.
 Output is grouped into sections (`Terraform roots`, `Scan adapters`, `Not
 checked`, the proposed file or `Result`) and colored in a terminal under the
 same rules as the audit report (see [output](usage.md)). The saved file
-contains no color codes.
+contains no color codes; the `-dry-run` preview spells out control and format
+characters from directory names and comments (`\u202E`).
 
 Exit status is `0` when the file or preview is prepared, `1` on invalid input,
 incomplete discovery or a write error. `-h` shows help and exits `0`.

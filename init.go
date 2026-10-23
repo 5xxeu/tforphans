@@ -232,7 +232,8 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	if o.dryRun {
 		fmt.Fprintln(w)
 		report.Section(w, "Proposed "+defaultConfigFile+" (not written)")
-		_, err = w.Write(config)
+		// The preview may carry names and comments from the repository.
+		_, err = io.WriteString(w, report.CleanLines(string(config)))
 		return err
 	}
 	if err := ctx.Err(); err != nil {
