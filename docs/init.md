@@ -121,4 +121,7 @@ characters from directory names and comments (`\u202E`).
 Exit status is `0` when the file or preview is prepared, `1` on invalid input,
 incomplete discovery or a write error. `-h` shows help and exits `0`.
 
+`init` as the first argument is the command: audit a root directory named
+`init` with `tforphans ./init` or `tforphans -- init`.
+
 [Back to the README](../README.md) · [All guides](README.md)

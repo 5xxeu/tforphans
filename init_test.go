@@ -362,3 +362,63 @@ func TestInitDoesNotPrintControlSequencesInPaths(t *testing.T) {
 		t.Fatalf("saved path changed: %+v %v", o, err)
 	}
 }
+
+func TestInitUpdateKeepsCommentOnlyConfig(t *testing.T) {
+	t.Chdir(t.TempDir())
+	initFixture(t, "infra/main.tf", `terraform {
+ backend "local" {}
+}`)
+	initFixture(t, defaultConfigFile, "# shared audit settings")
+	if code, out, stderr := invokeInit(t, "-update", "infra"); code != 0 {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+	raw, _ := os.ReadFile(defaultConfigFile)
+	if !strings.HasPrefix(string(raw), "# shared audit settings\n") {
+		t.Fatalf("comment lost:\n%s", raw)
+	}
+	o, err := parseFlags(nil, &bytes.Buffer{})
+	if err != nil || !slices.Equal(o.roots, []string{"infra"}) {
+		t.Fatalf("config parsed as %+v %v", o, err)
+	}
+}
+
+func TestInitUpdateRejectsRecursiveAlias(t *testing.T) {
+	t.Chdir(t.TempDir())
+	initFixture(t, "infra/main.tf", `terraform {
+ backend "local" {}
+}`)
+	for _, text := range []string{
+		"roots: [infra]\n<<: &defaults\n  roots: *defaults\n",
+		"a: &a [x, x, x, x, x, x, x, x, x, x]\nb: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]\nc: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]\n" +
+			"d: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c, *c]\ne: &e [*d, *d, *d, *d, *d, *d, *d, *d, *d, *d]\nf: &f [*e, *e, *e, *e, *e, *e, *e, *e, *e, *e]\n",
+	} {
+		initFixture(t, defaultConfigFile, text)
+		code, _, stderr := invokeInit(t, "-update", "infra")
+		if code != 1 || !strings.Contains(stderr, "existing config") {
+			t.Fatalf("%d %q", code, stderr)
+		}
+	}
+}
+
+func TestInitSavesTildeDirectoryAsRelative(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	initFixture(t, "~/env/main.tf", `terraform {
+ backend "local" {}
+}`)
+	if code, out, stderr := invokeInit(t, "./~/env"); code != 0 {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+	raw, _ := os.ReadFile(defaultConfigFile)
+	if !strings.Contains(string(raw), "- ./~/env") || strings.Contains(string(raw), "- ~/env") {
+		t.Fatalf("saved as\n%s", raw)
+	}
+	// Resolved inside the current directory, not under HOME.
+	o, err := parseFlags(nil, &bytes.Buffer{})
+	if err != nil || !slices.Equal(o.roots, []string{"~/env"}) || !slices.Equal(o.stateRoots, []string{"~/env"}) {
+		t.Fatalf("config parsed as %+v %v", o, err)
+	}
+	if code, out, stderr := invokeInit(t, "-update"); code != 0 {
+		t.Fatalf("update: %d\n%s%s", code, out, stderr)
+	}
+}

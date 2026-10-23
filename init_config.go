@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -30,22 +32,31 @@ func initExisting(update bool) ([]byte, os.FileInfo, error) {
 
 func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, error) {
 	var doc yaml.Node
+	var comments []byte
 	if len(old) > 0 {
 		decoder := yaml.NewDecoder(bytes.NewReader(old))
-		if err := decoder.Decode(&doc); err != nil {
+		switch err := decoder.Decode(&doc); {
+		case err == io.EOF:
+			// A file with only comments has no document to carry them.
+			comments = old
+		case err != nil:
 			return nil, errors.New("existing config is not valid YAML")
+		default:
+			var extra yaml.Node
+			if err := decoder.Decode(&extra); err != io.EOF {
+				return nil, errors.New("existing config must contain exactly one YAML document")
+			}
+			var values map[string]any
+			if err := doc.Decode(&values); err != nil {
+				return nil, errors.New("existing config must be a mapping with unique keys")
+			}
+			// Materialize aliases before changing paths. Otherwise an unrelated
+			// setting referring to an anchored roots value would change with it.
+			var err error
+			if doc, err = initWithoutAliases(&doc); err != nil {
+				return nil, err
+			}
 		}
-		var extra yaml.Node
-		if err := decoder.Decode(&extra); err != io.EOF {
-			return nil, errors.New("existing config must contain exactly one YAML document")
-		}
-		var values map[string]any
-		if err := doc.Decode(&values); err != nil {
-			return nil, errors.New("existing config must be a mapping with unique keys")
-		}
-		// Materialize aliases before changing paths. Otherwise an unrelated
-		// setting referring to an anchored roots value would change with it.
-		doc = initWithoutAliases(&doc)
 	}
 	if len(doc.Content) == 0 || doc.Content[0].Tag == "!!null" {
 		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
@@ -55,6 +66,13 @@ func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, 
 		return nil, errors.New("existing config must be a YAML mapping")
 	}
 	put := func(key string, values []string) error {
+		values = slices.Clone(values)
+		for i, v := range values {
+			// The loader expands ~/ to the home directory.
+			if strings.HasPrefix(v, "~/") {
+				values[i] = "./" + v
+			}
+		}
 		var value yaml.Node
 		if err := value.Encode(values); err != nil {
 			return err
@@ -85,6 +103,10 @@ func initConfig(old []byte, roots, dirs, scans []string, setScan bool) ([]byte, 
 		doc.HeadComment = "Terraform roots selected by tforphans init.\nRun tforphans doctor to check providers and access before auditing."
 	}
 	var output bytes.Buffer
+	output.Write(comments)
+	if len(comments) > 0 && comments[len(comments)-1] != '\n' {
+		output.WriteByte('\n')
+	}
 	encoder := yaml.NewEncoder(&output)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(&doc); err != nil {
@@ -166,9 +188,34 @@ func initPreviousDirs(raw []byte) ([]string, error) {
 	return nil, nil
 }
 
-func initWithoutAliases(node *yaml.Node) yaml.Node {
+// initMaxNodes bounds alias expansion: a short file can refer to the same
+// anchor many times over.
+const initMaxNodes = 1_000_000
+
+type initExpand struct {
+	active map[*yaml.Node]bool
+	nodes  int
+}
+
+func initWithoutAliases(node *yaml.Node) (yaml.Node, error) {
+	e := initExpand{active: map[*yaml.Node]bool{}}
+	return e.node(node)
+}
+
+func (e *initExpand) node(node *yaml.Node) (yaml.Node, error) {
+	if e.active[node] {
+		return yaml.Node{}, errors.New("existing config contains a recursive alias")
+	}
+	if e.nodes++; e.nodes > initMaxNodes {
+		return yaml.Node{}, errors.New("existing config expands to too many values")
+	}
+	e.active[node] = true
+	defer delete(e.active, node)
 	if node.Kind == yaml.AliasNode {
-		out := initWithoutAliases(node.Alias)
+		out, err := e.node(node.Alias)
+		if err != nil {
+			return out, err
+		}
 		if node.HeadComment != "" {
 			out.HeadComment = node.HeadComment
 		}
@@ -178,14 +225,17 @@ func initWithoutAliases(node *yaml.Node) yaml.Node {
 		if node.FootComment != "" {
 			out.FootComment = node.FootComment
 		}
-		return out
+		return out, nil
 	}
 	out := *node
 	out.Anchor = ""
 	out.Content = make([]*yaml.Node, len(node.Content))
 	for i, child := range node.Content {
-		copy := initWithoutAliases(child)
-		out.Content[i] = &copy
+		c, err := e.node(child)
+		if err != nil {
+			return out, err
+		}
+		out.Content[i] = &c
 	}
-	return out
+	return out, nil
 }
