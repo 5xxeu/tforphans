@@ -71,7 +71,7 @@ func runInit(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		}
 		return exitError
 	}
-	if err := prepareInit(ctx, o, stdout); err != nil {
+	if err := prepareInit(ctx, o, report.WithColor(stdout, colorEnabled(stdout))); err != nil {
 		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return exitError
 	}
@@ -128,6 +128,7 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 		}
 		if len(unread) > 0 {
 			// Do not write a partial selection that would look complete next time.
+			report.Section(w, "Discovery incomplete")
 			for _, u := range unread {
 				fmt.Fprintf(w, "Not checked: %s (%s)\n", report.Clean(u.Path), report.Clean(u.Reason))
 			}
@@ -151,14 +152,14 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	}
 	slices.Sort(roots)
 	slices.Sort(dirs)
-	var queryRoots []string
+	var queryRoots, stateOnly []string
 	var details []initRoot
 	for _, root := range roots {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if !tf.HasConfig(root) {
-			fmt.Fprintf(w, "State source: %s (no Terraform configuration; included through state-roots)\n", report.Clean(root))
+			stateOnly = append(stateOnly, root)
 			continue
 		}
 		detail, err := inspectInitRoot(root)
@@ -175,7 +176,11 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	report.Section(w, "Terraform roots")
 	fmt.Fprintf(w, "Found %d Terraform roots under %s\n", len(queryRoots), report.Clean(strings.Join(dirs, ", ")))
+	for _, root := range stateOnly {
+		fmt.Fprintf(w, "State source: %s (no Terraform configuration; included through state-roots)\n", report.Clean(root))
+	}
 	var saved map[string]any
 	if err := yaml.Unmarshal(config, &saved); err != nil {
 		return err
@@ -185,7 +190,7 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	for _, d := range details {
 		fmt.Fprintf(w, "\n  %s: backend %s\n", report.Clean(d.Dir), report.Clean(d.Backend))
 		if !d.Initialized {
-			fmt.Fprintf(w, "    Setup needed: terraform -chdir=%s init\n", initDirArg(d.Dir))
+			fmt.Fprintf(w, "    %s terraform -chdir=%s init\n", report.Accent(w, report.Attention, "Setup needed:"), initDirArg(d.Dir))
 		}
 		for _, p := range d.Providers {
 			version := "not locked"
@@ -204,20 +209,29 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 			}
 		}
 	}
+	adapters := false
 	for _, name := range slices.Sorted(maps.Keys(suggested)) {
 		if !slices.Contains(enabled, name) {
-			fmt.Fprintf(w, "\nAdapter available: -scan %s (credentials from the environment).\n", name)
-			fmt.Fprintf(w, "Enable it explicitly: tforphans init -update -scan %s --", name)
+			if !adapters {
+				fmt.Fprintln(w)
+				report.Section(w, "Scan adapters")
+				adapters = true
+			}
+			fmt.Fprintf(w, "Adapter available: -scan %s (credentials from the environment).\n", name)
+			fmt.Fprintf(w, "  Enable it explicitly: tforphans init -update -scan %s --", name)
 			for _, dir := range dirs {
 				fmt.Fprintf(w, " %s", initDirArg(dir))
 			}
 			fmt.Fprintln(w)
 		}
 	}
-	fmt.Fprintln(w, "\nProvider listing capabilities, credentials and cloud scopes have not been checked.")
+	fmt.Fprintln(w)
+	report.Section(w, "Not checked")
+	fmt.Fprintln(w, "Provider listing capabilities, credentials and cloud scopes have not been checked.")
 	fmt.Fprintln(w, "Only states under the selected directories are included; add other state sources if needed.")
 	if o.dryRun {
-		fmt.Fprintf(w, "\nProposed %s (not written):\n", defaultConfigFile)
+		fmt.Fprintln(w)
+		report.Section(w, "Proposed "+defaultConfigFile+" (not written)")
 		_, err = w.Write(config)
 		return err
 	}
@@ -231,7 +245,9 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	if info != nil {
 		action = "Updated"
 	}
-	fmt.Fprintf(w, "\n%s %s\nNext: tforphans doctor\nThen: tforphans\n", action, defaultConfigFile)
+	fmt.Fprintln(w)
+	report.Section(w, "Result")
+	fmt.Fprintf(w, "%s %s\nNext: tforphans doctor\nThen: tforphans\n", report.Accent(w, report.Good, action), defaultConfigFile)
 	return nil
 }
 

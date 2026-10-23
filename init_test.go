@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/5xxeu/tforphans/internal/report"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -75,7 +76,7 @@ provider "cloudflare" { api_token = "provider-secret" }
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
 	}
-	for _, want := range []string{"Found 3 Terraform roots", "backend s3", "backend http", "aws.prod", "cloudflare/cloudflare 5.0.0", "State source: state-only", "Adapter available: -scan cloudflare", "tforphans doctor"} {
+	for _, want := range []string{"Found 3 Terraform roots", "backend s3", "backend http", "aws.prod", "cloudflare/cloudflare 5.0.0", "State source: state-only", "Adapter available: -scan cloudflare", "tforphans doctor", "== Terraform roots ", "== Scan adapters ", "== Not checked ", "== Result "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
@@ -305,6 +306,26 @@ func TestInitUpdateKeepsAliasedSettings(t *testing.T) {
 	o, err := parseFlags(nil, &bytes.Buffer{})
 	if err != nil || !o.exclude.Match("old") || o.exclude.Match("infra") || !slices.Equal(o.roots, []string{"infra"}) {
 		t.Fatalf("unrelated alias value changed: %+v %v", o, err)
+	}
+}
+
+func TestInitColorsOnlyLabels(t *testing.T) {
+	t.Chdir(t.TempDir())
+	initFixture(t, "infra/main.tf", `terraform {
+ backend "local" {}
+}`)
+	var out bytes.Buffer
+	if err := prepareInit(t.Context(), initOptions{dirs: []string{"infra"}, maxRoots: 200}, report.WithColor(&out, true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\x1b[1;36m== Terraform roots ", "\x1b[1;33mSetup needed:\x1b[0m terraform -chdir=infra init", "\x1b[32mCreated\x1b[0m .tforphans.yaml"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q:\n%q", want, out.String())
+		}
+	}
+	raw, _ := os.ReadFile(defaultConfigFile)
+	if bytes.Contains(raw, []byte("\x1b")) {
+		t.Fatal("colors written to the config")
 	}
 }
 
