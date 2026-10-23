@@ -803,7 +803,7 @@ func ExplainText(w io.Writer, es []Explanation) error {
 		return nil
 	}
 	fmt.Fprintln(w)
-	Section(w, "Why (-explain):")
+	Section(w, "Why (-explain)")
 	var table bytes.Buffer
 	tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "STATUS\tTYPE\tNAME\tIDENTITY\tWHY")

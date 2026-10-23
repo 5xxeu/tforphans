@@ -149,7 +149,7 @@ func TestBinaryExplain(t *testing.T) {
 	}
 	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"kept"}}' '{"type":"vault_policy","identity":{"id":"kept","namespace":"ns"},"display_name":"other"}'`
 	code, stdout, stderr := runBinary(t, dir, "-no-config", "-no-query", "-state", "state.json", "-plugin", plugin, "-explain")
-	if code != exitOrphans || !strings.Contains(stdout, "Why (-explain):") ||
+	if code != exitOrphans || !strings.Contains(stdout, "== Why (-explain) ") ||
 		!regexp.MustCompile(`managed +vault_policy +id=kept +vault_policy.p in state.json, by resource identity`).MatchString(stdout) ||
 		!regexp.MustCompile(`unmanaged +vault_policy +other +id=kept, namespace=ns +closest: vault_policy.p in state.json: its identity has no namespace`).MatchString(stdout) {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)

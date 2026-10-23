@@ -2,10 +2,11 @@ package main
 
 import (
 	"bytes"
-	"github.com/5xxeu/tforphans/internal/model"
-	"github.com/5xxeu/tforphans/internal/report"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/model"
+	"github.com/5xxeu/tforphans/internal/report"
 )
 
 func TestRedirectedColorDisabled(t *testing.T) {
