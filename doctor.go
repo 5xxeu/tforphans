@@ -346,7 +346,13 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.add("root.config", "ok", "root configuration parsed", root, "")
 	}
 	if !r.Initialized() {
-		d.add("root.initialized", "warning", "Terraform data directory is missing: "+tf.DataDir(root), root, init)
+		// Relative to the root, so that the same warning in many roots
+		// is printed once.
+		dir := tf.DataDir(root)
+		if rel, err := filepath.Rel(root, dir); err == nil && filepath.IsLocal(rel) {
+			dir = rel
+		}
+		d.add("root.initialized", "warning", "Terraform data directory is missing: "+dir, root, init)
 	} else {
 		d.add("root.initialized", "ok", "Terraform data directory exists (provider schemas and state access are checked separately)", root, "")
 	}

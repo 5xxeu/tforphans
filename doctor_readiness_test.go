@@ -128,8 +128,8 @@ func TestDoctorTextGroupsProblems(t *testing.T) {
 	d := doctorReport{Status: "needs_configuration", NextCommand: []string{"tforphans", "-state-roots", "stacks"}}
 	d.add("config", "ok", "command line and config parsed", "", "")
 	d.add("discovery", "failed", "0 list queries, 0 scan blocks, 0 plugins selected", "", "Add -scan cloudflare")
-	d.add("root.initialized", "warning", "Terraform data directory is missing", "stacks/a", "terraform -chdir="+shellQuote("stacks/a")+" init")
-	d.add("root.initialized", "warning", "Terraform data directory is missing", "stacks/b", "terraform -chdir="+shellQuote("stacks/b")+" init")
+	d.add("root.initialized", "warning", "Terraform data directory is missing: .terraform", "stacks/a", "terraform -chdir="+shellQuote("stacks/a")+" init")
+	d.add("root.initialized", "warning", "Terraform data directory is missing: .terraform", "stacks/b", "terraform -chdir="+shellQuote("stacks/b")+" init")
 	d.add("states.read", "failed", "0 of 1 states read", "", "")
 	var b bytes.Buffer
 	if err := d.write(&b, "text"); err != nil {

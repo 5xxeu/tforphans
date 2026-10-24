@@ -567,6 +567,7 @@ func TestClassify(t *testing.T) {
 		// Bodies that do not name the product stay denied.
 		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/addressing/regional_hostnames": 403 Forbidden { "errors": [ { "code": 1002, "message": "forbidden" } ] }`, FailDenied},
 		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/spectrum/apps": 403 Forbidden { "errors": [ { "code": 10007, "message": "Forbidden." } ] }`, FailDenied},
+		{"permission denied: missing permission entitlements.list", FailDenied},
 	} {
 		f := Failure{Message: c.msg}
 		f.Classify()

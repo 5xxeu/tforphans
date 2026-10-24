@@ -75,7 +75,7 @@ func (f *Failure) Classify() {
 	// says so (Cloudflare: "entitlement is required", "dex.api.entitlements.
 	// missing", "feature not enabled", "No quota has been allocated"):
 	// granting a permission would not help. A bare 403 stays denied.
-	case has("entitle", "feature not enabled", "no quota has been allocated", "you can purchase it"):
+	case has("entitlement is required", "entitlements.missing", "not entitled", "feature not enabled", "no quota has been allocated", "you can purchase it"):
 		f.Category = FailRejected
 	case has("service_disabled", "has not been used in project", "api has not been enabled", "it is disabled. enable it"):
 		f.Category = FailAPIOff
