@@ -713,8 +713,9 @@ func orphanTable(w io.Writer, orphans []model.Resource) error {
 	scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
 	if oneSource && orphans[0].Source != "" {
 		by := Clean(orphans[0].Source)
-		if orphans[0].ListAddress != "" {
-			// Listed by terraform query: the source is the root directory.
+		if strings.HasPrefix(orphans[0].ListAddress, "list.") {
+			// Listed by terraform query: the source is the root directory;
+			// -scan results have data source addresses.
 			by = "terraform query in " + by
 		}
 		fmt.Fprintf(w, "All found by %s.\n", by)

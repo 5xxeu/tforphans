@@ -149,3 +149,21 @@ func TestOrphanTableScopes(t *testing.T) {
 		t.Errorf("shared key or source repeated:\n%s", out)
 	}
 }
+
+// TestOrphanTableSourceKind: only list block results are named as found
+// by terraform query; a -scan result has a data source address.
+func TestOrphanTableSourceKind(t *testing.T) {
+	for _, c := range []struct{ source, address, want string }{
+		{".", "list.aws_instance.tfo_aws_aws_instance", "All found by terraform query in ..\n"},
+		{"-scan cloudflare", `data.cloudflare_zones.all`, "All found by -scan cloudflare.\n"},
+		{"plugin1", "", "All found by plugin1.\n"},
+	} {
+		var b bytes.Buffer
+		if err := Text(&b, []model.Resource{{Type: "t", Source: c.source, ListAddress: c.address, Identity: map[string]any{"id": "1"}}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), c.want) {
+			t.Errorf("%s: %s", c.source, &b)
+		}
+	}
+}
