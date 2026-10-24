@@ -151,6 +151,14 @@ func TestDoctorTextGroupsProblems(t *testing.T) {
 	if strings.Contains(out, "OK ") || strings.Count(out, "root.initialized") != 1 {
 		t.Errorf("passed or duplicate checks listed:\n%s", out)
 	}
+	d.recheck = []string{"-check-auth"}
+	b.Reset()
+	if err := d.write(&b, "text"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "  tforphans doctor -check-auth -state-roots stacks\n") {
+		t.Errorf("recheck lost -check-auth:\n%s", &b)
+	}
 	d.verbose = true
 	b.Reset()
 	if err := d.write(&b, "text"); err != nil {

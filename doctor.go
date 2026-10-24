@@ -87,6 +87,8 @@ type doctorReport struct {
 	providers     []string
 	argFixes      []doctorArgFix
 	verbose       bool
+	// recheck are the doctor-only flags the next doctor run repeats.
+	recheck []string
 }
 
 type doctorArgFix struct {
@@ -264,6 +266,12 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.add("run", "failed", "diagnostics interrupted or overall timeout exceeded", "", "Increase -timeout or retry")
 	}
 	d.NextCommand = doctorNext(doctorConfiguredArgs(o, d.fixes), d.fixes)
+	if o.offline {
+		d.recheck = append(d.recheck, "-offline")
+	}
+	if o.checkAuth {
+		d.recheck = append(d.recheck, "-check-auth")
+	}
 	code := d.result(o.offline)
 	if err := d.write(report.WithColor(stdout, colorEnabled(stdout)), o.format); err != nil {
 		fmt.Fprintln(stderr, "error:", report.Clean(err.Error()))
@@ -804,7 +812,7 @@ func (d doctorReport) write(w io.Writer, format string) error {
 	if failed {
 		// An audit now would fail or miss what the problems hide: check
 		// again with the suggested flags first.
-		recheck := slices.Insert(slices.Clone(parts), 1, "doctor")
+		recheck := slices.Insert(slices.Clone(parts), 1, append([]string{"doctor"}, d.recheck...)...)
 		fmt.Fprintln(ew, "Fix the problems above in order, then check again:\n  "+strings.Join(recheck, " "))
 	} else {
 		fmt.Fprintln(ew, "Next run:\n  "+strings.Join(parts, " "))

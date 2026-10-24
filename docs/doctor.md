@@ -131,7 +131,7 @@ outcome in several roots is printed once with the list of roots, and a root
 in its fix becomes `<root>`. Passed and skipped checks are listed only with
 `-v`, which prints every check in the order it ran. The last block, `Next`,
 proposes the audit command when nothing failed, and otherwise the same
-command as `tforphans doctor ...` to check again after the fixes: an audit
+command as `tforphans doctor ...` (keeping `-offline` and `-check-auth`) to check again after the fixes: an audit
 started with failed checks would fail or miss what they hide. JSON
 `next_command` is always the audit command; run it only when `status` is
 `ready`.
