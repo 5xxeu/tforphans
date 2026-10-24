@@ -700,6 +700,125 @@ func countTable(w io.Writer, title string, counts map[string]*TypeCount, s Summa
 	return writeTable(w, table.String(), true)
 }
 
+// scopeIdentityKeys name the account or zone in an identity. Within a scope
+// heading that names their value, rows leave them out.
+var scopeIdentityKeys = []string{"account_id", "zone_id", "project", "subscription_id"}
+
+// orphanTable prints one block per scope, in the order given (sorted by
+// scope): a heading with the scope and the identity keys every row of it
+// shares, then its rows without them; types are separated by a blank row.
+// A source shared by all rows is said once instead of in a column.
+func orphanTable(w io.Writer, orphans []model.Resource) error {
+	oneSource := !slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.Source != orphans[0].Source })
+	scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
+	if oneSource && orphans[0].Source != "" {
+		by := Clean(orphans[0].Source)
+		if orphans[0].ListAddress != "" {
+			// Listed by terraform query: the source is the root directory.
+			by = "terraform query in " + by
+		}
+		fmt.Fprintf(w, "All found by %s.\n", by)
+	}
+	var table bytes.Buffer
+	tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
+	columns := "TYPE\tNAME\tIDENTITY"
+	if !oneSource {
+		columns += "\tSOURCE"
+	}
+	fmt.Fprintln(tw, columns)
+	separator := strings.Repeat("\t", strings.Count(columns, "\t"))
+	headings := map[int]string{}
+	line := 1
+	for start := 0; start < len(orphans); {
+		end := start + 1
+		for end < len(orphans) && orphans[end].ScopeName == orphans[start].ScopeName {
+			end++
+		}
+		group := orphans[start:end]
+		// Without a heading nothing would say the keys left out.
+		var shared map[string]string
+		if scoped {
+			shared = sharedScopeKeys(group)
+		}
+		if start > 0 {
+			fmt.Fprintln(tw, separator)
+			line++
+		}
+		if scoped {
+			name := group[0].ScopeName
+			if name == "" {
+				name = "no scope"
+			}
+			var keys []string
+			for _, k := range slices.Sorted(maps.Keys(shared)) {
+				keys = append(keys, k+"="+shared[k])
+			}
+			if len(keys) > 0 {
+				name += " (" + strings.Join(keys, ", ") + ")"
+			}
+			headings[line] = fmt.Sprintf("%s: %d", Clean(name), len(group))
+		}
+		for i, r := range group {
+			if i > 0 && r.Type != group[i-1].Type {
+				fmt.Fprintln(tw, separator)
+				line++
+			}
+			rest := model.Resource{Identity: maps.Clone(r.Identity)}
+			for k, v := range shared {
+				if c, ok := model.Canonical(rest.Identity[k]); ok && c == v {
+					delete(rest.Identity, k)
+				}
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s", Clean(r.Type), Clean(r.DisplayName), Clean(rest.IdentityString()))
+			if !oneSource {
+				fmt.Fprintf(tw, "\t%s", Clean(r.Source))
+			}
+			fmt.Fprintln(tw)
+			line++
+		}
+		start = end
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	var out strings.Builder
+	for i, l := range strings.SplitAfter(table.String(), "\n") {
+		if h, ok := headings[i]; ok {
+			out.WriteString(Accent(w, Heading, h) + "\n")
+		}
+		if strings.TrimSpace(l) != "" {
+			l = "  " + l
+		}
+		out.WriteString(l)
+	}
+	return writeTable(w, out.String(), false)
+}
+
+// sharedScopeKeys are the scope keys whose value is the same in every row
+// that has them, and that some row has.
+func sharedScopeKeys(rs []model.Resource) map[string]string {
+	shared := map[string]string{}
+	for _, k := range scopeIdentityKeys {
+		value, ok := "", true
+		for _, r := range rs {
+			raw, present := r.Identity[k]
+			if !present {
+				continue
+			}
+			c, scalar := model.Canonical(raw)
+			if !scalar || c == "" || value != "" && c != value {
+				ok = false
+				break
+			}
+			value = c
+		}
+		if ok && value != "" {
+			shared[k] = value
+		}
+	}
+	return shared
+}
+
 // Text prints the unmanaged objects, then those that may be managed.
 func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 	if len(orphans) == 0 {
@@ -712,30 +831,7 @@ func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
 		fmt.Fprintln(w, Accent(w, tone, "No unmanaged resources found."))
 	} else {
 		Section(w, fmt.Sprintf("Unmanaged resources (%d)", len(orphans)))
-		scoped := slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.ScopeName != "" })
-		var table bytes.Buffer
-		tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
-		if scoped {
-			fmt.Fprint(tw, "SCOPE\t")
-		}
-		fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE")
-		for i, r := range orphans {
-			if i > 0 && (r.ScopeName != orphans[i-1].ScopeName || r.Type != orphans[i-1].Type) {
-				tabs := 3
-				if scoped {
-					tabs++
-				}
-				fmt.Fprintln(tw, strings.Repeat("\t", tabs))
-			}
-			if scoped {
-				fmt.Fprintf(tw, "%s\t", Clean(r.ScopeName))
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", Clean(r.Type), Clean(r.DisplayName), Clean(r.IdentityString()), Clean(r.Source))
-		}
-		if err := tw.Flush(); err != nil {
-			return err
-		}
-		if err := writeTable(w, table.String(), false); err != nil {
+		if err := orphanTable(w, orphans); err != nil {
 			return err
 		}
 	}

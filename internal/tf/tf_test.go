@@ -557,6 +557,16 @@ func TestClassify(t *testing.T) {
 		{"unexpected resource configure type: Expected *cloudflare.Client, got: *cloudflare.Client. Please report this issue to the provider developers.", FailProvider},
 		{"RFC3339 ValueRFC3339Time Error: RFC3339 string value is null", FailProvider},
 		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/custom_certificates": 400 Bad Request`, FailRejected},
+		// Products the account does not have: 403 with a body that says so.
+		{"failed to make http request: GET \"https://api.cloudflare.com/client/v4/accounts/a/custom_csrs\": 403 Forbidden {\n \"errors\": [ { \"code\": 1404, \"message\": \"Access to CSRs has not been granted for this zone. Advanced Certificate Manager or Custom CSR with SSL for SaaS entitlement is\n required.\" } ] }", FailRejected},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/custom_hostnames": 403 Forbidden { "errors": [ { "code": 1404, "message": "No quota has been allocated for this zone or for this account." } ] }`, FailRejected},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/accounts/a/magic/sites": 403 Forbidden { "errors": [ { "code": 1101, "message": "forbidden: feature not enabled" } ] }`, FailRejected},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/accounts/a/dls/regional_services/prefix_bindings": 403 Forbidden { "errors": [ { "code": 1101, "message": "forbidden: account not entitled for regional services for BYOIP" } ] }`, FailRejected},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/accounts/a/workers/dispatch/namespaces": 403 Forbidden { "errors": [ { "code": 10121, "message": "You do not have access to dispatch namespaces. You can purchase it within the Cloudflare dashboard" } ] }`, FailRejected},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/accounts/a/dex/devices/dex_tests": 403 Forbidden { "errors": [ { "code": 11007, "message": "dex.api.entitlements.missing" } ] }`, FailRejected},
+		// Bodies that do not name the product stay denied.
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/addressing/regional_hostnames": 403 Forbidden { "errors": [ { "code": 1002, "message": "forbidden" } ] }`, FailDenied},
+		{`failed to make http request: GET "https://api.cloudflare.com/client/v4/zones/z/spectrum/apps": 403 Forbidden { "errors": [ { "code": 10007, "message": "Forbidden." } ] }`, FailDenied},
 	} {
 		f := Failure{Message: c.msg}
 		f.Classify()

@@ -20,16 +20,23 @@ func TestRedirectedColorDisabled(t *testing.T) {
 }
 
 func TestSummarySeparatesGapReasons(t *testing.T) {
-	var b bytes.Buffer
-	printSummary(&b, &options{}, report.Summary{Coverage: []report.Coverage{{
+	s := report.Summary{Coverage: []report.Coverage{{
 		Type: "demo_resource", Status: report.Incomplete,
 		Reasons:       []string{report.GapPrefix + "missing argument"},
 		ReasonDetails: []report.CoverageReason{{ReasonDetails: model.Reason("missing_argument")}},
-	}}}, nil)
+	}}}
+	var b bytes.Buffer
+	printSummary(&b, &options{verbose: true}, s, nil)
 	text := b.String()
 	header, reason := strings.Index(text, "== Diagnostics "), strings.Index(text, "  reason missing_argument:")
 	if header < 0 || reason < header {
 		t.Fatalf("gap reasons have no section:\n%s", text)
+	}
+	// Without -v the codes stay in JSON: no line of links per code.
+	b.Reset()
+	printSummary(&b, &options{}, s, nil)
+	if strings.Contains(b.String(), "reasons.md") {
+		t.Fatalf("reason links without -v:\n%s", b.String())
 	}
 }
 

@@ -6,12 +6,6 @@ tforphans                     # same as: tforphans .
 ```
 
 ```
-== Unmanaged resources (2) =================================
-SCOPE                    TYPE           NAME             IDENTITY                                                SOURCE
-account_id 123456789012  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1   .
-
-account_id 123456789012  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...    .
-
 == Summary =================================================
 512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged
 1 states read, 187 resource types queried, 58 skipped (-v to list)
@@ -19,13 +13,27 @@ managed objects matched by identity: 470, by attributes: 28
 
 == Coverage ================================================
 coverage: complete
+
+== Unmanaged resources (2) =================================
+All found by terraform query in ..
+  TYPE           NAME             IDENTITY
+  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1
+
+  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...
 ```
 
 (Illustrative output.)
 
-Human-readable output separates findings, totals, diagnostics and coverage
-into labeled blocks; `Baseline` (with `-baseline`) and `Result scopes`
-(with `-v`) come before `Coverage`, which stays last. A block with nothing
+Human-readable output separates totals, diagnostics, coverage and findings
+into labeled blocks. The summary (on stderr) comes first, so that a long
+table does not push the totals and the coverage verdict off the screen;
+`Baseline` (with `-baseline`) and `Result scopes` (with `-v`) come before
+`Coverage`. The findings follow on stdout, grouped by scope (account,
+zone, project) with one heading per scope; identity keys that the heading
+names (`account_id`, `zone_id`, `project`, `subscription_id`) are left out
+of its rows, and a source shared by all findings is named once above the
+table instead of in a column. With `-format json`, `-format summary` and
+`adopt` the summary stays at the end of stderr. A block with nothing
 to report has no heading. In a terminal, cyan headings mark sections, green marks
 managed counts and complete coverage, yellow marks findings, uncertainty,
 warnings and coverage with exceptions, and red marks errors. Labels remain
@@ -120,7 +128,7 @@ differs (provider, a key's value, a key the state does not hold), or that
 no state instance of the type was read. Use it with `-types` to look at one
 type, for example when an object you manage shows up as unmanaged.
 
-The last line says whether "nothing unmanaged" can be trusted: `coverage:
+The `coverage:` line says whether "nothing unmanaged" can be trusted: `coverage:
 complete`, or `coverage: INCOMPLETE` with what was not checked (failed or
 truncated listings, unread states, plugin errors, and types that needed a
 check and were skipped in a root: a list resource with a required argument

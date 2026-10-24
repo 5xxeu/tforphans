@@ -49,8 +49,9 @@ const (
 const usage = `Usage: tforphans [flags] [ROOT_DIR...]
 
 Finds live resources that are not managed by any of the given Terraform
-states. Each ROOT_DIR (default ".") must be an initialized root module; its
-state is read with "terraform state pull" and its providers are asked to list
+states. Each ROOT_DIR (default "." when it has Terraform configuration or no
+other state source is given) must be an initialized root module; its state
+is read with "terraform state pull" and its providers are asked to list
 live resources with "terraform query".
 
 Exit status: 0 nothing new found, 2 unmanaged resources found (only new with
@@ -188,6 +189,9 @@ type options struct {
 	// impliedNoQuery: no root given and none in the current directory, so
 	// only -scan and -plugin run.
 	impliedNoQuery bool
+	// impliedNoRoot: no root given and none in the current directory, but
+	// other state sources are: the directory is not read as a root.
+	impliedNoRoot bool
 	// noDefaultPresets: report.DefaultPresets are not applied.
 	noDefaultPresets bool
 	// namesFromTags: adopt names resources after their Name tag.
@@ -231,6 +235,8 @@ func main() {
 	tf.CloseTurns()
 	os.Exit(code)
 }
+
+const impliedNoRootNote = "no ROOT_DIR given and no Terraform configuration in the current directory: only the given states are read; list objects with -scan, -plugin or a root with list resources"
 
 func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	o := &options{maxStateSize: state.DefaultMaxSize, maxQuerySize: tf.DefaultMaxQuerySize}
@@ -467,6 +473,10 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		if (len(o.scans) > 0 || len(o.plugins) > 0) && !tf.HasConfig(".") {
 			// Nothing to query here: -scan and -plugin need no root.
 			o.noQuery, o.impliedNoQuery = true, true
+		} else if (len(o.stateRoots) > 0 || len(o.states) > 0 || len(o.tgUnits) > 0) && !tf.HasConfig(".") {
+			// A directory without configuration is no root: its state
+			// pull reads an empty local state, and a query fails.
+			o.impliedNoRoot = true
 		} else {
 			o.roots = []string{"."}
 		}
@@ -606,6 +616,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	sum.Notes = append(sum.Notes, scanHints(o, stateDirs)...)
 	if o.impliedNoQuery {
 		sum.Notes = append(sum.Notes, "no ROOT_DIR given and no Terraform configuration in the current directory: terraform query was not run, only -scan and -plugin (as with -no-query)")
+	}
+	if o.impliedNoRoot {
+		sum.Notes = append(sum.Notes, impliedNoRootNote)
 	}
 	if !o.noQuery && len(o.roots) > 0 {
 		// No root can be queried when this fails, so it stops the run; a
@@ -852,6 +865,36 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	details := func(w io.Writer) error {
+		if baseline != nil {
+			why := "their type or scope was not fully listed this run"
+			if baseline.EnvironmentChanged {
+				why = "the baseline is from another environment"
+			}
+			resolved := ""
+			if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
+				resolved = " (" + parts + ")"
+			}
+			if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
+				why = "now uncertain"
+			} else if n > 0 {
+				why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
+			}
+			fmt.Fprintln(w)
+			report.Section(w, "Baseline")
+			fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
+			if o.verbose {
+				if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
+					return err
+				}
+			}
+		}
+		if o.verbose {
+			printScopes(w, scopes)
+		}
+		return nil
+	}
+	summarized := false
 	switch {
 	case o.adopt && len(sum.UnreadStates) > 0 && !o.allowIncomplete:
 		if err := printSummary(stderr, o, sum, nil); err != nil {
@@ -906,6 +949,16 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	case o.format == "summary":
 		err = report.SummaryTable(report.WithColor(stdout, colorEnabled(stdout)), sum)
 	default:
+		// People read the summary and coverage first; the list follows.
+		// Machine formats keep the report after their output.
+		summarized = true
+		if len(sum.Warnings) > 0 {
+			sum.Complete = false
+			sum.DiscoveryComplete = false
+		}
+		if err := printSummary(stderr, o, sum, details); err != nil {
+			return err
+		}
 		textOut := report.WithColor(stdout, colorEnabled(stdout))
 		err = report.Text(textOut, shown, uncertain)
 		if err == nil {
@@ -921,37 +974,10 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.Complete = false
 		sum.DiscoveryComplete = false
 	}
-	details := func(w io.Writer) error {
-		if baseline != nil {
-			why := "their type or scope was not fully listed this run"
-			if baseline.EnvironmentChanged {
-				why = "the baseline is from another environment"
-			}
-			resolved := ""
-			if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
-				resolved = " (" + parts + ")"
-			}
-			if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
-				why = "now uncertain"
-			} else if n > 0 {
-				why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
-			}
-			fmt.Fprintln(w)
-			report.Section(w, "Baseline")
-			fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
-			if o.verbose {
-				if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
-					return err
-				}
-			}
+	if !summarized {
+		if err := printSummary(stderr, o, sum, details); err != nil {
+			return err
 		}
-		if o.verbose {
-			printScopes(w, scopes)
-		}
-		return nil
-	}
-	if err := printSummary(stderr, o, sum, details); err != nil {
-		return err
 	}
 	if nothingChecked(o, sum) {
 		msg := "no resource types were queried, so nothing could be found"

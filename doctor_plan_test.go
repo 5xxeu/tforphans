@@ -108,7 +108,12 @@ func TestDoctorScanLimitations(t *testing.T) {
 				if code := run(context.Background(), argv, &out, io.Discard); code != want {
 					t.Fatalf("text exit %d: %s", code, &out)
 				}
-				if n := strings.Count(out.String(), "scan.cloudflare.plan"); n != 7 {
+				// Without -v only warnings and problems are listed.
+				lines := 3
+				if verbose {
+					lines = 7
+				}
+				if n := strings.Count(out.String(), "scan.cloudflare.plan"); n != lines {
 					t.Fatalf("%d plan lines: %s", n, &out)
 				}
 				if strings.Contains(out.String(), "cloudflare_identity_11") != verbose {

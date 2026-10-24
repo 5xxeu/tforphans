@@ -220,20 +220,25 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 			}
 		}
 	}
+	// What no run with these sources can check, as opposed to the gaps of
+	// this run below.
+	var beyond []string
+	if len(out) > 0 {
+		beyond = append(beyond, fmt.Sprintf("%d types left out on purpose or without any listing", len(out)))
+	}
+	if len(s.NoList) > 0 {
+		beyond = append(beyond, fmt.Sprintf("%d providers without list resources", len(slices.Compact(slices.Sorted(slices.Values(s.NoList))))))
+	}
+	if n := len(s.UnlistedTypes); n > 0 {
+		beyond = append(beyond, fmt.Sprintf("%d types in the states that their provider cannot list", n))
+	}
+	if s.APIOff > 0 && !o.strictAPI {
+		beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api=false left them out)", s.APIOff))
+	}
+	if s.StrictIgnored > 0 {
+		beyond = append(beyond, fmt.Sprintf("%d failed listings or skipped types of -strict-ignore", s.StrictIgnored))
+	}
 	if s.Complete {
-		var beyond []string
-		if len(out) > 0 {
-			beyond = append(beyond, fmt.Sprintf("%d types left out on purpose or without any listing", len(out)))
-		}
-		if len(s.NoList) > 0 {
-			beyond = append(beyond, fmt.Sprintf("%d providers without list resources", len(slices.Compact(slices.Sorted(slices.Values(s.NoList))))))
-		}
-		if s.APIOff > 0 && !o.strictAPI {
-			beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api=false left them out)", s.APIOff))
-		}
-		if s.StrictIgnored > 0 {
-			beyond = append(beyond, fmt.Sprintf("%d failed listings or skipped types of -strict-ignore", s.StrictIgnored))
-		}
 		if len(beyond) == 0 {
 			fmt.Fprintln(w, "coverage: complete")
 			return nil
@@ -277,6 +282,9 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 	if len(s.UnreadStates) > 0 {
 		effect += ", and objects of unread states may show as unmanaged"
 	}
+	if len(beyond) > 0 {
+		fmt.Fprintf(w, "not checkable with these sources, not counted as gaps: %s (-v lists them)\n", strings.Join(beyond, ", "))
+	}
 	fmt.Fprintf(w, "coverage: INCOMPLETE (%s): %s; -strict makes this exit 1\n", strings.Join(gaps, ", "), effect)
 	return nil
 }
@@ -285,10 +293,12 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 // line, so a new kind of diagnostic cannot end up under the summary.
 func printDiagnostics(w io.Writer, o *options, s report.Summary) {
 	printFailed(w, o, s.Failed)
+	// The codes are in JSON; their pages only with -v, where the lines
+	// that name them are printed too.
 	links := map[string]bool{}
 	for _, c := range s.Coverage {
 		for _, d := range c.ReasonDetails {
-			if !links[d.ReasonCode] {
+			if o.verbose && !links[d.ReasonCode] {
 				links[d.ReasonCode] = true
 				fmt.Fprintf(w, "  reason %s: %s\n", d.ReasonCode, model.ReasonLink(d.ReasonCode))
 			}
@@ -359,7 +369,8 @@ func printFailed(w io.Writer, o *options, failed []tf.Failure) {
 		}
 		fmt.Fprintf(w, "  %s (%d): %s\n", cat, len(types), report.Clean(strings.Join(shown, ", ")))
 		if cat == tf.FailDenied && len(types) > 8 {
-			fmt.Fprintln(w, "    the credentials lack permission for these: grant it, or leave out products you do not use with -exclude-types (or let them pass -strict with -strict-ignore)")
+			fmt.Fprintln(w, "    the credentials lack permission for these, or the account does not have the product (a bare 403 does not say which):")
+			fmt.Fprintln(w, "    grant the permission, or leave out products you do not use with -exclude-types (or let them pass -strict with -strict-ignore)")
 		}
 		if cat == tf.FailMissingArg {
 			fmt.Fprintln(w, "    pass the argument with -arg, for one set of types if needed: -arg 'google_compute_*:zone=europe-west1-b,europe-west1-c' (google: zone=auto reads every zone)")

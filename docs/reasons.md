@@ -168,6 +168,11 @@ The listing failed because of a recognized provider error.
 ## request_rejected
 
 The API rejected the request. Check the reported error and product availability.
+A 403 whose body says the account lacks the product, entitlement or quota
+(Cloudflare: Advanced Certificate Manager, SSL for SaaS, Magic Transit,
+Workers for Platforms, DEX) is classified here, not as `permission_denied`:
+a broader token would not help. A 403 without such a body stays
+`permission_denied`.
 
 <a id="listing_failed"></a>
 

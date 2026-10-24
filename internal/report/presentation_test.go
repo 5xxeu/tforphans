@@ -41,7 +41,7 @@ func TestPresentationPreservesColumns(t *testing.T) {
 	if first < 0 || first != second {
 		t.Fatalf("group spacing broke columns:\n%s", plain.String())
 	}
-	if !strings.Contains(plain.String(), "\n\na_much") {
+	if !strings.Contains(plain.String(), "\n\n  a_much") {
 		t.Fatalf("group separator is not an empty line:\n%q", plain.String())
 	}
 	if !strings.Contains(colored.String(), "\x1b[1;36m") {
@@ -121,5 +121,31 @@ func TestPresentationReportsConsumedInput(t *testing.T) {
 				t.Fatalf("got %d, %v; want %d, %v", n, err, tc.want, wantErr)
 			}
 		})
+	}
+}
+
+// TestOrphanTableScopes: one heading per scope names the shared zone_id,
+// which its rows leave out; rows of another scope keep their own keys.
+func TestOrphanTableScopes(t *testing.T) {
+	resources := []model.Resource{
+		{Type: "cloudflare_dns_record", DisplayName: "A a.example.com", Source: "-scan cloudflare", ScopeName: "zone example.com",
+			Identity: map[string]any{"id": "r1", "zone_id": "z1"}},
+		{Type: "cloudflare_dns_record", DisplayName: "A b.example.com", Source: "-scan cloudflare", ScopeName: "zone example.com",
+			Identity: map[string]any{"id": "r2", "zone_id": "z1"}},
+		{Type: "cloudflare_zone", DisplayName: "example.org", Source: "plugin1", ScopeName: "zone example.org",
+			Identity: map[string]any{"id": "z2", "zone_id": "z2"}},
+	}
+	var b bytes.Buffer
+	if err := Text(&b, resources, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"zone example.com (zone_id=z1): 2\n", "zone example.org (zone_id=z2): 1\n", "SOURCE", "id=r1 "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "zone_id=z1,") || strings.Contains(out, "id=r1, zone_id") || strings.Contains(out, "All found by") {
+		t.Errorf("shared key or source repeated:\n%s", out)
 	}
 }

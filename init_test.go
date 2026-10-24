@@ -76,7 +76,7 @@ provider "cloudflare" { api_token = "provider-secret" }
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
 	}
-	for _, want := range []string{"Found 3 Terraform roots", "backend s3", "backend http", "aws.prod", "cloudflare/cloudflare 5.0.0", "State source: state-only", "Adapter available: -scan cloudflare", "tforphans doctor", "== Terraform roots ", "== Scan adapters ", "== Not checked ", "== Result "} {
+	for _, want := range []string{"Found 3 Terraform roots", "backend s3", "backend http", "aws.prod", "cloudflare/cloudflare 5.0.0", "State source: state-only", "Recommended: -scan cloudflare before the first audit", "Next: tforphans init -update -scan cloudflare -- .\nThen: tforphans doctor\n", "== Terraform roots ", "== Scan adapters ", "== Not checked ", "== Result "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
@@ -106,6 +106,10 @@ func TestInitPristineRootAndExplicitScan(t *testing.T) {
 	code, out, stderr := invokeInit(t, "-scan", "cloudflare")
 	if code != 0 {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+	// The scan is enabled: no advice to enable it, the audit comes after doctor.
+	if strings.Contains(out, "Recommended:") || !strings.Contains(out, "Next: tforphans doctor\nThen, when it reports ready: tforphans\n") {
+		t.Fatalf("next steps:\n%s", out)
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
 	if err != nil || !slices.Equal(o.roots, []string{"."}) || !slices.Equal(o.scans, []string{"cloudflare"}) {

@@ -58,7 +58,8 @@ const (
 // providers return whole API error bodies (a GCP SERVICE_DISABLED error
 // carries JSON with activation URLs), which drown the summary.
 func (f *Failure) Classify() {
-	m := strings.ToLower(f.Message)
+	// Providers wrap API messages across lines.
+	m := strings.Join(strings.Fields(strings.ToLower(f.Message)), " ")
 	has := func(subs ...string) bool {
 		for _, s := range subs {
 			if strings.Contains(m, s) {
@@ -70,6 +71,12 @@ func (f *Failure) Classify() {
 	switch {
 	case strings.HasPrefix(m, "crashed") || strings.Contains(m, " crashed: "):
 		f.Category = FailCrash
+	// A product the account does not have answers 403 too, but its body
+	// says so (Cloudflare: "entitlement is required", "dex.api.entitlements.
+	// missing", "feature not enabled", "No quota has been allocated"):
+	// granting a permission would not help. A bare 403 stays denied.
+	case has("entitle", "feature not enabled", "no quota has been allocated", "you can purchase it"):
+		f.Category = FailRejected
 	case has("service_disabled", "has not been used in project", "api has not been enabled", "it is disabled. enable it"):
 		f.Category = FailAPIOff
 	case has("cannot determine zone", "cannot determine region", "missing required argument", "is required", "must be set"):
