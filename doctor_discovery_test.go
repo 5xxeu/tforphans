@@ -214,7 +214,7 @@ func TestDoctorTerminalControlCharacters(t *testing.T) {
 				t.Fatal(d.Notes)
 			}
 		} else {
-			_, next, ok := strings.Cut(out.String(), "Next run:\n")
+			_, next, ok := strings.Cut(out.String(), "then check again:\n")
 			if !ok || strings.Contains(next, "owned") || !strings.Contains(next, "<argument with control characters>") {
 				t.Fatalf("unsafe command: %q", next)
 			}

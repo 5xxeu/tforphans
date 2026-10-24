@@ -19,23 +19,24 @@ writes the `import` blocks to bring them under Terraform.
    [resource identity](https://developer.hashicorp.com/terraform/plugin/framework/resources/identity)
    (or by attributes for older state).
 4. **Report.** What matches nothing is unmanaged: a table, JSON, or import
-   blocks with `tforphans adopt`. The last line says whether the check was
-   complete.
+   blocks with `tforphans adopt`. The `coverage:` line says whether the
+   check was complete.
 
 ```
 $ tforphans -state-roots ~/work/infra
-== Unmanaged resources (2) =================================
-SCOPE                    TYPE           NAME             IDENTITY                                               SOURCE
-account_id 123456789012  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1  .
-
-account_id 123456789012  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...   .
-
 == Summary =================================================
 512 live, 498 managed, 0 uncertain, 12 ignored, 2 unmanaged
 41 states read, 187 resource types queried, 58 skipped (-v to list)
 
 == Coverage ================================================
 coverage: complete
+
+== Unmanaged resources (2) =================================
+All found by terraform query in ..
+  TYPE           NAME             IDENTITY
+  aws_instance   debug-box        account_id=123456789012, id=i-0abc, region=eu-north-1
+
+  aws_s3_bucket  tmp-export-2024  account_id=123456789012, bucket=tmp-export-2024, ...
 ```
 
 (Illustrative output.)
@@ -149,7 +150,7 @@ the findings to tools that do.
 - 🗂 **Every State Counts**: `-state-roots` finds and reads every root module and workspace in a tree, through any backend Terraform supports; Terragrunt units too.
 - 🪪 **Exact Matching**: Resource identity from state (Terraform 1.12+), checked against the provider that listed the object; older state is matched by attributes, and a match that cannot confirm the account or cluster is reported as uncertain, not as managed.
 - 🧭 **Setup and Readiness**: `tforphans init` finds the roots of a repository and writes `.tforphans.yaml` from local files only; `tforphans doctor` checks Terraform, provider schemas, states and list arguments before the first audit and prints the next command to run.
-- ✅ **Honest Coverage**: The last line says whether "nothing unmanaged" can be trusted, with every failed listing, unread state and skipped type counted; `-strict` turns gaps into a failed CI job.
+- ✅ **Honest Coverage**: The `coverage:` line says whether "nothing unmanaged" can be trusted, with every failed listing, unread state and skipped type counted; `-strict` turns gaps into a failed CI job.
 - 📥 **Adoption**: `tforphans adopt` writes `import` blocks for `terraform plan -generate-config-out`, with addresses that never collide with existing ones.
 - 🧹 **Little Noise**: Objects the cloud creates on its own (default security groups, GKE nodes, managed rulesets) are hidden by default presets that go only by marks users cannot set; an ignore file covers the rest.
 - 🌍 **All Regions and Zones**: `-arg region=...` fans list queries out; `-arg zone=auto` reads every Google Cloud zone.

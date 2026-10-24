@@ -36,7 +36,7 @@ func doctorSkipMessage(category string, types []string, verbose bool) string {
 	if !verbose {
 		shown = firstN(types, 8)
 	}
-	return report.Clean(fmt.Sprintf("%s (%d types): %s", category, len(types), strings.Join(shown, ", ")))
+	return report.Clean(fmt.Sprintf("%s (%s): %s", category, plural(len(types), "type"), strings.Join(shown, ", ")))
 }
 
 func doctorScanCategory(sk tf.Skip) string {

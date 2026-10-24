@@ -120,3 +120,51 @@ func TestDoctorStateOnlyWithoutInitialization(t *testing.T) {
 		t.Fatal(c)
 	}
 }
+
+// TestDoctorTextGroupsProblems: without -v only problems and warnings are
+// listed, problems in dependency order, the same check in several roots
+// once with <root> in its fix; the next command checks again.
+func TestDoctorTextGroupsProblems(t *testing.T) {
+	d := doctorReport{Status: "needs_configuration", NextCommand: []string{"tforphans", "-state-roots", "stacks"}}
+	d.add("config", "ok", "command line and config parsed", "", "")
+	d.add("discovery", "failed", "0 list queries, 0 scan blocks, 0 plugins selected", "", "Add -scan cloudflare")
+	d.add("root.initialized", "warning", "Terraform data directory is missing: .terraform", "stacks/a", "terraform -chdir="+shellQuote("stacks/a")+" init")
+	d.add("root.initialized", "warning", "Terraform data directory is missing: .terraform", "stacks/b", "terraform -chdir="+shellQuote("stacks/b")+" init")
+	d.add("states.read", "failed", "0 of 1 states read", "", "")
+	var b bytes.Buffer
+	if err := d.write(&b, "text"); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{
+		"Result: BLOCKED (2 problems, 2 warnings; 1 passed, 0 skipped; -v lists every check)",
+		"[2 roots: stacks/a, stacks/b]\n      Fix: terraform -chdir=<root> init\n",
+		"then check again:\n  tforphans doctor -state-roots stacks\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if states, discovery := strings.Index(out, "states.read"), strings.Index(out, "discovery"); states < 0 || discovery < states {
+		t.Errorf("problems not in dependency order:\n%s", out)
+	}
+	if strings.Contains(out, "OK ") || strings.Count(out, "root.initialized") != 1 {
+		t.Errorf("passed or duplicate checks listed:\n%s", out)
+	}
+	d.recheck = []string{"-check-auth"}
+	b.Reset()
+	if err := d.write(&b, "text"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "  tforphans doctor -check-auth -state-roots stacks\n") {
+		t.Errorf("recheck lost -check-auth:\n%s", &b)
+	}
+	d.verbose = true
+	b.Reset()
+	if err := d.write(&b, "text"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "OK    config") || strings.Count(b.String(), "root.initialized") != 2 {
+		t.Errorf("verbose:\n%s", &b)
+	}
+}

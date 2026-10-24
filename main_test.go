@@ -414,6 +414,52 @@ func TestImpliedNoQuery(t *testing.T) {
 	}
 }
 
+// TestImpliedNoRoot: a state source without ROOT_DIR in a directory
+// without Terraform configuration does not make "." a root.
+func TestImpliedNoRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "stacks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseFlags([]string{"-no-config", "-state-roots", "stacks"}, io.Discard)
+	if err != nil || !o.impliedNoRoot || o.noQuery || len(o.roots) != 0 {
+		t.Fatalf("no config: %+v, %v", o, err)
+	}
+	o, err = parseFlags([]string{"-no-config"}, io.Discard)
+	if err != nil || o.impliedNoRoot || !slices.Equal(o.roots, []string{"."}) {
+		t.Fatalf("no state source: %+v, %v", o, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte("terraform {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err = parseFlags([]string{"-no-config", "-state-roots", "stacks"}, io.Discard)
+	if err != nil || o.impliedNoRoot || !slices.Equal(o.roots, []string{"."}) {
+		t.Fatalf("with config: %+v, %v", o, err)
+	}
+}
+
+// TestTextSummaryFirst: in text output the summary and coverage come
+// before the findings table, so that a long table does not hide them.
+func TestTextSummaryFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell plugin")
+	}
+	var b bytes.Buffer
+	plugin := `printf '%s\n' '{"type":"vault_policy","identity":{"id":"ci"}}'`
+	if code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", plugin}, &b, &b); code != exitOrphans {
+		t.Fatalf("exit %d: %s", code, &b)
+	}
+	out := b.String()
+	summary, coverage, table := strings.Index(out, "== Summary"), strings.Index(out, "coverage: "), strings.Index(out, "== Unmanaged resources (1)")
+	if summary < 0 || coverage < summary || table < coverage {
+		t.Fatalf("order: %s", out)
+	}
+	if !strings.Contains(out, "All found by plugin1.\n") || strings.Contains(out, "SOURCE") {
+		t.Fatalf("source: %s", out)
+	}
+}
+
 func TestIgnoreHints(t *testing.T) {
 	var rs []model.Resource
 	for i := range hintMin {

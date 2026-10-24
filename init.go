@@ -229,21 +229,35 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 			}
 		}
 	}
-	adapters := false
+	// The adapters of these roots' providers that the config does not
+	// enable. One update enables them all: -scan replaces the saved list,
+	// so the command repeats the enabled ones.
+	var missing []string
 	for _, name := range slices.Sorted(maps.Keys(suggested)) {
 		if !slices.Contains(enabled, name) {
-			if !adapters {
-				fmt.Fprintln(w)
-				report.Section(w, "Scan adapters")
-				adapters = true
-			}
-			fmt.Fprintf(w, "Adapter available: -scan %s (credentials from the environment).\n", name)
-			fmt.Fprintf(w, "  Enable it explicitly: tforphans init -update -scan %s --", name)
-			for _, dir := range dirs {
-				fmt.Fprintf(w, " %s", initDirArg(dir))
-			}
-			fmt.Fprintln(w)
+			missing = append(missing, name)
 		}
+	}
+	enable := ""
+	if len(missing) > 0 {
+		enable = "tforphans init -update"
+		for _, name := range slices.Concat(enabled, missing) {
+			enable += " -scan " + initDirArg(name)
+		}
+		enable += " --"
+		for _, dir := range dirs {
+			enable += " " + initDirArg(dir)
+		}
+		fmt.Fprintln(w)
+		report.Section(w, "Scan adapters")
+		for _, name := range missing {
+			fmt.Fprintf(w, "%s -scan %s before the first audit.\n", report.Accent(w, report.Attention, "Recommended:"), name)
+			fmt.Fprintf(w, "  %s has no list resources in the versions tforphans knows:\n", strings.TrimPrefix(sources[name].Provider, "registry.terraform.io/"))
+			fmt.Fprintln(w, "  without the scan, the audit reads its states but lists none of its")
+			fmt.Fprintln(w, "  objects. The scan uses credentials from the environment, not the")
+			fmt.Fprintln(w, "  roots' provider blocks.")
+		}
+		fmt.Fprintln(w, "  Enable:", enable)
 	}
 	fmt.Fprintln(w)
 	report.Section(w, "Not checked")
@@ -268,7 +282,12 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 	}
 	fmt.Fprintln(w)
 	report.Section(w, "Result")
-	fmt.Fprintf(w, "%s %s\nNext: tforphans doctor\nThen: tforphans\n", report.Accent(w, report.Good, action), defaultConfigFile)
+	fmt.Fprintf(w, "%s %s\n", report.Accent(w, report.Good, action), defaultConfigFile)
+	if enable != "" {
+		fmt.Fprintf(w, "Next: %s\nThen: tforphans doctor\n", enable)
+	} else {
+		fmt.Fprintln(w, "Next: tforphans doctor\nThen, when it reports ready: tforphans")
+	}
 	return nil
 }
 

@@ -72,7 +72,11 @@ Add other state sources before trusting findings across shared accounts.
 
 ## Scan adapters
 
-Init reports when a discovered provider has a Cloudflare or Proxmox adapter.
+Init reports when a discovered provider has a Cloudflare or Proxmox adapter
+that the config does not enable, recommends it before the first audit
+(without it the audit reads the provider's states but lists none of its
+objects) and prints the `init -update -scan ...` command that enables it;
+`Next:` then names that command before `tforphans doctor`.
 These adapters use credentials from the environment, which may target another
 account or cluster than a root's provider block. They are enabled only when
 explicitly selected:

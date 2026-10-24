@@ -121,6 +121,30 @@ validation even though doctor does not filter resource findings.
 
 ## Output and exit status
 
+Text output starts with the verdict: `READY` (status `ready`), `BLOCKED`
+(`needs_configuration`) or `UNKNOWN` (`unknown`), with the number of
+problems, warnings, passed and skipped checks. Then come `Problems`
+(failed checks) and `Warnings`, problems in the order they are fixed: config
+and Terraform first, then roots, states, provider schemas and listings, and
+discovery last, because it depends on the others. A check with the same
+outcome in several roots is printed once with the list of roots, and a root
+in its fix becomes `<root>`. Passed and skipped checks are listed only with
+`-v`, which prints every check in the order it ran. The last block, `Next`,
+proposes the audit command when nothing failed, and otherwise the same
+command as `tforphans doctor ...` (keeping `-offline` and `-check-auth`) to check again after the fixes: an audit
+started with failed checks would fail or miss what they hide. JSON
+`next_command` is always the audit command; run it only when `status` is
+`ready`.
+
+A root with no listings selected (no list resources, no user list blocks) is
+a `query.plan` warning: the audit only reads its state. Without `ROOT_DIR`,
+the current directory is a root only when it has Terraform configuration or
+no other state source is given (`-state`, `-state-roots`,
+`-terragrunt-unit`); otherwise only those states are read and a note says
+so. When no listing is selected and a root uses a provider with a `-scan`
+adapter, the `discovery` failure suggests that adapter, also for roots used
+only for their state.
+
 Only diagnostic results go to stdout. Progress goes to stderr on a terminal,
 unless `-quiet` is set. Text includes a proposed next audit command, with shell
 quoting. JSON contains the command as an argument array. Doctor-only flags

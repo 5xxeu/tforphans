@@ -37,7 +37,7 @@ backend works: S3, GCS, azurerm, GitLab/http, HCP Terraform. Up to 8 roots
 are read in parallel; `-state-parallelism N` (1 to 64) changes that, for
 example to stay under a backend's request rate limit. A root that is not initialized, or whose state cannot
 be read, is reported as a warning (an error with `-strict`), because its
-resources may then show up as unmanaged; the last line names each unread
+resources may then show up as unmanaged; the coverage line names each unread
 root with the line of the error that says why, and so does
 `summary.unread_states` (`[{"root": ..., "error": ...}]`). A workspace that
 fails does not drop the others: their states still count, and the warning
