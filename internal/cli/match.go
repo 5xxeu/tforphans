@@ -392,8 +392,6 @@ func uncertainReason(m state.Match) model.ReasonDetails {
 	return model.Reason(code, append(slices.Clone(m.Unknown), m.Unconfirmed...)...)
 }
 
-// scopeName names the account of an object from its identity, for people:
-// "project my-project"; "" when the identity does not say.
 // sortResources orders objects by scope, type and name.
 func sortResources(rs []model.Resource) { slices.SortStableFunc(rs, compareResources) }
 
@@ -436,6 +434,8 @@ func baseName(r model.Resource) string {
 	return r.DisplayName
 }
 
+// scopeName names the account of an object from its identity, for people:
+// "project my-project"; "" when the identity does not say.
 func scopeName(identity map[string]any) string {
 	var parts []string
 	for _, k := range scopeKeys {
