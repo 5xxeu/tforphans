@@ -60,19 +60,9 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 
 	var sum report.Summary
 	idx := state.NewIndex()
-	for _, src := range o.states {
-		data, err := state.Fetch(ctx, src, o.allowHTTP, o.maxStateSize)
-		if err != nil {
-			return fmt.Errorf("state %s: %w", state.Redact(src), err)
-		}
-		snapshot, err := state.ParseSnapshot(data, state.Redact(src))
-		if err != nil {
-			return fmt.Errorf("state %s: %w", state.Redact(src), err)
-		}
-		idx.AddSnapshots([]state.Snapshot{snapshot})
-		sum.States++
+	if err := readStates(ctx, o, idx, &sum); err != nil {
+		return err
 	}
-
 	stateDirs, err := readStateRoots(ctx, o, idx, &sum)
 	if err != nil {
 		return err
@@ -87,13 +77,76 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if o.impliedNoRoot {
 		sum.Notes = append(sum.Notes, impliedNoRootNote)
 	}
+	live, err := queryRoots(ctx, o, idx, &sum, stdout)
+	if err != nil {
+		return err
+	}
+	if o.printQuery {
+		return nil
+	}
+	countOwnership(idx, &sum)
+	sum.Notes = append(sum.Notes, o.stateNotes...)
+	if len(o.scans) > 0 && len(o.stateRoots) == 0 && o.scanScope == nil && !o.scopeState {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("-scan lists whole accounts, but only %d states were read: objects that other root modules manage show up as unmanaged. Read every root's state with -state-roots DIR, or narrow the scan with -scan-scope zone_id=ID_OR_NAME or -scan-scope state.", sum.States))
+	}
+	if o.scopeState && sum.States == 0 {
+		return errors.New("-scan-scope state: no state was read (-state, -state-roots or root modules)")
+	}
+	scanned, err := runScans(ctx, o, idx, stateDirs, &sum, stderr)
+	if err != nil {
+		return err
+	}
+	live = append(live, scanned...)
+	sum.SortListings()
+	listed, err := runPlugins(ctx, o, &sum)
+	if err != nil {
+		return err
+	}
+	live = append(live, listed...)
+	// A source that ignored the cancel must not turn into a report that
+	// looks finished.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	out := conclude(o, idx, live, previous, &sum)
+	// -timeout means no report: matching a large set may outlast it.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := writeReport(ctx, o, idx, stateDirs, out, &sum, stdout, stderr); err != nil {
+		return err
+	}
+	return exitStatus(o, sum, out.shown, stderr)
+}
+
+// readStates adds the states given with -state to idx.
+func readStates(ctx context.Context, o *options, idx *state.Index, sum *report.Summary) error {
+	for _, src := range o.states {
+		data, err := state.Fetch(ctx, src, o.allowHTTP, o.maxStateSize)
+		if err != nil {
+			return fmt.Errorf("state %s: %w", state.Redact(src), err)
+		}
+		snapshot, err := state.ParseSnapshot(data, state.Redact(src))
+		if err != nil {
+			return fmt.Errorf("state %s: %w", state.Redact(src), err)
+		}
+		idx.AddSnapshots([]state.Snapshot{snapshot})
+		sum.States++
+	}
+	return nil
+}
+
+// queryRoots adds the state of each root module to idx and returns what
+// terraform query lists there. A root that fails does not stop the others.
+func queryRoots(ctx context.Context, o *options, idx *state.Index, sum *report.Summary, stdout io.Writer) ([]model.Resource, error) {
 	if !o.noQuery && len(o.roots) > 0 {
 		// No root can be queried when this fails, so it stops the run; a
 		// hanging terraform is still bounded by -source-timeout.
 		if _, err := withSource(ctx, o, func(ctx context.Context) (struct{}, error) {
 			return struct{}{}, (tf.Runner{Bin: o.terraformBin, Dir: o.roots[0]}).QueryVersion(ctx)
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var live []model.Resource
@@ -102,11 +155,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			o.stepf("querying %s (%d/%d)", root, i+1, len(o.roots))
 		}
 		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
-			return scanRoot(ctx, o, root, idx, &sum, stdout)
+			return scanRoot(ctx, o, root, idx, sum, stdout)
 		})
 		if err != nil {
 			if ctx.Err() != nil || o.printQuery {
-				return fmt.Errorf("%s: %w", root, err)
+				return nil, fmt.Errorf("%s: %w", root, err)
 			}
 			// The others still run. When the failure came before the state
 			// was read, its objects would show as unmanaged (and adopt
@@ -121,9 +174,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		live = append(live, found...)
 	}
-	if o.printQuery {
-		return nil
-	}
+	return live, nil
+}
+
+// countOwnership records objects that more than one state manages.
+func countOwnership(idx *state.Index, sum *report.Summary) {
 	sum.Ownership, sum.InState = idx.Duplicates()
 	for _, d := range sum.Ownership {
 		if d.Confidence == "confirmed" {
@@ -133,18 +188,17 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 	}
 	sum.DuplicateInState = len(sum.InState)
-	sum.Notes = append(sum.Notes, o.stateNotes...)
-	if len(o.scans) > 0 && len(o.stateRoots) == 0 && o.scanScope == nil && !o.scopeState {
-		sum.Notes = append(sum.Notes, fmt.Sprintf("-scan lists whole accounts, but only %d states were read: objects that other root modules manage show up as unmanaged. Read every root's state with -state-roots DIR, or narrow the scan with -scan-scope zone_id=ID_OR_NAME or -scan-scope state.", sum.States))
-	}
-	if o.scopeState && sum.States == 0 {
-		return errors.New("-scan-scope state: no state was read (-state, -state-roots or root modules)")
-	}
+}
+
+// runScans lists the objects of each -scan provider through its data
+// sources. A scan that fails does not stop the others.
+func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []string, sum *report.Summary, stderr io.Writer) ([]model.Resource, error) {
 	// Crash recovery says it takes extra runs; -quiet drops that too.
 	var progress func(string)
 	if !o.quiet {
 		progress = func(msg string) { fmt.Fprintln(stderr, "note:", msg) }
 	}
+	var live []model.Resource
 	for _, name := range o.scans {
 		a := sources[name]
 		// The root -adopt-root names gets the blocks: its pin comes first.
@@ -164,7 +218,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		})
 		if err != nil {
 			if ctx.Err() != nil {
-				return err
+				return nil, err
 			}
 			sum.FailSource("-scan "+name, err)
 			continue
@@ -193,7 +247,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		if nameRoot != "" {
 			names, err := tf.LocalNames(nameRoot)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			local = names[a.Provider]
 			undeclared = assigned && local == ""
@@ -216,7 +270,13 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		live = append(live, res.Resources...)
 	}
-	sum.SortListings()
+	return live, nil
+}
+
+// runPlugins returns what each -plugin lists. A plugin that fails does not
+// stop the others.
+func runPlugins(ctx context.Context, o *options, sum *report.Summary) ([]model.Resource, error) {
+	var live []model.Resource
 	for i, p := range o.plugins {
 		var warns []error
 		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
@@ -229,7 +289,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		})
 		if err != nil {
 			if ctx.Err() != nil {
-				return err
+				return nil, err
 			}
 			sum.FailSource(fmt.Sprintf("plugin%d", i+1), err)
 			continue
@@ -252,12 +312,25 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		}
 		live = append(live, found...)
 	}
-	// A source that ignored the cancel must not turn into a report that
-	// looks finished.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	return live, nil
+}
 
+// outcome is what the audit decided, before anything is printed.
+type outcome struct {
+	orphans   []model.Resource
+	uncertain []report.Uncertain
+	// shown are the orphans the report lists: with -baseline only new ones.
+	shown    []model.Resource
+	baseline *report.Baseline
+	// scopes are the results of every source before dedupe, for -v.
+	scopes []model.Resource
+	// copies are the results dedupe merged into each kept one.
+	copies map[string][]model.Resource
+}
+
+// conclude narrows the results to -types, matches them against the
+// states and fills in coverage, completeness and the baseline comparison.
+func conclude(o *options, idx *state.Index, live []model.Resource, previous *report.Snapshot, sum *report.Summary) outcome {
 	// -types and -exclude-types narrow every source, also the user's own
 	// list blocks and plugins, which list whatever they were written for.
 	live = slices.DeleteFunc(live, func(r model.Resource) bool {
@@ -275,7 +348,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	// adopt places an object by every source that listed it: dedupe keeps
 	// one copy, and -adopt-root may name the source of another.
 	live, copies := dedupeMembers(live)
-	c := classify(o, idx, live, origins, &sum)
+	c := classify(o, idx, live, origins, sum)
 	orphans, uncertain := c.orphans, c.uncertain
 	sortResources(orphans)
 	sum.Notes = append(sum.Notes, presetHints(orphans, o.presets)...)
@@ -294,17 +367,17 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
-	counting, skipped, checks := coverageInputs(o, &sum)
+	counting, skipped, checks := coverageInputs(o, sum)
 	if sum.APIOff > 0 && o.strictAPI {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d listings failed because their API is not enabled: a disabled API can still hold data (Cloud Storage and BigQuery keep theirs), so they count as not checked; if the project does not use those types, name them in -strict-ignore", sum.APIOff))
 	}
 	sum.Coverage = report.BuildCoverage(c.byTypeScope, checks, skipped, counting)
-	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), sum)
+	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), *sum)
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
 	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
-	sum.DiscoveryComplete = !nothingChecked(o, sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
+	sum.DiscoveryComplete = !nothingChecked(o, *sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
 	sum.Environment = o.environment
@@ -312,7 +385,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	shown := orphans
 	if previous != nil {
 		var b report.Baseline
-		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, sum, c.seen)
+		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, *sum, c.seen)
 		baseline = &b
 		if b.EnvironmentChanged {
 			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.environment))
@@ -327,94 +400,22 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if n := idx.NoIdentity(); n > 0 && len(live) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d of %d state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)", n, idx.Len()))
 	}
+	return outcome{orphans: orphans, uncertain: uncertain, shown: shown, baseline: baseline, scopes: scopes, copies: copies}
+}
 
-	// -timeout means no report: matching a large set may outlast it.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	details := func(w io.Writer) error {
-		if baseline != nil {
-			why := "their type or scope was not fully listed this run"
-			if baseline.EnvironmentChanged {
-				why = "the baseline is from another environment"
-			}
-			resolved := ""
-			if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
-				resolved = " (" + parts + ")"
-			}
-			if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
-				why = "now uncertain"
-			} else if n > 0 {
-				why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
-			}
-			fmt.Fprintln(w)
-			report.Section(w, "Baseline")
-			fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
-			if o.verbose {
-				if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
-					return err
-				}
-			}
-		}
-		if o.verbose {
-			printScopes(w, scopes)
-		}
-		return nil
-	}
+// writeReport prints the report in the format asked for, or with adopt
+// writes import blocks, and the summary to stderr.
+func writeReport(ctx context.Context, o *options, idx *state.Index, stateDirs []string, out outcome, sum *report.Summary, stdout, stderr io.Writer) error {
+	details := func(w io.Writer) error { return printDetails(w, o, out.baseline, out.scopes) }
+	var err error
 	summarized := false
 	switch {
-	case o.adopt && len(sum.UnreadStates) > 0 && !o.allowIncomplete:
-		if err := printSummary(stderr, o, sum, nil); err != nil {
-			return err
-		}
-		var roots []string
-		for _, u := range sum.UnreadStates {
-			roots = append(roots, u.Root)
-		}
-		return fmt.Errorf("not writing import blocks: the state of %s could not be read, and its objects would be imported a second time; fix access, or pass -allow-incomplete", strings.Join(roots, ", "))
 	case o.adopt:
-		reserved := maps.Clone(idx.RootAddresses())
-		var imports []tf.Import
-		for _, dir := range slices.Concat(o.roots, stateDirs, adoptRootDirs(o)) {
-			cfg, err := tf.ConfigAddresses(dir)
-			if err != nil {
-				return err
-			}
-			maps.Copy(reserved, cfg)
-			ims, err := tf.ConfigImports(dir)
-			if err != nil {
-				return err
-			}
-			for i := range ims {
-				ims[i].Dir = canonDir(ims[i].Dir)
-			}
-			imports = append(imports, ims...)
-		}
-		// An earlier adopt whose blocks are not applied yet: keep its
-		// addresses free and do not write a second block for its objects.
-		for _, im := range imports {
-			if im.To != "" {
-				reserved[im.To] = true
-			}
-		}
-		roots := map[string]bool{}
-		for _, r := range o.roots {
-			roots[r] = true
-		}
-		placeOrphans(o, orphans, copies, roots, &sum)
-		n := len(orphans)
-		orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, adoptTarget(o, r, roots)) })
-		if n > len(orphans) {
-			fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		err = adopt(o, orphans, reserved, &sum, stdout, stderr)
+		err = writeImports(ctx, o, idx, stateDirs, out, sum, stdout, stderr)
 	case o.format == "json":
-		err = report.JSON(stdout, orphans, uncertain, sum, baseline)
+		err = report.JSON(stdout, out.orphans, out.uncertain, *sum, out.baseline)
 	case o.format == "summary":
-		err = report.SummaryTable(report.WithColor(stdout, colorEnabled(stdout)), sum)
+		err = report.SummaryTable(report.WithColor(stdout, colorEnabled(stdout)), *sum)
 	default:
 		// People read the summary and coverage first; the list follows.
 		// Machine formats keep the report after their output.
@@ -423,11 +424,11 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 			sum.Complete = false
 			sum.DiscoveryComplete = false
 		}
-		if err := printSummary(stderr, o, sum, details); err != nil {
+		if err := printSummary(stderr, o, *sum, details); err != nil {
 			return err
 		}
 		textOut := report.WithColor(stdout, colorEnabled(stdout))
-		err = report.Text(textOut, shown, uncertain)
+		err = report.Text(textOut, out.shown, out.uncertain)
 		if err == nil {
 			err = report.ExplainText(textOut, sum.Explain)
 		}
@@ -442,10 +443,101 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 		sum.DiscoveryComplete = false
 	}
 	if !summarized {
-		if err := printSummary(stderr, o, sum, details); err != nil {
+		if err := printSummary(stderr, o, *sum, details); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// printDetails prints what -baseline and -v add to the summary.
+func printDetails(w io.Writer, o *options, baseline *report.Baseline, scopes []model.Resource) error {
+	if baseline != nil {
+		why := "their type or scope was not fully listed this run"
+		if baseline.EnvironmentChanged {
+			why = "the baseline is from another environment"
+		}
+		resolved := ""
+		if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
+			resolved = " (" + parts + ")"
+		}
+		if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
+			why = "now uncertain"
+		} else if n > 0 {
+			why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
+		}
+		fmt.Fprintln(w)
+		report.Section(w, "Baseline")
+		fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
+		if o.verbose {
+			if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
+				return err
+			}
+		}
+	}
+	if o.verbose {
+		printScopes(w, scopes)
+	}
+	return nil
+}
+
+// writeImports writes import blocks for the orphans (adopt). While a state
+// could not be read it writes none: its objects would be imported twice.
+func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs []string, out outcome, sum *report.Summary, stdout, stderr io.Writer) error {
+	if len(sum.UnreadStates) > 0 && !o.allowIncomplete {
+		if err := printSummary(stderr, o, *sum, nil); err != nil {
+			return err
+		}
+		var roots []string
+		for _, u := range sum.UnreadStates {
+			roots = append(roots, u.Root)
+		}
+		return fmt.Errorf("not writing import blocks: the state of %s could not be read, and its objects would be imported a second time; fix access, or pass -allow-incomplete", strings.Join(roots, ", "))
+	}
+	orphans := out.orphans
+	reserved := maps.Clone(idx.RootAddresses())
+	var imports []tf.Import
+	for _, dir := range slices.Concat(o.roots, stateDirs, adoptRootDirs(o)) {
+		cfg, err := tf.ConfigAddresses(dir)
+		if err != nil {
+			return err
+		}
+		maps.Copy(reserved, cfg)
+		ims, err := tf.ConfigImports(dir)
+		if err != nil {
+			return err
+		}
+		for i := range ims {
+			ims[i].Dir = canonDir(ims[i].Dir)
+		}
+		imports = append(imports, ims...)
+	}
+	// An earlier adopt whose blocks are not applied yet: keep its
+	// addresses free and do not write a second block for its objects.
+	for _, im := range imports {
+		if im.To != "" {
+			reserved[im.To] = true
+		}
+	}
+	roots := map[string]bool{}
+	for _, r := range o.roots {
+		roots[r] = true
+	}
+	placeOrphans(o, orphans, out.copies, roots, sum)
+	n := len(orphans)
+	orphans = slices.DeleteFunc(orphans, func(r model.Resource) bool { return hasImport(r, imports, adoptTarget(o, r, roots)) })
+	if n > len(orphans) {
+		fmt.Fprintf(stderr, "%d objects already have import blocks in the root modules; not written again.\n", n-len(orphans))
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return adopt(o, orphans, reserved, sum, stdout, stderr)
+}
+
+// exitStatus is the error execute returns for a finished audit: an
+// exitCode, or nil for exit status 0.
+func exitStatus(o *options, sum report.Summary, shown []model.Resource, stderr io.Writer) error {
 	if nothingChecked(o, sum) {
 		msg := "no resource types were queried, so nothing could be found"
 		if n := len(sum.Failed); n > 0 {
