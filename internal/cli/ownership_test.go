@@ -93,11 +93,11 @@ func TestOwnershipConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err := parseFlags(nil, io.Discard)
-	if err != nil || !o.strictOwnership {
+	if err != nil || !o.audit.strictOwnership {
 		t.Fatalf("automatic config: %+v, %v", o, err)
 	}
 	o, err = parseFlags([]string{"-strict-ownership=false"}, io.Discard)
-	if err != nil || o.strictOwnership {
+	if err != nil || o.audit.strictOwnership {
 		t.Fatalf("override: %+v, %v", o, err)
 	}
 }
@@ -208,7 +208,7 @@ esac
 		t.Fatal(err)
 	}
 	for _, refresh := range []bool{false, true} {
-		o := &options{terraformBin: bin, refresh: refresh, maxStateSize: state.DefaultMaxSize}
+		o := &options{src: sourceOptions{terraformBin: bin, refresh: refresh, maxStateSize: state.DefaultMaxSize}}
 		snapshots, n, err := pullRoot(context.Background(), o, dir)
 		if err != nil || n != 2 || len(snapshots) != 2 {
 			t.Fatalf("pull: %+v, %d, %v", snapshots, n, err)

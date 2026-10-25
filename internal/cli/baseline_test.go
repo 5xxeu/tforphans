@@ -396,7 +396,7 @@ func TestBaselineConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err := parseFlags(nil, io.Discard)
-	if err != nil || o.baselinePath != "baseline.json" {
+	if err != nil || o.audit.baseline != "baseline.json" {
 		t.Fatalf("automatic config: %+v, %v", o, err)
 	}
 	outside := filepath.Join(t.TempDir(), "baseline.json")
@@ -410,7 +410,7 @@ func TestBaselineConfig(t *testing.T) {
 		t.Fatalf("automatic config escaped directory: %v", err)
 	}
 	o, err = parseFlags([]string{"-config", defaultConfigFile}, io.Discard)
-	if err != nil || o.baselinePath != outside {
+	if err != nil || o.audit.baseline != outside {
 		t.Fatalf("explicit config: %+v, %v", o, err)
 	}
 }
@@ -444,7 +444,7 @@ func TestBaselineEnvironmentRun(t *testing.T) {
 	if err := os.WriteFile(defaultConfigFile, []byte("environment: prod\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if o, err := parseFlags(nil, io.Discard); err != nil || o.environment != "prod" {
+	if o, err := parseFlags(nil, io.Discard); err != nil || o.audit.environment != "prod" {
 		t.Fatalf("automatic config: %+v, %v", o, err)
 	}
 }

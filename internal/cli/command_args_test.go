@@ -34,20 +34,20 @@ func TestDoctorNextFlagValues(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := doctorNext(o.doctorArgs, tc.fixes)
+			got := doctorNext(o.doctor.args, tc.fixes)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("%q want %q", got, tc.want)
 			}
-			if !reflect.DeepEqual([]string(o.roots), tc.roots) || !reflect.DeepEqual([]string(o.states), tc.states) {
-				t.Fatalf("roots=%q states=%q", o.roots, o.states)
+			if !reflect.DeepEqual([]string(o.src.roots), tc.roots) || !reflect.DeepEqual([]string(o.src.states), tc.states) {
+				t.Fatalf("roots=%q states=%q", o.src.roots, o.src.states)
 			}
 			// The audit must see the same roots and state values in the proposed command.
 			audit, err := parseFlags(got[1:], io.Discard)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(audit.roots, o.roots) || !reflect.DeepEqual(audit.states, o.states) {
-				t.Fatalf("audit roots=%q states=%q, doctor roots=%q states=%q", audit.roots, audit.states, o.roots, o.states)
+			if !reflect.DeepEqual(audit.src.roots, o.src.roots) || !reflect.DeepEqual(audit.src.states, o.src.states) {
+				t.Fatalf("audit roots=%q states=%q, doctor roots=%q states=%q", audit.src.roots, audit.src.states, o.src.roots, o.src.states)
 			}
 		})
 	}
@@ -58,11 +58,11 @@ func TestCommandArgsFlagMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.doctorFlagSet.VisitAll(func(f *flag.Flag) {
+	o.doctor.flagSet.VisitAll(func(f *flag.Flag) {
 		b, ok := f.Value.(interface{ IsBoolFlag() bool })
 		boolean := ok && b.IsBoolFlag()
 		args := []string{"-" + f.Name, "-offline", "ROOT"}
-		parsed := commandArgs(o.doctorFlagSet, args)
+		parsed := commandArgs(o.doctor.flagSet, args)
 		if parsed[0].separate == boolean {
 			t.Fatalf("-%s value consumption: %+v", f.Name, parsed)
 		}

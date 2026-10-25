@@ -73,9 +73,9 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	if !o.quiet {
-		o.progress = stderr
+		o.run.progress = stderr
 		if terminalErr {
-			o.steps = stderr
+			o.run.steps = stderr
 		}
 	}
 	if o.timeout > 0 {

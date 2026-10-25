@@ -24,28 +24,28 @@ func runPlan(o *options, stateDirs []string) string {
 	if o.configFile != "" {
 		parts = append(parts, "flags from "+o.configFile)
 	}
-	if !o.noQuery {
-		parts = append(parts, fmt.Sprintf("terraform query in %s", strings.Join(o.roots, ", ")))
-	} else if len(o.roots) > 0 {
-		parts = append(parts, fmt.Sprintf("states of %s", strings.Join(o.roots, ", ")))
+	if !o.src.noQuery {
+		parts = append(parts, fmt.Sprintf("terraform query in %s", strings.Join(o.src.roots, ", ")))
+	} else if len(o.src.roots) > 0 {
+		parts = append(parts, fmt.Sprintf("states of %s", strings.Join(o.src.roots, ", ")))
 	}
 	if len(stateDirs) > 0 {
 		parts = append(parts, fmt.Sprintf("states of %d more root modules under -state-roots", len(stateDirs)))
 	}
-	if n := len(o.states); n > 0 {
+	if n := len(o.src.states); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d -state", n))
 	}
-	for _, name := range o.scans {
+	for _, name := range o.src.scans {
 		what := "whole account"
-		if o.scanScope != nil || o.scopeState {
+		if o.src.scanScope != nil || o.src.scopeState {
 			what = "limited by -scan-scope"
 		}
 		parts = append(parts, fmt.Sprintf("-scan %s (provider from the environment, %s)", name, what))
 	}
-	if n := len(o.plugins); n > 0 {
+	if n := len(o.src.plugins); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d plugins", n))
 	}
-	if !o.noDefaultPresets {
+	if !o.ignore.noDefaults {
 		parts = append(parts, "default ignore presets (objects the cloud creates; -no-default-presets shows them)")
 	}
 	return strings.Join(parts, "; ")
@@ -55,14 +55,14 @@ func runPlan(o *options, stateDirs []string) string {
 // were not scanned. The scan is not started on its own: it lists a whole
 // account with credentials from the environment, which may not be the
 // account of these roots.
-func scanHints(o *options, stateDirs []string) []string {
+func scanHints(src *sourceOptions, stateDirs []string) []string {
 	var out []string
 	for _, name := range slices.Sorted(maps.Keys(sources)) {
-		if slices.Contains(o.scans, name) {
+		if slices.Contains(src.scans, name) {
 			continue
 		}
 		a := sources[name]
-		if root := dsource.VersionRoot(slices.Concat(o.roots, stateDirs), a.Provider); root != "" {
+		if root := dsource.VersionRoot(slices.Concat(src.roots, stateDirs), a.Provider); root != "" {
 			out = append(out, fmt.Sprintf("%s uses %s, which has no list resources: -scan %s lists its objects through data sources (with credentials from the environment)", root, a.Provider, name))
 		}
 	}
@@ -153,9 +153,9 @@ func printScopes(w io.Writer, live []model.Resource) {
 // nothingChecked reports a run that could not have found anything: no list
 // query or data source scan listed a type, and no plugin ran. To a CI job exit 0 would mean that
 // nothing is unmanaged.
-func nothingChecked(o *options, s report.Summary) bool {
+func nothingChecked(src *sourceOptions, s report.Summary) bool {
 	// Empty plugin answers without done are recorded as failed sources.
-	return !hasDiscovery(s.Ran, len(o.plugins)) && !o.printQuery
+	return !hasDiscovery(s.Ran, len(src.plugins)) && !src.printQuery
 }
 
 // hasDiscovery accepts either planned listings or listings that actually ran.
@@ -234,7 +234,7 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 	if n := len(s.UnlistedTypes); n > 0 {
 		beyond = append(beyond, fmt.Sprintf("%d types in the states that their provider cannot list", n))
 	}
-	if s.APIOff > 0 && !o.strictAPI {
+	if s.APIOff > 0 && !o.audit.strictAPI {
 		beyond = append(beyond, fmt.Sprintf("%d listings whose API is not enabled (-strict-api=false left them out)", s.APIOff))
 	}
 	if s.StrictIgnored > 0 {
@@ -251,7 +251,7 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 	var gaps []string
 	failed := 0
 	for _, f := range s.Failed {
-		if (f.Category != tf.FailAPIOff || o.strictAPI) && !o.strictIgnore.Match(f.Type) {
+		if (f.Category != tf.FailAPIOff || o.audit.strictAPI) && !o.audit.strictIgnore.Match(f.Type) {
 			failed++
 		}
 	}
@@ -315,7 +315,7 @@ func printDiagnostics(w io.Writer, o *options, s report.Summary) {
 	}
 	if s.Uncertain > 0 {
 		where := "they are listed in the output"
-		if o.adopt || o.format == "summary" {
+		if o.adopt != nil || o.format == "summary" {
 			where = "-format json or text lists them"
 		}
 		fmt.Fprintf(w, "warning: %d objects are uncertain (%s).\n", s.Uncertain, where)

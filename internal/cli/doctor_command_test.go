@@ -87,7 +87,7 @@ func TestDoctorNextPositionalRoots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if audit.adopt || audit.doctor || !slices.Equal(audit.roots, o.roots) {
+			if audit.adopt != nil || audit.doctor != nil || !slices.Equal(audit.src.roots, o.src.roots) {
 				t.Fatalf("root interpreted as command or flag: %+v", audit)
 			}
 		})

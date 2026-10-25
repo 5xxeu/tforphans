@@ -25,10 +25,10 @@ func pullRoot(ctx context.Context, o *options, dir string) ([]state.Snapshot, in
 }
 
 func pullRootCount(ctx context.Context, o *options, dir string, total *int) ([]state.Snapshot, int, error) {
-	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion, MaxStateSize: o.maxStateSize}
+	r := tf.Runner{Bin: o.src.terraformBin, Dir: dir, AnyVersion: o.src.anyVersion, MaxStateSize: o.src.maxStateSize}
 	// "" is the selected workspace (no TF_WORKSPACE).
 	workspaces := []string{""}
-	if !o.currentWS {
+	if !o.src.currentWS {
 		var err error
 		if workspaces, err = r.Workspaces(ctx); err != nil {
 			return nil, 0, err
@@ -45,7 +45,7 @@ func pullRootCount(ctx context.Context, o *options, dir string, total *int) ([]s
 			return all, n, errors.Join(append(errs, ctx.Err())...)
 		}
 		r.Workspace = ws
-		if o.refresh {
+		if o.src.refresh {
 			// A refresh plans the whole root: minutes on a large one, so
 			// say what is going on.
 			start := time.Now()
@@ -63,9 +63,9 @@ func pullRootCount(ctx context.Context, o *options, dir string, total *int) ([]s
 			if ctx.Err() != nil {
 				return all, n, errors.Join(append(errs, ctx.Err())...)
 			}
-			o.mu.Lock()
-			o.stateNotes = append(o.stateNotes, fmt.Sprintf("%s: -refresh failed, the stored state was read instead: %v", dir, inWorkspace(ws, err)))
-			o.mu.Unlock()
+			o.run.mu.Lock()
+			o.run.stateNotes = append(o.run.stateNotes, fmt.Sprintf("%s: -refresh failed, the stored state was read instead: %v", dir, inWorkspace(ws, err)))
+			o.run.mu.Unlock()
 		}
 		raw, err := r.StatePull(ctx)
 		if err != nil {
@@ -101,7 +101,7 @@ func readStateRoots(ctx context.Context, o *options, idx *state.Index, sum *repo
 	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, o.stateParallelism)
+	sem := make(chan struct{}, o.src.stateParallelism)
 	done := 0
 	for _, d := range dirs {
 		sem <- struct{}{}
@@ -142,7 +142,7 @@ func pullStateRootCount(ctx context.Context, o *options, dir string, total *int)
 	// A Terragrunt unit: terragrunt renders the backend and initializes
 	// on its own. One state (units do not use workspaces), never refreshed.
 	unit := false
-	if o.terragrunt {
+	if o.src.terragrunt {
 		kind, err := tf.TerragruntKind(dir)
 		if err != nil {
 			return nil, 0, err
@@ -154,7 +154,7 @@ func pullStateRootCount(ctx context.Context, o *options, dir string, total *int)
 		if total != nil {
 			*total = 1
 		}
-		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.terraformBin, dir, o.maxStateSize)
+		raw, err := tf.TerragruntStatePull(ctx, "terragrunt", o.src.terraformBin, dir, o.src.maxStateSize)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -164,9 +164,9 @@ func pullStateRootCount(ctx context.Context, o *options, dir string, total *int)
 		}
 		return []state.Snapshot{snapshot}, 1, nil
 	}
-	r := tf.Runner{Bin: o.terraformBin, Dir: dir, AnyVersion: o.anyVersion}
+	r := tf.Runner{Bin: o.src.terraformBin, Dir: dir, AnyVersion: o.src.anyVersion}
 	if !r.Initialized() {
-		if !o.init {
+		if !o.src.init {
 			return nil, 0, errors.New("not initialized (run terraform init there, or pass -init)")
 		}
 		if err := r.Init(ctx); err != nil {
@@ -202,12 +202,12 @@ func inWorkspaceName(dir, ws string) string {
 
 // stepf prints a progress line when steps are shown (see options.steps).
 func (o *options) stepf(format string, args ...any) {
-	if o.steps == nil {
+	if o.run.steps == nil {
 		return
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	fmt.Fprintln(o.steps, report.Clean(fmt.Sprintf(format, args...)))
+	o.run.mu.Lock()
+	defer o.run.mu.Unlock()
+	fmt.Fprintln(o.run.steps, report.Clean(fmt.Sprintf(format, args...)))
 }
 
 // isTerminal reports whether w is a terminal.
@@ -222,12 +222,12 @@ func isTerminal(w io.Writer) bool {
 
 // progressf prints a progress line on stderr for long steps.
 func (o *options) progressf(format string, args ...any) {
-	if o.progress == nil {
+	if o.run.progress == nil {
 		return
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	fmt.Fprintln(o.progress, report.Clean(fmt.Sprintf(format, args...)))
+	o.run.mu.Lock()
+	defer o.run.mu.Unlock()
+	fmt.Fprintln(o.run.progress, report.Clean(fmt.Sprintf(format, args...)))
 }
 
 func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
@@ -235,8 +235,8 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 	// A root argument is queried with terraform, which reads the backend of
 	// its .tf files, not the one terragrunt renders: a unit there would
 	// stand in with a stale state (or none).
-	for _, r := range o.roots {
-		if !o.terragrunt {
+	for _, r := range o.src.roots {
+		if !o.src.terragrunt {
 			break
 		}
 		kind, err := tf.TerragruntKind(r)
@@ -247,19 +247,19 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 			return nil, fmt.Errorf("root %s is a Terragrunt unit: terraform query does not run in units, give its directory to -state-roots only", r)
 		}
 	}
-	for _, r := range o.roots {
+	for _, r := range o.src.roots {
 		if abs, err := filepath.Abs(r); err == nil {
 			skip[abs] = true
 		}
 	}
 	var dirs, skipped []string
-	for _, tree := range o.stateRoots {
-		found, unread, parents, err := tf.FindRoots(tree, o.terragrunt)
+	for _, tree := range o.src.stateRoots {
+		found, unread, parents, err := tf.FindRoots(tree, o.src.terragrunt)
 		if err != nil {
 			return nil, fmt.Errorf("-state-roots %s: %w", tree, err)
 		}
 		for _, p := range parents {
-			if !slices.ContainsFunc(o.tgUnits, func(u string) bool { return sameDir(u, p.Dir) }) {
+			if !slices.ContainsFunc(o.src.tgUnits, func(u string) bool { return sameDir(u, p.Dir) }) {
 				skipped = append(skipped, fmt.Sprintf("%s (by %s)", p.Dir, p.By))
 			}
 		}
@@ -282,7 +282,7 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 
 	// Units named with -terragrunt-unit are read even when units include
 	// them (FindRoots took them for shared configuration).
-	for _, u := range o.tgUnits {
+	for _, u := range o.src.tgUnits {
 		kind, err := tf.TerragruntKind(u)
 		if err != nil {
 			return nil, fmt.Errorf("-terragrunt-unit %s: %w", u, err)
@@ -301,10 +301,10 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 
 	// A path that is wrong (.. from the wrong directory) can reach a whole
 	// home directory: stop before terraform runs in all of it.
-	if o.maxRoots > 0 && len(dirs) > o.maxRoots {
-		return nil, fmt.Errorf("-state-roots found %d root modules under %s, more than -max-roots %d: check the paths (relative paths of a config file are relative to the file), or raise -max-roots", len(dirs), strings.Join(o.stateRoots, ", "), o.maxRoots)
+	if o.src.maxRoots > 0 && len(dirs) > o.src.maxRoots {
+		return nil, fmt.Errorf("-state-roots found %d root modules under %s, more than -max-roots %d: check the paths (relative paths of a config file are relative to the file), or raise -max-roots", len(dirs), strings.Join(o.src.stateRoots, ", "), o.src.maxRoots)
 	}
-	if d, a, b := tf.SharedDataDir(slices.Concat(o.roots, dirs)); d != "" {
+	if d, a, b := tf.SharedDataDir(slices.Concat(o.src.roots, dirs)); d != "" {
 		return nil, fmt.Errorf("root modules %s and %s share the data directory %s (TF_DATA_DIR): terraform could read one root's state for the other; unset TF_DATA_DIR or use a path inside each root (.terraform-x)", a, b, d)
 	}
 

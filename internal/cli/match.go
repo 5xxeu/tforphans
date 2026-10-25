@@ -155,16 +155,16 @@ func classify(o *options, idx *state.Index, live []model.Resource, origins map[s
 		var m state.Match
 		var rejected []state.Rejection
 		var ofType int
-		if o.explain {
+		if o.audit.explain {
 			m, rejected, ofType = idx.Explain(*r, 3)
 		} else {
 			m = idx.Match(*r)
 		}
 		rule, ignored := "", false
 		if !m.Managed || !m.Verified {
-			rule, ignored = o.ignore.Rule(*r)
+			rule, ignored = o.run.ignore.Rule(*r)
 		}
-		if o.explain {
+		if o.audit.explain {
 			sum.Explain = append(sum.Explain, explain(*r, m, rejected, ofType, rule, ignored))
 		}
 		switch {
@@ -208,7 +208,7 @@ func classify(o *options, idx *state.Index, live []model.Resource, origins map[s
 // skips and checks coverage is built from, after -strict-api and
 // -strict-ignore. It counts disabled APIs and strict-ignored listings in
 // sum and marks the skips -strict-ignore lets pass.
-func coverageInputs(o *options, sum *report.Summary) (counting []tf.Failure, skipped []tf.Skip, checks []tf.Check) {
+func coverageInputs(a auditOptions, sum *report.Summary) (counting []tf.Failure, skipped []tf.Skip, checks []tf.Check) {
 	// A disabled API (GCP) is a gap: disabling Cloud Storage or BigQuery
 	// keeps their data, so the failure proves nothing about objects.
 	// -strict-api=false takes it as empty, as before; types named in
@@ -221,19 +221,19 @@ func coverageInputs(o *options, sum *report.Summary) (counting []tf.Failure, ski
 	}
 	// A skip that -strict-ignore lets pass says so in skipped_types too.
 	for i, sk := range sum.Skipped {
-		if !sk.Excluded && o.strictIgnore.Match(sk.Type) {
+		if !sk.Excluded && a.strictIgnore.Match(sk.Type) {
 			sum.Skipped[i].Excluded = true
 			sum.Skipped[i].Reason = report.StrictIgnored + sk.Reason
 			sum.StrictIgnored++
 		}
 	}
-	if !o.strictAPI || len(o.strictIgnore) > 0 {
+	if !a.strictAPI || len(a.strictIgnore) > 0 {
 		counting = nil
 		skipped = slices.Clone(sum.Skipped)
 		checks = slices.Clone(sum.Checks)
 		for _, f := range sum.Failed {
 			switch {
-			case f.Category == tf.FailAPIOff && !o.strictAPI:
+			case f.Category == tf.FailAPIOff && !a.strictAPI:
 				skipped = append(skipped, tf.Skip{ReasonDetails: f.ReasonDetails(), Type: f.Type, Reason: tf.FailAPIOff, Excluded: true, Root: f.Root})
 				// The listing ran far enough to learn there is nothing:
 				// it stands for the check (an aliased block of the user's
@@ -241,7 +241,7 @@ func coverageInputs(o *options, sum *report.Summary) (counting []tf.Failure, ski
 				if f.Root != "" {
 					checks = append(checks, tf.Check{Type: f.Type, Scope: "root " + f.Root, Root: f.Root, Provider: f.Provider})
 				}
-			case o.strictIgnore.Match(f.Type):
+			case a.strictIgnore.Match(f.Type):
 				skipped = append(skipped, tf.Skip{ReasonDetails: f.ReasonDetails(), Type: f.Type, Reason: report.StrictIgnored + f.Category, Excluded: true, Root: f.Root})
 				sum.StrictIgnored++
 			default:
@@ -277,10 +277,10 @@ func mergeResult(kept *model.Resource, r model.Resource) {
 // nothing up front: what it returned is what it lists) but which that
 // provider cannot list: tforphans never checks objects of them. Types left
 // out with -types or -exclude-types are the user's choice and not reported.
-func unlistedTypes(o *options, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
+func unlistedTypes(src *sourceOptions, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
 	var out []report.UnlistedType
 	for k, n := range counts {
-		if !sum.QueriedFamilies[k.Provider] || sum.CanList(k.Type, k.Provider) || len(o.include) > 0 && !o.include.Match(k.Type) || o.exclude.Match(k.Type) {
+		if !sum.QueriedFamilies[k.Provider] || sum.CanList(k.Type, k.Provider) || len(src.include) > 0 && !src.include.Match(k.Type) || src.exclude.Match(k.Type) {
 			continue
 		}
 		out = append(out, report.UnlistedType{Type: k.Type, Provider: k.Provider, Instances: n})

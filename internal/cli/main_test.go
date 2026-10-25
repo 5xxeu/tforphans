@@ -26,16 +26,16 @@ import (
 
 func TestParseFlags(t *testing.T) {
 	o, err := parseFlags([]string{"adopt", "infra", "-o", "imports.tf", "-v"}, io.Discard)
-	if err != nil || !o.adopt || o.out != "imports.tf" || !o.verbose || len(o.roots) != 1 || o.roots[0] != "infra" {
+	if err != nil || o.adopt == nil || o.adopt.out != "imports.tf" || !o.verbose || len(o.src.roots) != 1 || o.src.roots[0] != "infra" {
 		t.Fatalf("adopt: %+v, %v", o, err)
 	}
 	o, err = parseFlags([]string{"./adopt"}, io.Discard)
-	if err != nil || o.adopt || o.roots[0] != "./adopt" {
+	if err != nil || o.adopt != nil || o.src.roots[0] != "./adopt" {
 		t.Fatalf("./adopt as root: %+v, %v", o, err)
 	}
 	o, err = parseFlags([]string{"-arg", "region=a,b", "-arg", "zone=z", "-arg", "region=b,c", "-arg", "google_*:zone=y"}, io.Discard)
-	if err != nil || fmt.Sprint(o.args) != "[{ region [a b c]} { zone [z]} {google_* zone [y]}]" {
-		t.Errorf("repeated -arg names: %v, %v", o.args, err)
+	if err != nil || fmt.Sprint(o.src.args) != "[{ region [a b c]} { zone [z]} {google_* zone [y]}]" {
+		t.Errorf("repeated -arg names: %v, %v", o.src.args, err)
 	}
 	for _, argv := range [][]string{
 		{"-format", "import"},
@@ -55,7 +55,7 @@ func TestMaxStateSizeFlag(t *testing.T) {
 		"1k": 1 << 10, "1m": 1 << 20, "1g": 1 << 30, "9223372036854775806": 1<<63 - 2,
 	} {
 		o, err := parseFlags([]string{"-no-config", "-max-state-size", value}, io.Discard)
-		if err != nil || o.maxStateSize != want {
+		if err != nil || o.src.maxStateSize != want {
 			t.Errorf("%s: %+v, %v", value, o, err)
 		}
 	}
@@ -64,7 +64,7 @@ func TestMaxStateSizeFlag(t *testing.T) {
 			t.Errorf("%q: %v", value, err)
 		}
 	}
-	if o, err := parseFlags([]string{"-no-config"}, io.Discard); err != nil || o.maxStateSize != state.DefaultMaxSize {
+	if o, err := parseFlags([]string{"-no-config"}, io.Discard); err != nil || o.src.maxStateSize != state.DefaultMaxSize {
 		t.Errorf("default: %+v, %v", o, err)
 	}
 }
@@ -88,11 +88,11 @@ func TestMaxStateSizeCallSites(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s' '"+data+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	o := &options{terraformBin: bin, currentWS: true, maxStateSize: 1}
+	o := &options{src: sourceOptions{terraformBin: bin, currentWS: true, maxStateSize: 1}}
 	if _, n, err := pullRoot(context.Background(), o, dir); err == nil || n != 0 || !strings.Contains(err.Error(), "raise -max-state-size") {
 		t.Errorf("root state: %d, %v", n, err)
 	}
-	o.maxStateSize = int64(len(data))
+	o.src.maxStateSize = int64(len(data))
 	if _, n, err := pullRoot(context.Background(), o, dir); err != nil || n != 1 {
 		t.Errorf("root state at boundary: %d, %v", n, err)
 	}
@@ -286,12 +286,12 @@ func TestScanHints(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".terraform.lock.hcl"), []byte(lock), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	o := &options{roots: []string{root}}
-	if h := scanHints(o, nil); len(h) != 1 || !strings.Contains(h[0], "-scan cloudflare") {
+	o := &options{src: sourceOptions{roots: []string{root}}}
+	if h := scanHints(&o.src, nil); len(h) != 1 || !strings.Contains(h[0], "-scan cloudflare") {
 		t.Errorf("hints %q", h)
 	}
-	o.scans = []string{"cloudflare"}
-	if h := scanHints(o, nil); len(h) != 0 {
+	o.src.scans = []string{"cloudflare"}
+	if h := scanHints(&o.src, nil); len(h) != 0 {
 		t.Errorf("hints while scanning %q", h)
 	}
 	if p := runPlan(o, []string{"a", "b"}); !strings.Contains(p, "terraform query in "+root) || !strings.Contains(p, "2 more root modules") || !strings.Contains(p, "whole account") {
@@ -402,14 +402,14 @@ func TestImpliedNoQuery(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	o, err := parseFlags([]string{"-scan", "proxmox"}, io.Discard)
-	if err != nil || !o.noQuery || !o.impliedNoQuery || len(o.roots) != 0 {
+	if err != nil || !o.src.noQuery || !o.src.impliedNoQuery || len(o.src.roots) != 0 {
 		t.Fatalf("no config: %+v, %v", o, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte("terraform {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	o, err = parseFlags([]string{"-scan", "proxmox"}, io.Discard)
-	if err != nil || o.noQuery || !slices.Equal(o.roots, []string{"."}) {
+	if err != nil || o.src.noQuery || !slices.Equal(o.src.roots, []string{"."}) {
 		t.Fatalf("with config: %+v, %v", o, err)
 	}
 }
@@ -423,18 +423,18 @@ func TestImpliedNoRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err := parseFlags([]string{"-no-config", "-state-roots", "stacks"}, io.Discard)
-	if err != nil || !o.impliedNoRoot || o.noQuery || len(o.roots) != 0 {
+	if err != nil || !o.src.impliedNoRoot || o.src.noQuery || len(o.src.roots) != 0 {
 		t.Fatalf("no config: %+v, %v", o, err)
 	}
 	o, err = parseFlags([]string{"-no-config"}, io.Discard)
-	if err != nil || o.impliedNoRoot || !slices.Equal(o.roots, []string{"."}) {
+	if err != nil || o.src.impliedNoRoot || !slices.Equal(o.src.roots, []string{"."}) {
 		t.Fatalf("no state source: %+v, %v", o, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte("terraform {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	o, err = parseFlags([]string{"-no-config", "-state-roots", "stacks"}, io.Discard)
-	if err != nil || o.impliedNoRoot || !slices.Equal(o.roots, []string{"."}) {
+	if err != nil || o.src.impliedNoRoot || !slices.Equal(o.src.roots, []string{"."}) {
 		t.Fatalf("with config: %+v, %v", o, err)
 	}
 }
@@ -611,7 +611,7 @@ func TestKeepAttrs(t *testing.T) {
 		t.Errorf("a type that is no scalar kept: %v", got)
 	}
 	r := model.Resource{Attributes: keepAttrs(attrs, []string{"labels"})}
-	(&options{includeAttrs: []string{"labels"}}).trimAttrs(&r)
+	(&options{src: sourceOptions{includeAttrs: []string{"labels"}}}).trimAttrs(&r)
 	if _, ok := r.Attributes["type"]; ok || r.Attributes["labels"] == nil {
 		t.Errorf("output attributes %v", r.Attributes)
 	}
@@ -684,7 +684,7 @@ func TestLoadIgnoreDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ig, err := loadIgnore(context.Background(), o)
+		ig, err := loadIgnore(context.Background(), o.ignore)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -721,8 +721,8 @@ func TestUnlistedTypes(t *testing.T) {
 	sum.AddListable("registry.terraform.io/other/acme")
 	// A plugin returned vault_policy objects.
 	sum.AddListable("hashicorp/vault", "vault_policy")
-	o := &options{exclude: glob.CompileList([]string{"aws_excluded_*"})}
-	got := unlistedTypes(o, counts, sum)
+	o := &options{src: sourceOptions{exclude: glob.CompileList([]string{"aws_excluded_*"})}}
+	got := unlistedTypes(&o.src, counts, sum)
 	want := []report.UnlistedType{
 		{Type: "aws_iam_role_policy_attachment", Provider: "hashicorp/aws", Instances: 12},
 		{Type: "acme_thing", Provider: "other/acme", Instances: 7},
@@ -733,8 +733,8 @@ func TestUnlistedTypes(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 	// -types narrows the run: other types are the user's choice.
-	o = &options{include: glob.CompileList([]string{"cloudflare_*"})}
-	if got := unlistedTypes(o, counts, sum); len(got) != 1 || got[0].Type != "cloudflare_page_rule" {
+	o = &options{src: sourceOptions{include: glob.CompileList([]string{"cloudflare_*"})}}
+	if got := unlistedTypes(&o.src, counts, sum); len(got) != 1 || got[0].Type != "cloudflare_page_rule" {
 		t.Errorf("with -types: %+v", got)
 	}
 	var many []report.UnlistedType
@@ -819,7 +819,7 @@ func TestStateParallelismBounds(t *testing.T) {
 		}
 	}
 	o, err := parseFlags([]string{"-no-config", "-state-parallelism", "16"}, io.Discard)
-	if err != nil || o.stateParallelism != 16 {
+	if err != nil || o.src.stateParallelism != 16 {
 		t.Fatalf("%v %+v", err, o)
 	}
 	if _, err := parseFlags([]string{"-no-config", "-names-from-tags"}, io.Discard); err == nil {
@@ -882,7 +882,7 @@ func TestFailedSourceKeepsReport(t *testing.T) {
 // TestSourceTimeoutKeepsCause: a root whose query timed out after its
 // state was read is still told apart from an unread state.
 func TestSourceTimeoutKeepsCause(t *testing.T) {
-	o := &options{sourceTimeout: 50 * time.Millisecond}
+	o := &options{src: sourceOptions{sourceTimeout: 50 * time.Millisecond}}
 	_, err := withSource(context.Background(), o, func(ctx context.Context) (struct{}, error) {
 		<-ctx.Done()
 		return struct{}{}, queryError{ctx.Err()}
@@ -896,7 +896,7 @@ func TestSourceTimeoutKeepsCause(t *testing.T) {
 // TestSourceTimeoutAfterSuccess: a source that returns no error after its
 // deadline still timed out.
 func TestSourceTimeoutAfterSuccess(t *testing.T) {
-	o := &options{sourceTimeout: 50 * time.Millisecond}
+	o := &options{src: sourceOptions{sourceTimeout: 50 * time.Millisecond}}
 	_, err := withSource(context.Background(), o, func(ctx context.Context) (int, error) {
 		<-ctx.Done()
 		return 1, nil
@@ -977,7 +977,7 @@ func TestSharedDataDir(t *testing.T) {
 	}
 
 	read := func(roots ...string) error {
-		o := &options{stateRoots: roots, stateParallelism: 1, terraformBin: "/nonexistent/terraform"}
+		o := &options{src: sourceOptions{stateRoots: roots, stateParallelism: 1, terraformBin: "/nonexistent/terraform"}}
 		var sum report.Summary
 		_, err := readStateRoots(context.Background(), o, state.NewIndex(), &sum)
 		return err
@@ -1038,7 +1038,7 @@ func TestClassify(t *testing.T) {
 	for _, r := range live {
 		origins[originKey(r)] = append(origins[originKey(r)], r)
 	}
-	o := &options{ignore: ignore}
+	o := &options{run: runState{ignore: ignore}}
 	var sum report.Summary
 	c := classify(o, idx, live, origins, &sum)
 
@@ -1107,8 +1107,8 @@ func TestCoverageInputs(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sum := report.Summary{Failed: []tf.Failure{apiOff, other, firebase}, Skipped: []tf.Skip{needsArg}}
-			o := &options{strictAPI: c.strictAPI, strictIgnore: glob.CompileList(c.strictIgnore)}
-			counting, skipped, checks := coverageInputs(o, &sum)
+			o := &options{audit: auditOptions{strictAPI: c.strictAPI, strictIgnore: glob.CompileList(c.strictIgnore)}}
+			counting, skipped, checks := coverageInputs(o.audit, &sum)
 			var got []string
 			for _, f := range counting {
 				got = append(got, f.Type)

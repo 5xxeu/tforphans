@@ -9,9 +9,9 @@ import (
 	"github.com/5xxeu/tforphans/internal/state"
 )
 
-func scanScope(o *options, a dsource.Adapter, idx *state.Index) map[string][]string {
-	scope := maps.Clone(o.scanScope)
-	if o.scopeState {
+func scanScope(src *sourceOptions, a dsource.Adapter, idx *state.Index) map[string][]string {
+	scope := maps.Clone(src.scanScope)
+	if src.scopeState {
 		if scope == nil {
 			scope = map[string][]string{}
 		}

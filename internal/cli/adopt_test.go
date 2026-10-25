@@ -101,7 +101,7 @@ func TestAdoptOutDirFlags(t *testing.T) {
 		}
 	}
 	o, err := parseFlags([]string{"adopt", "-no-config", "-scan", "cloudflare", "-out-dir", "out", "-adopt-root", "cloudflare=vault"}, io.Discard)
-	if err != nil || o.adoptRoots["cloudflare"] != "vault" {
+	if err != nil || o.adopt.roots["cloudflare"] != "vault" {
 		t.Errorf("%v %v", o, err)
 	}
 	if _, err := parseFlags([]string{"-out-dir", "out"}, io.Discard); err == nil {
@@ -171,14 +171,14 @@ func TestAdoptTarget(t *testing.T) {
 	put(t, "plugin1/main.tf", "")
 	put(t, "vault/main.tf", "")
 	roots := map[string]bool{"plugin1": true}
-	o := &options{}
+	o := &options{adopt: &adoptOptions{}}
 	if got := adoptTarget(o, model.Resource{Source: "plugin1"}, roots); got != "" {
 		t.Errorf("plugin1 result went to %s", got)
 	}
 	if got := adoptTarget(o, model.Resource{Source: "plugin1", ListAddress: "list.x.y"}, roots); got != canonDir("plugin1") {
 		t.Errorf("root result: %q", got)
 	}
-	o.adoptRoots = map[string]string{"plugin1": "vault"}
+	o.adopt.roots = map[string]string{"plugin1": "vault"}
 	if got := adoptTarget(o, model.Resource{Source: "plugin1"}, roots); got != canonDir("vault") {
 		t.Errorf("assigned: %q", got)
 	}

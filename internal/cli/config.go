@@ -84,7 +84,7 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
-		if o.doctor && o.doctorConfigFlags[key] && !slices.Contains(commandLineOnly, key) && !doctorIgnoreKey(key) {
+		if o.doctor != nil && o.doctor.configFlags[key] && !slices.Contains(commandLineOnly, key) && !doctorIgnoreKey(key) {
 			continue
 		}
 		vals, err := configValues(doc[key])
@@ -92,20 +92,20 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			return fmt.Errorf("%s: %s: %w", path, key, err)
 		}
 		if key == "roots" {
-			if len(o.roots) == 0 {
+			if len(o.src.roots) == 0 {
 				for _, v := range vals {
 					p, err := inside(configPath(dir, v), explicit)
 					if err != nil {
 						return fmt.Errorf("%s: roots: %w", path, err)
 					}
-					o.roots = append(o.roots, p)
+					o.src.roots = append(o.src.roots, p)
 				}
 			}
 			continue
 		}
 		f := fs.Lookup(key)
-		if o.doctor && doctorIgnoreKey(key) {
-			f = o.doctorIgnoreFlags.Lookup(key)
+		if o.doctor != nil && doctorIgnoreKey(key) {
+			f = o.doctor.ignoreFlags.Lookup(key)
 		}
 		switch {
 		case slices.Contains(commandLineOnly, key):
@@ -148,8 +148,8 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 				v = p
 			}
 			target := fs
-			if o.doctor && doctorIgnoreKey(key) {
-				target = o.doctorIgnoreFlags
+			if o.doctor != nil && doctorIgnoreKey(key) {
+				target = o.doctor.ignoreFlags
 			}
 			if err := target.Set(key, v); err != nil {
 				return fmt.Errorf("%s: %s: %w", path, key, err)
