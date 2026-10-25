@@ -465,3 +465,19 @@ func TestBaselineTransitionsRun(t *testing.T) {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }
+
+func TestDiffSkipsConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "report.json")
+	saveReportTest(t, path, nil, report.Summary{Complete: true})
+	// A config that could run a command must not be read by diff.
+	if err := os.WriteFile(defaultConfigFile, []byte("plugin: exit 99\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "")
+	code, stdout, stderr := runReportTest(t, "diff", path, path)
+	if code != exitOK || stderr != "" || !strings.Contains(stdout, "added (0)") {
+		t.Fatalf("exit %d: %s%s", code, stdout, stderr)
+	}
+}

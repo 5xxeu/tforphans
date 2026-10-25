@@ -1,5 +1,5 @@
 // Package cli is the tforphans command line: flags, the audit, adopt,
-// doctor, init and diff commands and their output.
+// doctor and init commands and their output. diff lives in diffcmd.
 package cli
 
 import (
@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"syscall"
 
+	"github.com/5xxeu/tforphans/internal/diffcmd"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
@@ -60,7 +61,7 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		return runDoctor(ctx, argv, stdout, stderr)
 	}
 	if len(argv) > 0 && argv[0] == "diff" {
-		return runDiff(argv[1:], stdout, stderr)
+		return diffcmd.Run(argv[1:], stdout, stderr)
 	}
 	terminalErr := isTerminal(stderr)
 	stderr = report.WithColor(stderr, colorEnabled(stderr))
