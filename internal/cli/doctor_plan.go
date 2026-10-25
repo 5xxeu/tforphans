@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
+	"github.com/5xxeu/tforphans/internal/dsource"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
 )
@@ -93,4 +96,69 @@ func doctorUserListCoverage(sk tf.Skip, root string, lists map[string]tf.UserLis
 		}
 	}
 	return ""
+}
+
+func (d *doctorReport) skipPlan(root, reason string) {
+	for _, id := range []string{"query.plan", "query.arguments", "query.aliases"} {
+		d.add(id, "skipped", reason, root, "")
+	}
+}
+
+func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin string, scope map[string][]string) {
+	id := "scan." + name + ".plan"
+	if o.doctor.offline && o.src.scopeState {
+		d.add(id, "skipped", "offline: -scan-scope state requires reading states; scan plan unconfirmed", pin, "")
+		return
+	}
+	if pin == "" {
+		d.add(id, "skipped", "provider is not pinned; scan plan unavailable", "", "Supply a root pinning the scan provider with -state-roots")
+		return
+	}
+	p, err := withSource(ctx, o, func(ctx context.Context) (*dsource.PlanReport, error) {
+		return dsource.InspectPlan(ctx, sources[name], dsource.Options{TerraformBin: o.src.terraformBin, VersionRoot: pin, Include: o.src.include, Exclude: o.src.exclude, Scope: scope})
+	})
+	if err != nil {
+		status := "failed"
+		if o.doctor.offline && errors.Is(err, dsource.ErrProviderNotInstalled) {
+			status = "skipped"
+		}
+		d.add(id, status, report.NewUnreadState(pin, err).Error, pin, "terraform -chdir="+shellQuote(pin)+" init")
+		if doctorResponseError(err) {
+			d.incomplete = true
+		}
+		return
+	}
+	d.scanBlocks += p.Listings
+	d.add(id, "ok", fmt.Sprintf("%d data source blocks selected (%d listing blocks); no data sources read", p.Blocks, p.Listings), pin, "")
+	d.Checks[len(d.Checks)-1].Count = &p.Listings
+	d.Checks[len(d.Checks)-1].Blocks = &p.Blocks
+	for _, sk := range p.Skipped {
+		status := "warning"
+		if sk.Excluded {
+			status = "skipped"
+		}
+		d.planSkip(id, status, doctorScanCategory(sk), pin, "", sk)
+	}
+}
+
+func (d *doctorReport) discovery(o *options) {
+	queries := d.queries
+	if o.src.noQuery {
+		queries = 0
+	}
+	count := queries + d.scanBlocks + len(o.src.plugins)
+	status, fix := "ok", ""
+	if !hasDiscovery(queries+d.scanBlocks, len(o.src.plugins)) {
+		status = "failed"
+		fix = "Use -plugin COMMAND or a root with list resources; review -types and -exclude-types"
+		for _, name := range slices.Sorted(maps.Keys(sources)) {
+			if slices.ContainsFunc(d.providers, func(addr string) bool { return tf.NormalizeSource(addr) == tf.NormalizeSource(sources[name].Provider) }) {
+				fix = "Add -scan " + name + " (the roots use its provider, which has no list resources)"
+				d.fixes = append(d.fixes, "-scan", name)
+				break
+			}
+		}
+	}
+	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scan blocks, %d plugins selected", queries, d.scanBlocks, len(o.src.plugins)), "", fix)
+	d.Checks[len(d.Checks)-1].Count = &count
 }
