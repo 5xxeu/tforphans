@@ -1,4 +1,6 @@
-package cli
+// Package diffcmd implements tforphans diff: it compares two saved JSON
+// reports and runs no Terraform.
+package diffcmd
 
 import (
 	"context"
@@ -11,6 +13,12 @@ import (
 	"github.com/5xxeu/tforphans/internal/state"
 )
 
+const (
+	exitOK      = 0
+	exitError   = 1
+	exitOrphans = 2
+)
+
 const diffUsage = `Usage: tforphans diff [flags] OLD.json NEW.json
 
 Compare two -format json reports without running Terraform. Missing findings
@@ -21,7 +29,9 @@ Exit status: 2 when added findings exist, 0 otherwise, 1 on error.
 Flags:
 `
 
-func runDiff(argv []string, stdout, stderr io.Writer) int {
+// Run executes tforphans diff with the arguments after "diff" and returns
+// the exit status: 2 when NEW has added findings, 1 on error, 0 otherwise.
+func Run(argv []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("tforphans diff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
