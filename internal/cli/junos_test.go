@@ -1,0 +1,106 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"testing"
+)
+
+// The Junos plugin against a saved configuration and a state of the same
+// device: names only, all uncertain until -plugin-cluster-states, then the
+// three objects in state are managed.
+func TestJunosPlugin(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not in PATH")
+	}
+	plugin := "python3 ../../examples/plugins/junos.py testdata/junos/config.json"
+	report := func(args ...string) (int, map[string]any, string) {
+		var out, errb bytes.Buffer
+		code := run(context.Background(), append([]string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", plugin, "-format", "json"}, args...), &out, &errb)
+		var rep map[string]any
+		if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+			t.Fatalf("exit %d: %v\n%s\n%s", code, err, out.String(), errb.String())
+		}
+		if bytes.Contains(out.Bytes(), []byte("secret")) || bytes.Contains(errb.Bytes(), []byte("secret")) {
+			t.Error("configuration text in the output")
+		}
+		return code, rep["summary"].(map[string]any), errb.String()
+	}
+	code, sum, stderr := report()
+	if code != exitOrphans || sum["live"] != 17.0 || sum["managed"] != 0.0 || sum["uncertain"] != 3.0 || sum["orphans"] != 14.0 {
+		t.Errorf("without -plugin-cluster-states: exit %d %v\n%s", code, sum, stderr)
+	}
+	code, sum, stderr = report("-plugin-cluster-states")
+	if code != exitOrphans || sum["managed"] != 3.0 || sum["uncertain"] != 0.0 || sum["orphans"] != 14.0 {
+		t.Errorf("with -plugin-cluster-states: exit %d %v\n%s", code, sum, stderr)
+	}
+	// A device that cannot be read is a warning: the run goes on, coverage
+	// is incomplete.
+	var out, errb bytes.Buffer
+	code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 ../../examples/plugins/junos.py testdata/junos/missing.json", "-strict"}, &out, &errb)
+	if code != exitError || !bytes.Contains(errb.Bytes(), []byte("cannot read the configuration")) || !bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE")) {
+		t.Errorf("unreadable device: exit %d\n%s", code, errb.String())
+	}
+	// JSON that is not a configuration, or a configuration of a layout the
+	// plugin does not know, is an error line and nothing else: never an
+	// empty or partial device that looks checked.
+	for name, doc := range map[string]string{
+		"rpc-error": `{"rpc-error":{"error-message":"permission denied"}}`,
+		"layout":    `{"configuration":{"policy-options":{"prefix-list":[{"name":"p1"}]},"protocols":[{}]}}`,
+		"null":      `{"configuration":{"interfaces":null,"applications":{"application":[{"name":"p1"}]}}}`,
+		"name":      `{"configuration":{"security":{"zones":{"security-zone":[{"name":{"x":1}}]}}}}`,
+	} {
+		f := filepath.Join(t.TempDir(), "conf.json")
+		if err := os.WriteFile(f, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+		errb.Reset()
+		code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 ../../examples/plugins/junos.py '" + f + "'", "-strict"}, &out, &errb)
+		if code != exitError || !bytes.Contains(errb.Bytes(), []byte("junos: ")) || !bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE")) || bytes.Contains(out.Bytes(), []byte("p1")) {
+			t.Errorf("%s: exit %d\n%s\n%s", name, code, out.String(), errb.String())
+		}
+	}
+	var types []string
+	for k := range sum["by_type"].(map[string]any) {
+		types = append(types, k)
+	}
+	slices.Sort(types)
+	want := []string{"junos_application", "junos_application_set", "junos_bgp_group", "junos_bgp_neighbor", "junos_interface_logical",
+		"junos_interface_physical", "junos_policyoptions_policy_statement", "junos_policyoptions_prefix_list", "junos_security_zone"}
+	if !slices.Equal(types, want) {
+		t.Errorf("types %v", types)
+	}
+}
+
+func TestJunosPluginEmptyConfiguration(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not in PATH")
+	}
+	conf := filepath.Join(t.TempDir(), "conf.json")
+	if err := os.WriteFile(conf, []byte(`{"configuration":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "python3 ../../examples/plugins/junos.py '" + conf + "'", "-strict", "-format", "json"}, &out, &errb)
+	if code != exitOK {
+		t.Fatalf("exit %d: %s", code, &errb)
+	}
+	var rep struct {
+		Summary struct {
+			Complete          bool `json:"complete"`
+			DiscoveryComplete bool `json:"discovery_complete"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("%v: %s", err, &out)
+	}
+	if !rep.Summary.Complete || !rep.Summary.DiscoveryComplete {
+		t.Errorf("coverage: %s", &out)
+	}
+}

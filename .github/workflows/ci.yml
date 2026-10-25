@@ -125,6 +125,6 @@ jobs:
           echo "$TG_SHA256  $RUNNER_TEMP/terragrunt" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/terragrunt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - run: go test -tags integration -count=1 $RACE .
+      - run: go test -tags integration -count=1 $RACE ./internal/cli/
         env:
           RACE: ${{ github.event_name == 'schedule' && '-race' || '' }}
