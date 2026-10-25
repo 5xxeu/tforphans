@@ -573,3 +573,16 @@ func exitStatus(o *options, sum report.Summary, shown []model.Resource, stderr i
 	}
 	return nil
 }
+
+// nothingChecked reports a run that could not have found anything: no list
+// query or data source scan listed a type, and no plugin ran. To a CI job exit 0 would mean that
+// nothing is unmanaged.
+func nothingChecked(src *sourceOptions, s report.Summary) bool {
+	// Empty plugin answers without done are recorded as failed sources.
+	return !hasDiscovery(s.Ran, len(src.plugins)) && !src.printQuery
+}
+
+// hasDiscovery accepts either planned listings or listings that actually ran.
+func hasDiscovery(listings, plugins int) bool {
+	return listings != 0 || plugins != 0
+}

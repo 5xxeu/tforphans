@@ -391,3 +391,57 @@ func uncertainReason(m state.Match) model.ReasonDetails {
 	}
 	return model.Reason(code, append(slices.Clone(m.Unknown), m.Unconfirmed...)...)
 }
+
+// sortResources orders objects by scope, type and name.
+func sortResources(rs []model.Resource) { slices.SortStableFunc(rs, compareResources) }
+
+func compareResources(a, b model.Resource) int {
+	if c := strings.Compare(a.ScopeName, b.ScopeName); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.Type, b.Type); c != 0 {
+		return c
+	}
+	// The bare name ignores display details such as a guest's node.
+	// Break ties by source, provider and identity so import suffixes
+	// _2, _3 do not depend on the API's listing order.
+	if c := strings.Compare(baseName(a), baseName(b)); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.Source, b.Source); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.Provider, b.Provider); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.ProviderSource, b.ProviderSource); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.ImportID, b.ImportID); c != 0 {
+		return c
+	}
+	if c := strings.Compare(a.IdentityString(), b.IdentityString()); c != 0 {
+		return c
+	}
+	// Quoted keys and values distinguish identities with separators in them.
+	return strings.Compare(a.Key(), b.Key())
+}
+
+func baseName(r model.Resource) string {
+	if r.BaseName != "" {
+		return r.BaseName
+	}
+	return r.DisplayName
+}
+
+// scopeName names the account of an object from its identity, for people:
+// "project my-project"; "" when the identity does not say.
+func scopeName(identity map[string]any) string {
+	var parts []string
+	for _, k := range scopeKeys {
+		if v, ok := model.Scalar(identity[k]); ok && v != "" {
+			parts = append(parts, k+" "+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
