@@ -1,0 +1,446 @@
+package cli
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/5xxeu/tforphans/internal/glob"
+	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/state"
+	"github.com/5xxeu/tforphans/internal/tf"
+)
+
+const usage = `Usage: tforphans [flags] [ROOT_DIR...]
+
+Finds live resources that are not managed by any of the given Terraform
+states. Each ROOT_DIR (default "." when it has Terraform configuration or no
+other state source is given) must be an initialized root module; its state
+is read with "terraform state pull" and its providers are asked to list
+live resources with "terraform query".
+
+Exit status: 0 nothing new found, 2 unmanaged resources found (only new with
+-baseline), 1 error (also on incomplete coverage with -strict, duplicate
+ownership with -strict-ownership).
+
+Run "tforphans adopt -h" to generate import blocks for what it finds.
+Run "tforphans init" to discover roots and create .tforphans.yaml.
+Run "tforphans doctor -h" to check readiness before an audit.
+Run "tforphans diff -h" to compare two saved JSON reports.
+
+Flags:
+`
+
+const adoptUsage = `Usage: tforphans adopt [flags] [ROOT_DIR...]
+
+Finds unmanaged resources like tforphans does and writes an import block for
+each one. Put the blocks into the root module and generate the configuration:
+
+  tforphans adopt -o imports.tf
+  terraform plan -generate-config-out=generated.tf
+
+With several root modules, -out-dir DIR writes a file per root module
+(DIR/<root path>/imports.tf) to copy into it.
+
+Objects that state may manage but cannot confirm (uncertain) get no block.
+When a state could not be read, adopt stops: objects of that state would show
+as unmanaged and be imported a second time (-allow-incomplete writes anyway).
+
+Exit status: 0 on success, whether or not anything was found; 1 on error
+(also on incomplete coverage with -strict, duplicate ownership with -strict-ownership).
+
+Flags:
+`
+
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, " ") }
+
+func (l *listFlag) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
+
+type sizeFlag int64
+
+func (s *sizeFlag) String() string { return strconv.FormatInt(int64(*s), 10) }
+
+func (s *sizeFlag) Set(v string) error {
+	multiplier := int64(1)
+	if len(v) > 0 {
+		switch v[len(v)-1] {
+		case 'k', 'K':
+			multiplier = 1 << 10
+		case 'm', 'M':
+			multiplier = 1 << 20
+		case 'g', 'G':
+			multiplier = 1 << 30
+		}
+		if multiplier != 1 {
+			v = v[:len(v)-1]
+		}
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 || n > (math.MaxInt64-1)/multiplier {
+		return errors.New("want a positive byte count, optionally followed by K, M or G (powers of 1024), below 9223372036854775807 bytes")
+	}
+	*s = sizeFlag(n * multiplier)
+	return nil
+}
+
+// csv splits comma-separated values from repeated flags.
+func (l listFlag) csv() []string {
+	var out []string
+	for _, v := range l {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+type options struct {
+	roots        []string
+	stateRoots   listFlag
+	init         bool
+	currentWS    bool // read only the selected workspace of each root
+	anyVersion   bool // lift the roots' required_version
+	states       listFlag
+	maxStateSize int64
+	maxQuerySize int64
+	// timeout bounds the whole run, sourceTimeout each root, scan and plugin.
+	timeout, sourceTimeout time.Duration
+	plugins                listFlag
+	scans                  []string
+	scanScope              map[string][]string // -scan-scope ARG=values
+	scopeState             bool                // -scan-scope state
+	refresh                bool
+	mu                     sync.Mutex
+	stateNotes             []string // notes of state reading, from several goroutines
+	args                   []tf.Arg
+	include                glob.List
+	exclude                glob.List
+	limit                  int
+	format                 string
+	adopt                  bool              // "adopt" subcommand: write import blocks
+	out                    string            // adopt: output file, empty for stdout
+	outDir                 string            // adopt: directory with a file per root module
+	adoptRoots             map[string]string // adopt -adopt-root: -scan provider or pluginN to root module directory
+	baselinePath           string
+	environment            string
+	ignorePath             string
+	presets                []string
+	includeAttrs           []string
+	ignore                 *report.Ignore // loaded in execute
+	strict                 bool
+	verbose                bool
+	explain                bool
+	noAliases              bool
+	printQuery             bool
+	noQuery                bool
+	allowUnpinned          bool
+	// adopt: write import blocks although a state could not be read.
+	allowIncomplete bool
+	allowHTTP       bool
+	proxmoxStates   bool
+	pluginStates    bool
+	terraformBin    string
+	maxRoots        int
+	progress        io.Writer // progress lines of long steps (stderr)
+	// steps, when set, gets a line per root and data source scan, so that
+	// a long run does not look hung (stderr on a terminal, without -quiet).
+	steps io.Writer
+	quiet bool
+	// impliedNoQuery: no root given and none in the current directory, so
+	// only -scan and -plugin run.
+	impliedNoQuery bool
+	// impliedNoRoot: no root given and none in the current directory, but
+	// other state sources are: the directory is not read as a root.
+	impliedNoRoot bool
+	// noDefaultPresets: report.DefaultPresets are not applied.
+	noDefaultPresets bool
+	// namesFromTags: adopt names resources after their Name tag.
+	namesFromTags bool
+	// stateParallelism is how many -state-roots are read at once.
+	stateParallelism int
+	strictOwnership  bool
+	strictAPI        bool
+	strictIgnore     glob.List // -strict-ignore
+	terragrunt       bool
+	tgUnits          listFlag // -terragrunt-unit
+	configFile       string   // flags read from this file
+
+	doctor, offline, checkAuth bool
+	doctorConfigFlags          map[string]bool
+	doctorIgnoreFlags          *flag.FlagSet
+	doctorFlagSet              *flag.FlagSet
+	doctorArgs                 []commandArg
+}
+
+const impliedNoRootNote = "no ROOT_DIR given and no Terraform configuration in the current directory: only the given states are read; list objects with -scan, -plugin or a root with list resources"
+
+func parseFlags(argv []string, stderr io.Writer) (*options, error) {
+	o := &options{maxStateSize: state.DefaultMaxSize, maxQuerySize: tf.DefaultMaxQuerySize}
+	name, help := "tforphans", usage
+	// A root module directory named "adopt" can be passed as ./adopt.
+	if len(argv) > 0 && argv[0] == "adopt" {
+		o.adopt, argv = true, argv[1:]
+		name, help = "tforphans adopt", adoptUsage
+	} else if len(argv) > 0 && argv[0] == "doctor" {
+		o.doctor, argv = true, argv[1:]
+		name, help = "tforphans doctor", doctorUsage
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, help)
+		fs.PrintDefaults()
+	}
+	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots listFlag
+	fs.Var(&o.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
+	fs.IntVar(&o.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
+	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
+	fs.DurationVar(&o.sourceTimeout, "source-timeout", 0, "give up on one root, -scan or plugin after this long and go on with the others, e.g. 10m (0: no limit)")
+	fs.Var((*sizeFlag)(&o.maxQuerySize), "max-query-size", "maximum bytes of one terraform query's output, read as it comes; accepts K, M or G suffixes")
+	fs.Var((*sizeFlag)(&o.maxStateSize), "max-state-size", "maximum bytes per state, including state pull and refresh output; accepts K, M or G suffixes (powers of 1024)")
+	fs.Var(&o.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
+	fs.BoolVar(&o.proxmoxStates, "proxmox-cluster-states", false, "state that every state given belongs to the Proxmox cluster scanned with -scan proxmox; without it Proxmox matches are uncertain, since state does not record the cluster")
+	fs.BoolVar(&o.pluginStates, "plugin-cluster-states", false, "state that every state given belongs to the cluster or account the plugins scan; without it results a plugin marks \"unverified\" (state does not record where they live) match only as uncertain")
+	fs.BoolVar(&o.allowHTTP, "allow-http", false, "allow -state URLs over plain http (never with credentials)")
+	fs.BoolVar(&o.allowUnpinned, "allow-unpinned", false, "let -scan install the newest provider release when no root module pins its version")
+	fs.BoolVar(&o.currentWS, "current-workspace", false, "read only the selected workspace of each root module instead of listing all workspaces")
+	fs.BoolVar(&o.anyVersion, "ignore-required-version", false, "lift the root modules' required_version with a temporary override file, so that a root pinned to an older Terraform can be queried (child modules' constraints still apply)")
+	fs.BoolVar(&o.refresh, "refresh", false, "read each root's state through terraform plan -refresh-only (no lock, nothing written) instead of state pull: state written before Terraform 1.12 gets resource identities, so matches are exact; slower, needs the root's credentials and variables")
+	fs.BoolVar(&o.strictAPI, "strict-api", true, "count listings that failed because the API is not enabled (GCP) as incomplete coverage (the default: a disabled API can still hold data, Cloud Storage and BigQuery keep theirs); -strict-api=false takes it as holding no objects, -strict-ignore TYPE_GLOB exempts named types")
+	fs.Var(&strictIgnore, "strict-ignore", "types matching these globs do not make coverage incomplete when their listing fails or they are skipped for want of an argument (still listed when possible, and still reported), e.g. google_firebase_*")
+	fs.IntVar(&o.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules than this, before terraform runs in them (0: no limit)")
+	fs.BoolVar(&o.terragrunt, "terragrunt", false, "with -state-roots, also read Terragrunt units (directories with a terragrunt.hcl, except parents that units include) through terragrunt in PATH; terragrunt initializes them (.terragrunt-cache)")
+	fs.Var(&o.tgUnits, "terragrunt-unit", "with -terragrunt, read DIR as a Terragrunt unit even though units include its terragrunt.hcl (taken for shared configuration otherwise); repeatable")
+	fs.BoolVar(&o.init, "init", false, "run terraform init in root modules that are not initialized (creates .terraform there)")
+	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*), not from the root's provider block; repeatable")
+	fs.Var(&scanScopes, "scan-scope", "limit -scan to some zones or accounts: zone_id=ID_OR_NAME,... or account_id=...; with no value (account_id=) that scope is not read; \"state\" limits every other scope to the IDs found in the states read; repeatable")
+	fs.Var(&o.plugins, "plugin", "discovery command for providers without list support, run with sh -c; repeatable")
+	fs.Var(&argFlags, "arg", "fan list queries out over values of a list config argument, e.g. region=eu-north-1,us-east-1; TYPE_GLOB:name=... limits it to matching types (google_compute_*:zone=europe-west1-b) and wins over the same name without one; zone=auto or region=auto (google) reads every zone or region through the root's provider; repeatable")
+	fs.Var(&include, "types", "only query resource types matching these globs, e.g. aws_s3_*,aws_iam_role")
+	fs.Var(&exclude, "exclude-types", "do not query resource types matching these globs")
+	fs.IntVar(&o.limit, "limit", 100000, "maximum results per list query")
+	if o.adopt {
+		fs.StringVar(&o.out, "o", "", "write the import blocks to this new file instead of stdout")
+		fs.StringVar(&o.outDir, "out-dir", "", "write the import blocks to this new directory, one imports.tf per root module at its path from the current directory")
+		fs.Var(&adoptRoots, "adopt-root", "with -out-dir: put what a -scan provider or plugin found into this root module's file, e.g. cloudflare=zones/example.com or plugin1=vault; without it they go to _unassigned/NAME.tf; repeatable")
+		fs.BoolVar(&o.allowIncomplete, "allow-incomplete", false, "write import blocks even when a state could not be read (its objects would be imported a second time)")
+		fs.BoolVar(&o.namesFromTags, "names-from-tags", false, "name the resources after their Name tag where the type has tags (slower: terraform query returns whole objects for those types)")
+	} else {
+		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
+	}
+	fs.StringVar(&o.baselinePath, "baseline", "", "previous -format json report; show and fail only on new findings (not supported with adopt)")
+	fs.StringVar(&o.environment, "environment", "", "name of the environment this run checks, e.g. prod; stored in the JSON report, and a -baseline of another environment verifies nothing")
+	fs.StringVar(&o.ignorePath, "ignore", "", "ignore file with TYPE_GLOB[:NAME_GLOB] [KEY=GLOB...] lines (default "+defaultIgnoreFile+" if present)")
+	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
+	fs.BoolVar(&o.noDefaultPresets, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
+	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
+	fs.BoolVar(&o.strictOwnership, "strict-ownership", false, "exit 1 for confirmed duplicate state ownership or duplicate addresses within a state; possible ownership does not fail")
+	fs.BoolVar(&o.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
+	fs.BoolVar(&o.noAliases, "no-aliases", false, "list resources only through each provider's default configuration, not through its aliases (provider \"aws\" { alias = \"prod\" }); the aliases' types then count as not checked")
+	fs.BoolVar(&o.explain, "explain", false, "say for every live object why it counts as managed, uncertain, ignored or unmanaged: the state address and where it was read, the ignore rule, or the closest state instances")
+	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
+	fs.BoolVar(&o.quiet, "quiet", false, "print no progress lines (by default printed on a terminal: roots read, roots queried, data source scans, -refresh)")
+	fs.BoolVar(&o.printQuery, "print-query", false, "print the temporary files a run would write into each root (provider override, auto data sources, list blocks), each under a \"# file\" header, and exit")
+	fs.BoolVar(&o.noQuery, "no-query", false, "do not run terraform query: read the roots' states and run plugins only")
+	fs.StringVar(&o.terraformBin, "terraform", "terraform", "terraform binary")
+	fs.StringVar(&o.configFile, "config", "", "read flags from this YAML file (keys are flag names, lists repeat a flag, roots lists root modules; the command line wins); default "+defaultConfigFile+" in the current directory, if present")
+	noConfig := fs.Bool("no-config", false, "do not read "+defaultConfigFile)
+	showVersion := fs.Bool("version", false, "print the version and exit")
+
+	if o.doctor {
+		fs = doctorFlags(fs, o)
+		fs.SetOutput(stderr)
+		fs.Usage = func() { fmt.Fprint(stderr, doctorUsage); fs.PrintDefaults() }
+	}
+	// Allow flags after positional arguments, until --.
+	args := commandArgs(fs, argv)
+	var flags []string
+	for _, arg := range args {
+		if !arg.positional && !arg.end {
+			flags = append(flags, arg.parts()...)
+		}
+	}
+	if err := fs.Parse(flags); err != nil {
+		return nil, err
+	}
+	for _, arg := range args {
+		if arg.positional {
+			o.roots = append(o.roots, arg.raw)
+		}
+	}
+	if o.doctor {
+		o.doctorArgs = args
+	}
+	if *showVersion {
+		fmt.Fprintln(stderr, "tforphans", buildVersion())
+		return nil, flag.ErrHelp
+	}
+	if !*noConfig {
+		explicit := o.configFile != ""
+		if !explicit {
+			if _, err := os.Stat(defaultConfigFile); err == nil {
+				o.configFile = defaultConfigFile
+			}
+		}
+		if o.configFile != "" {
+			if err := applyConfig(fs, o, o.configFile, explicit); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		o.configFile = ""
+	}
+	// terraform runs in each root and in temporary directories: a relative
+	// path (./tools/terraform) would be looked up there. A plain name
+	// stays a PATH lookup.
+	// Root paths are joined with file names later (filepath.Join cleans):
+	// resolve links first, so that jump/../prod means what terraform,
+	// running in it, takes it for.
+	if len(o.tgUnits) > 0 && !o.terragrunt {
+		return nil, errors.New("-terragrunt-unit needs -terragrunt")
+	}
+	for _, list := range [][]string{o.roots, o.stateRoots, o.tgUnits} {
+		for i, p := range list {
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				list[i] = real
+			}
+		}
+	}
+	if strings.ContainsAny(o.terraformBin, "/"+string(filepath.Separator)) && !filepath.IsAbs(o.terraformBin) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		// Not Abs, which cleans: a link before .. must count as the
+		// system resolves it.
+		o.terraformBin = cwd + string(filepath.Separator) + o.terraformBin
+	}
+
+	// An upper bound too: a config file from the repository must not start
+	// thousands of terraform processes at once.
+	if o.stateParallelism < 1 || o.stateParallelism > 64 {
+		return nil, errors.New("-state-parallelism must be between 1 and 64")
+	}
+	if o.adopt && o.baselinePath != "" {
+		return nil, errors.New("-baseline is not supported with adopt")
+	}
+	if o.explain && (o.adopt || o.format == "summary") {
+		return nil, errors.New("-explain needs the text or json report (not adopt or -format summary)")
+	}
+	if len(o.environment) > 100 || report.Clean(o.environment) != o.environment {
+		return nil, errors.New("-environment must be one line of at most 100 bytes without control characters or extra spaces")
+	}
+	if o.baselinePath == "-" {
+		return nil, errors.New("-baseline must be a file path, not -")
+	}
+	switch o.format {
+	case "", "text", "json", "summary":
+	default:
+		return nil, fmt.Errorf("unknown -format %q", o.format)
+	}
+	// Repeated names are merged (-arg region=a -arg region=b): two
+	// attributes of one name would make terraform reject the whole query.
+	argIndex := map[string]int{}
+	for _, a := range argFlags {
+		parsed, err := tf.ParseArg(a)
+		if err != nil {
+			return nil, err
+		}
+		i, ok := argIndex[parsed.Key()]
+		if !ok {
+			i = len(o.args)
+			argIndex[parsed.Key()] = i
+			o.args = append(o.args, tf.Arg{Types: parsed.Types, Name: parsed.Name})
+		}
+		for _, v := range parsed.Values {
+			if !slices.Contains(o.args[i].Values, v) {
+				o.args[i].Values = append(o.args[i].Values, v)
+			}
+		}
+	}
+	o.presets = presets.csv()
+	for _, p := range o.presets {
+		if _, err := report.Preset(p); err != nil {
+			return nil, err
+		}
+	}
+	o.includeAttrs = attrs.csv()
+	o.scans = scans.csv()
+	for _, s := range o.scans {
+		if _, ok := sources[s]; !ok {
+			return nil, fmt.Errorf("unknown -scan %q", s)
+		}
+	}
+	if err := adoptRootFlags(o, adoptRoots); err != nil {
+		return nil, err
+	}
+	for _, sc := range scanScopes {
+		if sc == "state" {
+			o.scopeState = true
+			continue
+		}
+		arg, vals, ok := strings.Cut(sc, "=")
+		known := false
+		for _, name := range o.scans {
+			for _, s := range sources[name].Scopes {
+				known = known || s.Arg == arg
+			}
+		}
+		if !ok || !known {
+			return nil, fmt.Errorf("-scan-scope %q: want state or ARG=VALUE,... where ARG is a scope of the scanned providers (zone_id, account_id for cloudflare)", sc)
+		}
+		if o.scanScope == nil {
+			o.scanScope = map[string][]string{}
+		}
+		// No values (account_id=) reads nothing of that scope.
+		if _, ok := o.scanScope[arg]; !ok {
+			o.scanScope[arg] = []string{}
+		}
+		for _, v := range strings.Split(vals, ",") {
+			if v = strings.TrimSpace(v); v != "" && !slices.Contains(o.scanScope[arg], v) {
+				o.scanScope[arg] = append(o.scanScope[arg], v)
+			}
+		}
+	}
+	o.include = glob.CompileList(include.csv())
+	o.exclude = glob.CompileList(exclude.csv())
+	o.strictIgnore = glob.CompileList(strictIgnore.csv())
+	if len(o.roots) == 0 && !o.noQuery {
+		if (len(o.scans) > 0 || len(o.plugins) > 0) && !tf.HasConfig(".") {
+			// Nothing to query here: -scan and -plugin need no root.
+			o.noQuery, o.impliedNoQuery = true, true
+		} else if (len(o.stateRoots) > 0 || len(o.states) > 0 || len(o.tgUnits) > 0) && !tf.HasConfig(".") {
+			// A directory without configuration is no root: its state
+			// pull reads an empty local state, and a query fails.
+			o.impliedNoRoot = true
+		} else {
+			o.roots = []string{"."}
+		}
+	}
+	if n := len(slices.DeleteFunc(slices.Clone(o.states), func(s string) bool { return s != "-" })); n > 1 {
+		return nil, errors.New("-state - (stdin) can be given only once")
+	}
+	if o.noQuery && len(o.plugins) == 0 && len(o.scans) == 0 {
+		return nil, errors.New("-no-query needs at least one -scan or -plugin")
+	}
+	if err := outDirRoots(o); err != nil {
+		return nil, err
+	}
+	return o, nil
+}

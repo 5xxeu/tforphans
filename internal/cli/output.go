@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"unicode"
@@ -523,4 +525,36 @@ func reasonLink(code string) string {
 		return ""
 	}
 	return " (" + model.ReasonLink(code) + ")"
+}
+
+// scopeKeys are identity keys that tell which account a result came from.
+var scopeKeys = []string{"project", "account_id", "subscription_id"}
+
+func countTransition(fs []report.Finding, transition string) int {
+	n := 0
+	for _, f := range fs {
+		if f.Transition == transition {
+			n++
+		}
+	}
+	return n
+}
+
+// transitionSummary counts what became of resolved findings: "1 became
+// managed, 2 no longer found".
+func transitionSummary(fs []report.Finding) string {
+	var parts []string
+	for _, t := range [][2]string{{report.BecameManaged, "became managed"}, {report.BecameIgnored, "ignored"}, {report.NoLongerFound, "no longer found"}} {
+		if n := countTransition(fs, t[0]); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, t[1]))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// colorEnabled checks each stream separately: redirecting JSON stdout must not
+// affect terminal diagnostics, and redirected output must contain no ANSI codes.
+// Windows consoles show the codes as text unless VT processing is enabled.
+func colorEnabled(w io.Writer) bool {
+	return runtime.GOOS != "windows" && isTerminal(w) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 }
