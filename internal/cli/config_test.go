@@ -41,27 +41,27 @@ state-parallelism: 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.roots, []string{"infra"}) || !slices.Equal(o.stateRoots, []string{"teams", "tree"}) ||
-		!slices.Equal(o.scans, []string{"cloudflare"}) || !o.scopeState || !o.strict || o.format != "summary" || o.limit != 5 ||
-		!o.exclude.Match("cloudflare_api_token") || !o.exclude.Match("cloudflare_account_member") || o.configFile != defaultConfigFile {
+	if !slices.Equal(o.src.roots, []string{"infra"}) || !slices.Equal(o.src.stateRoots, []string{"teams", "tree"}) ||
+		!slices.Equal(o.src.scans, []string{"cloudflare"}) || !o.src.scopeState || !o.audit.strict || o.format != "summary" || o.src.limit != 5 ||
+		!o.src.exclude.Match("cloudflare_api_token") || !o.src.exclude.Match("cloudflare_account_member") || o.configFile != defaultConfigFile {
 		t.Errorf("from the file: %+v", o)
 	}
 	o, err = parseFlags([]string{"-format", "json", "-exclude-types", "x_*", "-strict=false", "other"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.format != "json" || o.strict || !slices.Equal(o.roots, []string{"other"}) || o.exclude.Match("cloudflare_api_token") || !o.exclude.Match("x_y") {
+	if o.format != "json" || o.audit.strict || !slices.Equal(o.src.roots, []string{"other"}) || o.src.exclude.Match("cloudflare_api_token") || !o.src.exclude.Match("x_y") {
 		t.Errorf("command line over the file: %+v", o)
 	}
 	// adopt has no -format, and only adopt has -names-from-tags: the
 	// shared file still works for both.
-	if o.namesFromTags || o.stateParallelism != 4 {
+	if o.adopt.tagNames() || o.src.stateParallelism != 4 {
 		t.Errorf("mode keys: %+v", o)
 	}
-	if o, err := parseFlags([]string{"adopt"}, io.Discard); err != nil || !o.adopt || !o.strict || !o.namesFromTags {
+	if o, err := parseFlags([]string{"adopt"}, io.Discard); err != nil || o.adopt == nil || !o.audit.strict || !o.adopt.namesFromTags {
 		t.Errorf("adopt with the file: %+v, %v", o, err)
 	}
-	if o, err := parseFlags([]string{"-no-config"}, io.Discard); err != nil || o.strict || len(o.scans) > 0 || o.configFile != "" {
+	if o, err := parseFlags([]string{"-no-config"}, io.Discard); err != nil || o.audit.strict || len(o.src.scans) > 0 || o.configFile != "" {
 		t.Errorf("-no-config: %+v, %v", o, err)
 	}
 
@@ -79,8 +79,8 @@ state-parallelism: 4
 	sep := string(filepath.Separator)
 	// infra exists: its links are resolved (so is the temporary directory).
 	realDir, _ := filepath.EvalSymlinks(dir)
-	if !slices.Equal(o.roots, []string{filepath.Join(realDir, "infra")}) || !slices.Equal(o.stateRoots, []string{real + sep + "teams", "/abs/tree"}) ||
-		o.ignorePath != real+sep+"ignore.txt" {
+	if !slices.Equal(o.src.roots, []string{filepath.Join(realDir, "infra")}) || !slices.Equal(o.src.stateRoots, []string{real + sep + "teams", "/abs/tree"}) ||
+		o.ignore.path != real+sep+"ignore.txt" {
 		t.Errorf("-config elsewhere: %+v", o)
 	}
 }
@@ -112,12 +112,12 @@ func TestConfigMaxStateSize(t *testing.T) {
 			if len(argv) > 0 {
 				want = 2 << 30
 			}
-			if err != nil || o.maxStateSize != want {
+			if err != nil || o.src.maxStateSize != want {
 				t.Errorf("automatic %s, %v: %+v, %v", c.value, argv, o, err)
 			}
 		}
 		for _, argv := range [][]string{{"-config", defaultConfigFile}, {"-no-config", "-max-state-size", c.value}, {"-config", defaultConfigFile, "-max-state-size", c.value}} {
-			if o, err := parseFlags(argv, io.Discard); err != nil || o.maxStateSize != c.size {
+			if o, err := parseFlags(argv, io.Discard); err != nil || o.src.maxStateSize != c.size {
 				t.Errorf("explicit %s, %v: %+v, %v", c.value, argv, o, err)
 			}
 		}
@@ -174,7 +174,7 @@ func TestConfigRejected(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	os.WriteFile("audit.yaml", []byte("state: [prod.tfstate]\ninit: true\nproxmox-cluster-states: true\n"), 0o644)
-	if o, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil || !o.init || len(o.states) != 1 {
+	if o, err := parseFlags([]string{"-config", "audit.yaml"}, io.Discard); err != nil || !o.src.init || len(o.src.states) != 1 {
 		t.Errorf("-config with trust keys: %+v, %v", o, err)
 	}
 	for _, conf := range []string{"plugin: [./list.sh]\n", "state: [https://gitlab.example/state]\n", "terraform: ./tf\n", "terragrunt: true\n", "o: x.tf\n"} {
@@ -199,8 +199,8 @@ func TestTerraformPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if o.terraformBin != want {
-			t.Errorf("%s: %s, want %s", args, o.terraformBin, want)
+		if o.src.terraformBin != want {
+			t.Errorf("%s: %s, want %s", args, o.src.terraformBin, want)
 		}
 	}
 }
@@ -237,7 +237,7 @@ func TestConfigInside(t *testing.T) {
 	}
 	// Inside is fine, and the resolved path is used.
 	write(defaultConfigFile, "roots: [./in/../in]\nstate-roots: [x:/../in]\n")
-	if o, err := parseFlags(nil, io.Discard); err != nil || !slices.Equal(o.roots, []string{"in"}) || !slices.Equal(o.stateRoots, []string{"in"}) {
+	if o, err := parseFlags(nil, io.Discard); err != nil || !slices.Equal(o.src.roots, []string{"in"}) || !slices.Equal(o.src.stateRoots, []string{"in"}) {
 		t.Errorf("inside: %+v, %v", o, err)
 	}
 	// A file given with -config may point anywhere, and its paths end
@@ -247,14 +247,14 @@ func TestConfigInside(t *testing.T) {
 	os.Symlink(filepath.Join(outside, "sub"), filepath.Join("audits", "jump"))
 	write(filepath.Join("audits", "audit.yaml"), "roots: [jump/../target]\n")
 	o, err := parseFlags([]string{"-config", "audits/audit.yaml"}, io.Discard)
-	if err != nil || len(o.roots) != 1 {
+	if err != nil || len(o.src.roots) != 1 {
 		t.Fatalf("-config: %+v, %v", o, err)
 	}
 	// Resolved for good: later joins (temporary query files) must land
 	// where terraform runs.
 	want, _ := filepath.EvalSymlinks(filepath.Join(outside, "target"))
-	if o.roots[0] != want {
-		t.Errorf("-config root %s, want %s", o.roots[0], want)
+	if o.src.roots[0] != want {
+		t.Errorf("-config root %s, want %s", o.src.roots[0], want)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestConfigTerragruntUnit(t *testing.T) {
 	os.MkdirAll("live/app", 0o755)
 	os.WriteFile(defaultConfigFile, []byte("terragrunt-unit: [live/app]\n"), 0o644)
 	o, err := parseFlags([]string{"-terragrunt"}, io.Discard)
-	if err != nil || len(o.tgUnits) != 1 || !strings.HasSuffix(o.tgUnits[0], filepath.Join("live", "app")) {
+	if err != nil || len(o.src.tgUnits) != 1 || !strings.HasSuffix(o.src.tgUnits[0], filepath.Join("live", "app")) {
 		t.Errorf("%+v %v", o, err)
 	}
 	os.WriteFile(defaultConfigFile, []byte("terragrunt-unit: [../x]\n"), 0o644)
@@ -284,14 +284,14 @@ func TestConfigMaxQuerySize(t *testing.T) {
 		}
 	}
 	write("256M")
-	if o, err := parseFlags(nil, io.Discard); err != nil || o.maxQuerySize != 256<<20 {
+	if o, err := parseFlags(nil, io.Discard); err != nil || o.src.maxQuerySize != 256<<20 {
 		t.Errorf("lower in an automatic file: %+v, %v", o, err)
 	}
 	write("2G")
 	if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "max-query-size") {
 		t.Errorf("higher in an automatic file: %v", err)
 	}
-	if o, err := parseFlags([]string{"-config", defaultConfigFile}, io.Discard); err != nil || o.maxQuerySize != 2<<30 {
+	if o, err := parseFlags([]string{"-config", defaultConfigFile}, io.Discard); err != nil || o.src.maxQuerySize != 2<<30 {
 		t.Errorf("higher with -config: %+v, %v", o, err)
 	}
 }

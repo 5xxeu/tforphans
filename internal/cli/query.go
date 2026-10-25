@@ -23,9 +23,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err := tf.RemoveStale(root); err != nil {
 		return nil, err
 	}
-	r := tf.Runner{Bin: o.terraformBin, Dir: root, AnyVersion: o.anyVersion, MaxQuerySize: o.maxQuerySize, MaxStateSize: o.maxStateSize}
+	r := tf.Runner{Bin: o.src.terraformBin, Dir: root, AnyVersion: o.src.anyVersion, MaxQuerySize: o.src.maxQuerySize, MaxStateSize: o.src.maxStateSize}
 	initialized := r.Initialized()
-	if !initialized && o.init {
+	if !initialized && o.src.init {
 		if err := r.Init(ctx); err != nil {
 			return nil, err
 		}
@@ -36,18 +36,18 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	// no providers, or providers from dev_overrides.)
 	uninitialized := func(err error) bool {
 		// A timeout or cancel is no sign of a missing init.
-		if initialized || o.init || ctx.Err() != nil {
+		if initialized || o.src.init || ctx.Err() != nil {
 			return false
 		}
 		u := report.NewUnreadState(root, err)
 		u.Error = "not initialized, so not queried either (run terraform init there, or pass -init): " + u.Error
 		sum.UnreadStates = append(sum.UnreadStates, u)
-		if !o.noQuery {
+		if !o.src.noQuery {
 			sum.UnqueriedRoots = append(sum.UnqueriedRoots, root)
 		}
 		return true
 	}
-	if o.noQuery {
+	if o.src.noQuery {
 		// Only the state is needed: no provider schemas or query files.
 		snapshots, n, err := pullRoot(ctx, o, root)
 		// The workspaces that were read still count.
@@ -84,8 +84,8 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, Configs: providerConfigs, NoAliases: o.noAliases,
-		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 || o.namesFromTags && hasTags(schemas, t) }, ProviderConfigs: configs})
+	plan := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.src.args, Include: o.src.include, Exclude: o.src.exclude, Configs: providerConfigs, NoAliases: o.src.noAliases,
+		IncludeResource: func(t string) bool { return len(o.wantedAttrs(t)) > 0 || o.adopt.tagNames() && hasTags(schemas, t) }, ProviderConfigs: configs})
 	for _, sk := range plan.Skipped {
 		sk.Root = root
 		sum.Skipped = append(sum.Skipped, sk)
@@ -94,8 +94,8 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		sum.Notes = append(sum.Notes, root+": "+n)
 	}
 	sum.NoList = append(sum.NoList, plan.NoList...)
-	if o.printQuery {
-		printQueryFiles(stdout, root, plan, o.limit)
+	if o.src.printQuery {
+		printQueryFiles(stdout, root, plan, o.src.limit)
 		return nil, nil
 	}
 
@@ -119,7 +119,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	if err != nil {
 		return nil, err
 	}
-	if o.noQuery || len(plan.Queries) == 0 && len(userLists) == 0 {
+	if o.src.noQuery || len(plan.Queries) == 0 && len(userLists) == 0 {
 		return nil, nil
 	}
 	// Generated blocks are the plan's own addresses: a block of the user's
@@ -131,7 +131,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	// Generated blocks use -limit; the user's blocks their own limit.
 	limitFor := func(block string) int {
 		if _, ok := byAddress[block]; block == "" || ok {
-			return o.limit
+			return o.src.limit
 		}
 		return userLists[block].Limit
 	}
@@ -152,14 +152,14 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	trim := func(f *model.Resource) {
 		if f.Attributes == nil {
 			block, _, _ := strings.Cut(f.ListAddress, "[")
-			tags := o.namesFromTags && hasTags(schemas, f.Type)
+			tags := o.adopt.tagNames() && hasTags(schemas, f.Type)
 			if _, generated := byAddress[block]; !generated && (len(o.wantedAttrs(f.Type)) > 0 || tags) && !noAttrs[block] {
 				noAttrs[block] = true
 				noAttrsOrder = append(noAttrsOrder, block)
 			}
 			return
 		}
-		if o.namesFromTags {
+		if o.adopt.tagNames() {
 			f.TagName = nameTag(f.Attributes)
 		}
 		f.Attributes = keepAttrs(f.Attributes, o.wantedAttrs(f.Type))
@@ -237,7 +237,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			provider = providerOf(q.Address, q.Type)
 		}
 		if generated, ok := byAddress[block]; ok {
-			config = string(generated.HCL(o.limit))
+			config = string(generated.HCL(o.src.limit))
 			provider = generated.Ref()
 		}
 		complete := finished[q.Address]
@@ -271,7 +271,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	for _, d := range res.Done {
 		rootScope := ""
-		if len(o.roots) > 1 && !found[d.Type] {
+		if len(o.src.roots) > 1 && !found[d.Type] {
 			rootScope = "root " + root
 		}
 		sum.Checks = append(sum.Checks, tf.Check{Type: d.Type, Scope: rootScope, Root: root, Provider: providerOf(d.Address, d.Type)})
@@ -311,9 +311,9 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 // wantedAttrs returns the attributes to keep for a type: -include-attrs and
 // those the ignore rules look at.
 func (o *options) wantedAttrs(typ string) []string {
-	out := slices.Clone(o.includeAttrs)
-	if o.ignore != nil {
-		for _, a := range o.ignore.Attributes(typ) {
+	out := slices.Clone(o.src.includeAttrs)
+	if o.run.ignore != nil {
+		for _, a := range o.run.ignore.Attributes(typ) {
 			if !slices.Contains(out, a) {
 				out = append(out, a)
 			}
@@ -350,7 +350,7 @@ func (o *options) trimAttrs(r *model.Resource) {
 		return
 	}
 	keep := map[string]any{}
-	for _, a := range o.includeAttrs {
+	for _, a := range o.src.includeAttrs {
 		if v, ok := r.Attributes[a]; ok {
 			keep[a] = v
 		}
@@ -385,7 +385,7 @@ func userListProvider(arg, typ string, declared map[string]string, schemas *tf.S
 // affects exit status, but cannot make a failed listing resolution evidence.
 func (o *options) listingFailure(f tf.Failure) bool {
 	f.Classify()
-	return f.Category != tf.FailAPIOff || o.strictAPI
+	return f.Category != tf.FailAPIOff || o.audit.strictAPI
 }
 
 // printQueryFiles prints what a run writes into the root, with argument

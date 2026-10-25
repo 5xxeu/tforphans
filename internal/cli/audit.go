@@ -19,8 +19,8 @@ import (
 
 // loadIgnore reads the ignore file and adds the presets asked for and,
 // unless -no-default-presets, the default ones.
-func loadIgnore(ctx context.Context, o *options) (*report.Ignore, error) {
-	ignorePath, optional := o.ignorePath, false
+func loadIgnore(ctx context.Context, ig ignoreOptions) (*report.Ignore, error) {
+	ignorePath, optional := ig.path, false
 	if ignorePath == "" {
 		ignorePath, optional = defaultIgnoreFile, true
 	}
@@ -28,8 +28,8 @@ func loadIgnore(ctx context.Context, o *options) (*report.Ignore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ignore file: %w", err)
 	}
-	names := slices.Clone(o.presets)
-	if !o.noDefaultPresets {
+	names := slices.Clone(ig.presets)
+	if !ig.noDefaults {
 		names = append(names, report.DefaultPresets...)
 	}
 	slices.Sort(names)
@@ -45,18 +45,18 @@ func loadIgnore(ctx context.Context, o *options) (*report.Ignore, error) {
 
 func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	var previous *report.Snapshot
-	if o.baselinePath != "" {
+	if o.audit.baseline != "" {
 		var err error
-		previous, err = report.ReadSnapshot(ctx, o.baselinePath, state.DefaultMaxSize)
+		previous, err = report.ReadSnapshot(ctx, o.audit.baseline, state.DefaultMaxSize)
 		if err != nil {
 			return fmt.Errorf("baseline: %w", err)
 		}
 	}
-	ignore, err := loadIgnore(ctx, o)
+	ignore, err := loadIgnore(ctx, o.ignore)
 	if err != nil {
 		return err
 	}
-	o.ignore = ignore
+	o.run.ignore = ignore
 
 	var sum report.Summary
 	idx := state.NewIndex()
@@ -67,29 +67,29 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if !o.printQuery {
+	if !o.src.printQuery {
 		fmt.Fprintln(stderr, "plan:", report.Clean(runPlan(o, stateDirs)))
 	}
-	sum.Notes = append(sum.Notes, scanHints(o, stateDirs)...)
-	if o.impliedNoQuery {
+	sum.Notes = append(sum.Notes, scanHints(&o.src, stateDirs)...)
+	if o.src.impliedNoQuery {
 		sum.Notes = append(sum.Notes, "no ROOT_DIR given and no Terraform configuration in the current directory: terraform query was not run, only -scan and -plugin (as with -no-query)")
 	}
-	if o.impliedNoRoot {
+	if o.src.impliedNoRoot {
 		sum.Notes = append(sum.Notes, impliedNoRootNote)
 	}
 	live, err := queryRoots(ctx, o, idx, &sum, stdout)
 	if err != nil {
 		return err
 	}
-	if o.printQuery {
+	if o.src.printQuery {
 		return nil
 	}
 	countOwnership(idx, &sum)
-	sum.Notes = append(sum.Notes, o.stateNotes...)
-	if len(o.scans) > 0 && len(o.stateRoots) == 0 && o.scanScope == nil && !o.scopeState {
+	sum.Notes = append(sum.Notes, o.run.stateNotes...)
+	if len(o.src.scans) > 0 && len(o.src.stateRoots) == 0 && o.src.scanScope == nil && !o.src.scopeState {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-scan lists whole accounts, but only %d states were read: objects that other root modules manage show up as unmanaged. Read every root's state with -state-roots DIR, or narrow the scan with -scan-scope zone_id=ID_OR_NAME or -scan-scope state.", sum.States))
 	}
-	if o.scopeState && sum.States == 0 {
+	if o.src.scopeState && sum.States == 0 {
 		return errors.New("-scan-scope state: no state was read (-state, -state-roots or root modules)")
 	}
 	scanned, err := runScans(ctx, o, idx, stateDirs, &sum, stderr)
@@ -122,8 +122,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 
 // readStates adds the states given with -state to idx.
 func readStates(ctx context.Context, o *options, idx *state.Index, sum *report.Summary) error {
-	for _, src := range o.states {
-		data, err := state.Fetch(ctx, src, o.allowHTTP, o.maxStateSize)
+	for _, src := range o.src.states {
+		data, err := state.Fetch(ctx, src, o.src.allowHTTP, o.src.maxStateSize)
 		if err != nil {
 			return fmt.Errorf("state %s: %w", state.Redact(src), err)
 		}
@@ -140,25 +140,25 @@ func readStates(ctx context.Context, o *options, idx *state.Index, sum *report.S
 // queryRoots adds the state of each root module to idx and returns what
 // terraform query lists there. A root that fails does not stop the others.
 func queryRoots(ctx context.Context, o *options, idx *state.Index, sum *report.Summary, stdout io.Writer) ([]model.Resource, error) {
-	if !o.noQuery && len(o.roots) > 0 {
+	if !o.src.noQuery && len(o.src.roots) > 0 {
 		// No root can be queried when this fails, so it stops the run; a
 		// hanging terraform is still bounded by -source-timeout.
 		if _, err := withSource(ctx, o, func(ctx context.Context) (struct{}, error) {
-			return struct{}{}, (tf.Runner{Bin: o.terraformBin, Dir: o.roots[0]}).QueryVersion(ctx)
+			return struct{}{}, (tf.Runner{Bin: o.src.terraformBin, Dir: o.src.roots[0]}).QueryVersion(ctx)
 		}); err != nil {
 			return nil, err
 		}
 	}
 	var live []model.Resource
-	for i, root := range o.roots {
-		if !o.noQuery && !o.printQuery {
-			o.stepf("querying %s (%d/%d)", root, i+1, len(o.roots))
+	for i, root := range o.src.roots {
+		if !o.src.noQuery && !o.src.printQuery {
+			o.stepf("querying %s (%d/%d)", root, i+1, len(o.src.roots))
 		}
 		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
 			return scanRoot(ctx, o, root, idx, sum, stdout)
 		})
 		if err != nil {
-			if ctx.Err() != nil || o.printQuery {
+			if ctx.Err() != nil || o.src.printQuery {
 				return nil, fmt.Errorf("%s: %w", root, err)
 			}
 			// The others still run. When the failure came before the state
@@ -199,19 +199,19 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 		progress = func(msg string) { fmt.Fprintln(stderr, "note:", msg) }
 	}
 	var live []model.Resource
-	for _, name := range o.scans {
+	for _, name := range o.src.scans {
 		a := sources[name]
 		// The root -adopt-root names gets the blocks: its pin comes first.
-		versionRoot := dsource.VersionRoot(slices.Concat(adoptRootOf(o, a.Name), o.roots, stateDirs), a.Provider)
-		scope := scanScope(o, a, idx)
+		versionRoot := dsource.VersionRoot(slices.Concat(adoptRootOf(o, a.Name), o.src.roots, stateDirs), a.Provider)
+		scope := scanScope(&o.src, a, idx)
 		o.stepf("-scan %s: reading its data sources", name)
 		res, err := withSource(ctx, o, func(ctx context.Context) (*dsource.Result, error) {
 			return dsource.Run(ctx, a, dsource.Options{
-				TerraformBin:  o.terraformBin,
+				TerraformBin:  o.src.terraformBin,
 				VersionRoot:   versionRoot,
-				Include:       o.include,
-				Exclude:       o.exclude,
-				AllowUnpinned: o.allowUnpinned,
+				Include:       o.src.include,
+				Exclude:       o.src.exclude,
+				AllowUnpinned: o.src.allowUnpinned,
 				Progress:      progress,
 				Scope:         scope,
 			})
@@ -239,7 +239,7 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 		// is not the type prefix (cf = { source = "cloudflare/cloudflare" }).
 		// With -adopt-root the blocks go to that root: its name counts.
 		local, nameRoot := "", versionRoot
-		target, assigned := o.adoptRoots[a.Name]
+		target, assigned := o.adopt.root(a.Name)
 		if assigned {
 			nameRoot = target
 		}
@@ -256,7 +256,7 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 			r := &res.Resources[i]
 			r.Source = "-scan " + a.Name
 			if r.Scope != nil && a.Name == "proxmox" {
-				r.Scope.Trusted = o.proxmoxStates
+				r.Scope.Trusted = o.src.proxmoxStates
 			}
 			if local != "" && !strings.HasPrefix(r.Type, local+"_") {
 				r.Provider = local
@@ -277,7 +277,7 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 // stop the others.
 func runPlugins(ctx context.Context, o *options, sum *report.Summary) ([]model.Resource, error) {
 	var live []model.Resource
-	for i, p := range o.plugins {
+	for i, p := range o.src.plugins {
 		var warns []error
 		found, err := withSource(ctx, o, func(ctx context.Context) ([]model.Resource, error) {
 			found, w, done, err := plugin.Run(ctx, p, fmt.Sprintf("plugin%d", i+1))
@@ -304,7 +304,7 @@ func runPlugins(ctx context.Context, o *options, sum *report.Summary) ([]model.R
 		for i := range found {
 			found[i].Baseline = ""
 			if found[i].Scope != nil {
-				found[i].Scope.Trusted = o.pluginStates
+				found[i].Scope.Trusted = o.src.pluginStates
 			}
 		}
 		for _, w := range warns {
@@ -334,7 +334,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	// -types and -exclude-types narrow every source, also the user's own
 	// list blocks and plugins, which list whatever they were written for.
 	live = slices.DeleteFunc(live, func(r model.Resource) bool {
-		return len(o.include) > 0 && !o.include.Match(r.Type) || o.exclude.Match(r.Type)
+		return len(o.src.include) > 0 && !o.src.include.Match(r.Type) || o.src.exclude.Match(r.Type)
 	})
 	scopes := slices.Clone(live) // every source's results, for -v
 	// Every listing that returned an object, also those whose copy dedupe
@@ -351,7 +351,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	c := classify(o, idx, live, origins, sum)
 	orphans, uncertain := c.orphans, c.uncertain
 	sortResources(orphans)
-	sum.Notes = append(sum.Notes, presetHints(orphans, o.presets)...)
+	sum.Notes = append(sum.Notes, presetHints(orphans, o.ignore.presets)...)
 	sum.Notes = append(sum.Notes, ignoreHints(orphans)...)
 	slices.SortStableFunc(uncertain, func(a, b report.Uncertain) int { return compareResources(a.Resource, b.Resource) })
 	sum.Live, sum.Orphans = len(live), len(orphans)
@@ -367,20 +367,20 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	for i := range sum.Failed {
 		sum.Failed[i].Classify()
 	}
-	counting, skipped, checks := coverageInputs(o, sum)
-	if sum.APIOff > 0 && o.strictAPI {
+	counting, skipped, checks := coverageInputs(o.audit, sum)
+	if sum.APIOff > 0 && o.audit.strictAPI {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("%d listings failed because their API is not enabled: a disabled API can still hold data (Cloud Storage and BigQuery keep theirs), so they count as not checked; if the project does not use those types, name them in -strict-ignore", sum.APIOff))
 	}
 	sum.Coverage = report.BuildCoverage(c.byTypeScope, checks, skipped, counting)
-	sum.UnlistedTypes = unlistedTypes(o, idx.TypeCounts(), *sum)
+	sum.UnlistedTypes = unlistedTypes(&o.src, idx.TypeCounts(), *sum)
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
 	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
-	sum.DiscoveryComplete = !nothingChecked(o, *sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
+	sum.DiscoveryComplete = !nothingChecked(&o.src, *sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
-	sum.Environment = o.environment
+	sum.Environment = o.audit.environment
 	var baseline *report.Baseline
 	shown := orphans
 	if previous != nil {
@@ -388,7 +388,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, *sum, c.seen)
 		baseline = &b
 		if b.EnvironmentChanged {
-			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.environment))
+			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.audit.environment))
 		}
 		shown = nil
 		for _, r := range orphans {
@@ -410,7 +410,7 @@ func writeReport(ctx context.Context, o *options, idx *state.Index, stateDirs []
 	var err error
 	summarized := false
 	switch {
-	case o.adopt:
+	case o.adopt != nil:
 		err = writeImports(ctx, o, idx, stateDirs, out, sum, stdout, stderr)
 	case o.format == "json":
 		err = report.JSON(stdout, out.orphans, out.uncertain, *sum, out.baseline)
@@ -484,7 +484,7 @@ func printDetails(w io.Writer, o *options, baseline *report.Baseline, scopes []m
 // writeImports writes import blocks for the orphans (adopt). While a state
 // could not be read it writes none: its objects would be imported twice.
 func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs []string, out outcome, sum *report.Summary, stdout, stderr io.Writer) error {
-	if len(sum.UnreadStates) > 0 && !o.allowIncomplete {
+	if len(sum.UnreadStates) > 0 && !o.adopt.allowIncomplete {
 		if err := printSummary(stderr, o, *sum, nil); err != nil {
 			return err
 		}
@@ -497,7 +497,7 @@ func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs [
 	orphans := out.orphans
 	reserved := maps.Clone(idx.RootAddresses())
 	var imports []tf.Import
-	for _, dir := range slices.Concat(o.roots, stateDirs, adoptRootDirs(o)) {
+	for _, dir := range slices.Concat(o.src.roots, stateDirs, adoptRootDirs(o)) {
 		cfg, err := tf.ConfigAddresses(dir)
 		if err != nil {
 			return err
@@ -520,7 +520,7 @@ func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs [
 		}
 	}
 	roots := map[string]bool{}
-	for _, r := range o.roots {
+	for _, r := range o.src.roots {
 		roots[r] = true
 	}
 	placeOrphans(o, orphans, out.copies, roots, sum)
@@ -538,7 +538,7 @@ func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs [
 // exitStatus is the error execute returns for a finished audit: an
 // exitCode, or nil for exit status 0.
 func exitStatus(o *options, sum report.Summary, shown []model.Resource, stderr io.Writer) error {
-	if nothingChecked(o, sum) {
+	if nothingChecked(&o.src, sum) {
 		msg := "no resource types were queried, so nothing could be found"
 		if n := len(sum.Failed); n > 0 {
 			// Every listing failed: the cause is in them, usually the
@@ -564,11 +564,11 @@ func exitStatus(o *options, sum report.Summary, shown []model.Resource, stderr i
 	switch {
 	case len(sum.FailedSources) > 0:
 		return exitCode(exitError)
-	case o.strictOwnership && (sum.DuplicateOwnership > 0 || sum.DuplicateInState > 0):
+	case o.audit.strictOwnership && (sum.DuplicateOwnership > 0 || sum.DuplicateInState > 0):
 		return exitCode(exitError)
-	case o.strict && (!sum.Complete || sum.Uncertain > 0):
+	case o.audit.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)
-	case len(shown) > 0 && !o.adopt:
+	case len(shown) > 0 && o.adopt == nil:
 		return exitCode(exitOrphans)
 	}
 	return nil

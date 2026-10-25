@@ -29,14 +29,14 @@ func doctorNextArgs(t *testing.T, args, fixes []string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return doctorNext(commandArgs(o.doctorFlagSet, args), fixes)
+	return doctorNext(commandArgs(o.doctor.flagSet, args), fixes)
 }
 
 func TestDoctorFlags(t *testing.T) {
 	t.Chdir(t.TempDir())
 	accepted := []string{"doctor", "-no-config", "-terraform", "./terraform", "-state", "state.json", "-state-roots", "infra", "-current-workspace", "-terragrunt", "-terragrunt-unit", "unit", "-types", "google_*", "-exclude-types", "google_project", "-arg", "zone=auto", "-no-aliases", "-scan", "cloudflare", "-scan-scope", "zone_id=abc", "-no-query", "-format", "json", "-v", "-quiet", "-timeout", "1m", "-source-timeout", "10s", "-max-state-size", "2M", "-state-parallelism", "2", "-max-roots", "5", "-offline", "-check-auth", "-plugin", "echo done", "root"}
 	o, err := parseFlags(accepted, io.Discard)
-	if err != nil || !o.doctor || !o.offline || !o.checkAuth || o.maxStateSize != 2<<20 || len(o.args) != 1 {
+	if err != nil || o.doctor == nil || !o.doctor.offline || !o.doctor.checkAuth || o.src.maxStateSize != 2<<20 || len(o.src.args) != 1 {
 		t.Fatalf("options: %+v, %v", o, err)
 	}
 	for _, name := range []string{"refresh", "init", "allow-unpinned", "baseline", "o", "names-from-tags", "allow-incomplete", "out-dir", "adopt-root", "ignore", "ignore-preset", "strict", "limit", "print-query", "allow-http", "version"} {
@@ -63,7 +63,7 @@ no-default-presets: true
 		t.Fatal(err)
 	}
 	o, err := parseFlags([]string{"doctor"}, io.Discard)
-	if err != nil || !o.include.Match("fake_thing") || o.strict || o.baselinePath != "" || !o.noDefaultPresets {
+	if err != nil || !o.src.include.Match("fake_thing") || o.audit.strict || o.audit.baseline != "" || !o.ignore.noDefaults {
 		t.Fatalf("config: %+v, %v", o, err)
 	}
 	if err := os.WriteFile(defaultConfigFile, []byte("terraform: malicious\n"), 0600); err != nil {
@@ -617,7 +617,7 @@ func TestDoctorPlanSkipCoverage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := tf.BuildPlan(&schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, Configs: sc, NoAliases: o.noAliases, ProviderConfigs: pc})
+			p := tf.BuildPlan(&schemas, declared, tf.PlanOptions{Args: o.src.args, Include: o.src.include, Exclude: o.src.exclude, Configs: sc, NoAliases: o.src.noAliases, ProviderConfigs: pc})
 			if (len(p.Skipped) > 0) != tc.skips {
 				t.Fatalf("unexpected plan skips: %+v", p.Skipped)
 			}
@@ -768,7 +768,7 @@ func TestDoctorCheckAuthCommandLineOnly(t *testing.T) {
 	}
 	for _, args := range [][]string{{"doctor", "-check-auth"}, {"doctor", "-config", defaultConfigFile, "-check-auth"}} {
 		o, err := parseFlags(args, io.Discard)
-		if err != nil || !o.offline || !o.checkAuth {
+		if err != nil || !o.doctor.offline || !o.doctor.checkAuth {
 			t.Fatalf("offline config and CLI auth: %+v, %v", o, err)
 		}
 	}

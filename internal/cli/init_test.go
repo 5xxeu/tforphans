@@ -89,7 +89,7 @@ provider "cloudflare" { api_token = "provider-secret" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(o.roots, []string{"aws", "cf", "json"}) || !slices.Equal(o.stateRoots, []string{"."}) || len(o.scans) > 0 {
+	if !slices.Equal(o.src.roots, []string{"aws", "cf", "json"}) || !slices.Equal(o.src.stateRoots, []string{"."}) || len(o.src.scans) > 0 {
 		t.Fatalf("config parsed as %+v", o)
 	}
 	state, _ := os.ReadFile("state-only/terraform.tfstate")
@@ -112,7 +112,7 @@ func TestInitPristineRootAndExplicitScan(t *testing.T) {
 		t.Fatalf("next steps:\n%s", out)
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{"."}) || !slices.Equal(o.scans, []string{"cloudflare"}) {
+	if err != nil || !slices.Equal(o.src.roots, []string{"."}) || !slices.Equal(o.src.scans, []string{"cloudflare"}) {
 		t.Fatalf("%+v, %v", o, err)
 	}
 }
@@ -143,7 +143,7 @@ func TestInitUpdatePreservesSettings(t *testing.T) {
 		t.Fatalf("lost settings or permissions: %s (%v)", raw, info.Mode())
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{"infra"}) || !slices.Equal(o.scans, []string{"cloudflare"}) || !o.exclude.Match("aws_iam_role") {
+	if err != nil || !slices.Equal(o.src.roots, []string{"infra"}) || !slices.Equal(o.src.scans, []string{"cloudflare"}) || !o.src.exclude.Match("aws_iam_role") {
 		t.Fatalf("%+v %v", o, err)
 	}
 	initFixture(t, "unrelated/main.tf", `terraform {
@@ -154,7 +154,7 @@ func TestInitUpdatePreservesSettings(t *testing.T) {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
 	}
 	o, err = parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{"infra"}) {
+	if err != nil || !slices.Equal(o.src.roots, []string{"infra"}) {
 		t.Fatalf("update broadened selection: %+v %v", o, err)
 	}
 	code, out, stderr = invokeInit(t, "-update", "-scan=proxmox", "infra")
@@ -162,7 +162,7 @@ func TestInitUpdatePreservesSettings(t *testing.T) {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
 	}
 	o, err = parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.scans, []string{"proxmox"}) {
+	if err != nil || !slices.Equal(o.src.scans, []string{"proxmox"}) {
 		t.Fatalf("scan update: %+v %v", o, err)
 	}
 }
@@ -184,7 +184,7 @@ func TestInitDryRunAndEndOfFlags(t *testing.T) {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{"-update"}) {
+	if err != nil || !slices.Equal(o.src.roots, []string{"-update"}) {
 		t.Fatalf("%+v %v", o, err)
 	}
 }
@@ -308,7 +308,7 @@ func TestInitUpdateKeepsAliasedSettings(t *testing.T) {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !o.exclude.Match("old") || o.exclude.Match("infra") || !slices.Equal(o.roots, []string{"infra"}) {
+	if err != nil || !o.src.exclude.Match("old") || o.src.exclude.Match("infra") || !slices.Equal(o.src.roots, []string{"infra"}) {
 		t.Fatalf("unrelated alias value changed: %+v %v", o, err)
 	}
 }
@@ -362,7 +362,7 @@ func TestInitDoesNotPrintControlSequencesInPaths(t *testing.T) {
 		t.Fatalf("unsafe directory printed: %q %q", out, stderr)
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{dir}) {
+	if err != nil || !slices.Equal(o.src.roots, []string{dir}) {
 		t.Fatalf("saved path changed: %+v %v", o, err)
 	}
 }
@@ -381,7 +381,7 @@ func TestInitUpdateKeepsCommentOnlyConfig(t *testing.T) {
 		t.Fatalf("comment lost:\n%s", raw)
 	}
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{"infra"}) {
+	if err != nil || !slices.Equal(o.src.roots, []string{"infra"}) {
 		t.Fatalf("config parsed as %+v %v", o, err)
 	}
 }
@@ -419,7 +419,7 @@ func TestInitSavesTildeDirectoryAsRelative(t *testing.T) {
 	}
 	// Resolved inside the current directory, not under HOME.
 	o, err := parseFlags(nil, &bytes.Buffer{})
-	if err != nil || !slices.Equal(o.roots, []string{"~/env"}) || !slices.Equal(o.stateRoots, []string{"~/env"}) {
+	if err != nil || !slices.Equal(o.src.roots, []string{"~/env"}) || !slices.Equal(o.src.stateRoots, []string{"~/env"}) {
 		t.Fatalf("config parsed as %+v %v", o, err)
 	}
 	if code, out, stderr := invokeInit(t, "-update"); code != 0 {
@@ -440,7 +440,7 @@ func TestInitSavesExplicitMaxRoots(t *testing.T) {
 	if code, out, stderr := invokeInit(t, "-max-roots", "5"); code != 0 {
 		t.Fatalf("%d\n%s%s", code, out, stderr)
 	}
-	if o, err := parseFlags(nil, &bytes.Buffer{}); err != nil || o.maxRoots != 5 {
+	if o, err := parseFlags(nil, &bytes.Buffer{}); err != nil || o.src.maxRoots != 5 {
 		t.Fatalf("config parsed as %+v %v", o, err)
 	}
 	// The saved limit applies to the update as well.
@@ -493,8 +493,8 @@ func TestInitUpdateReadsMaxRootsAsTheLoader(t *testing.T) {
 }`)
 	for _, value := range []string{`"5"`, "5", "[7, 5]", "0x5"} {
 		initFixture(t, defaultConfigFile, "max-roots: "+value+"\nroots: [.]\n")
-		if o, err := parseFlags(nil, &bytes.Buffer{}); err != nil || o.maxRoots != 5 {
-			t.Fatalf("%s: loader read %+v %v", value, o.maxRoots, err)
+		if o, err := parseFlags(nil, &bytes.Buffer{}); err != nil || o.src.maxRoots != 5 {
+			t.Fatalf("%s: loader read %+v %v", value, o.src.maxRoots, err)
 		}
 		if n, ok, err := initPreviousMaxRoots([]byte("max-roots: " + value + "\n")); err != nil || !ok || n != 5 {
 			t.Fatalf("%s: init read %d %v %v", value, n, ok, err)

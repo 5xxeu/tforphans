@@ -89,7 +89,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		}
 	}
 	head := adoptHeader(sum)
-	if o.outDir != "" {
+	if o.adopt.outDir != "" {
 		n, err := adoptDir(o, orphans, reserved, head, stderr)
 		if err == nil {
 			skipped(n)
@@ -97,7 +97,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		}
 		return err
 	}
-	if o.out == "" {
+	if o.adopt.out == "" {
 		if _, err := io.WriteString(stdout, head); err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		}
 		return err
 	}
-	f, err := os.OpenFile(o.out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(o.adopt.out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		return err
 	}
 	skipped(n)
-	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", n, o.out)
+	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", n, o.adopt.out)
 	providerHint()
 	return nil
 }
@@ -159,15 +159,15 @@ var pluginSource = regexp.MustCompile(`^plugin[1-9][0-9]*$`)
 // adoptRootFlags checks -out-dir and the NAME=DIR pairs of -adopt-root.
 // NAME is a -scan provider or a plugin (plugin1 is the first -plugin).
 func adoptRootFlags(o *options, pairs []string) error {
-	if o.out != "" && o.outDir != "" {
+	if o.adopt.out != "" && o.adopt.outDir != "" {
 		return errors.New("-o and -out-dir cannot be used together")
 	}
-	if len(pairs) > 0 && o.outDir == "" {
+	if len(pairs) > 0 && o.adopt.outDir == "" {
 		return errors.New("-adopt-root needs -out-dir")
 	}
-	if o.outDir != "" {
-		if _, err := os.Lstat(o.outDir); err == nil {
-			return fmt.Errorf("-out-dir %s already exists: adopt writes a new directory and never overwrites", o.outDir)
+	if o.adopt.outDir != "" {
+		if _, err := os.Lstat(o.adopt.outDir); err == nil {
+			return fmt.Errorf("-out-dir %s already exists: adopt writes a new directory and never overwrites", o.adopt.outDir)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -177,15 +177,15 @@ func adoptRootFlags(o *options, pairs []string) error {
 		if !ok || dir == "" {
 			return fmt.Errorf("-adopt-root %q: want NAME=DIR, e.g. cloudflare=zones/example.com", p)
 		}
-		known := slices.Contains(o.scans, name)
+		known := slices.Contains(o.src.scans, name)
 		if pluginSource.MatchString(name) {
 			n, err := strconv.Atoi(strings.TrimPrefix(name, "plugin"))
-			known = err == nil && n <= len(o.plugins)
+			known = err == nil && n <= len(o.src.plugins)
 		}
 		if !known {
-			return fmt.Errorf("-adopt-root %q: %s is neither a -scan provider of this run nor one of its %d plugins (plugin1 is the first -plugin)", p, name, len(o.plugins))
+			return fmt.Errorf("-adopt-root %q: %s is neither a -scan provider of this run nor one of its %d plugins (plugin1 is the first -plugin)", p, name, len(o.src.plugins))
 		}
-		if prev, ok := o.adoptRoots[name]; ok && prev != dir {
+		if prev, ok := o.adopt.roots[name]; ok && prev != dir {
 			return fmt.Errorf("-adopt-root %s is given twice: %s and %s", name, prev, dir)
 		}
 		if real, err := filepath.EvalSymlinks(dir); err == nil {
@@ -196,17 +196,17 @@ func adoptRootFlags(o *options, pairs []string) error {
 		} else if !fi.IsDir() {
 			return fmt.Errorf("-adopt-root %s: %s is not a directory", name, dir)
 		}
-		if o.adoptRoots == nil {
-			o.adoptRoots = map[string]string{}
+		if o.adopt.roots == nil {
+			o.adopt.roots = map[string]string{}
 		}
-		o.adoptRoots[name] = dir
+		o.adopt.roots[name] = dir
 	}
 	return nil
 }
 
 // adoptRootOf is the directory -adopt-root names for a -scan provider, if any.
 func adoptRootOf(o *options, name string) []string {
-	if d, ok := o.adoptRoots[name]; ok {
+	if d, ok := o.adopt.root(name); ok {
 		return []string{d}
 	}
 	return nil
@@ -215,7 +215,7 @@ func adoptRootOf(o *options, name string) []string {
 // adoptRootDirs are the directories -adopt-root names, in a fixed order.
 func adoptRootDirs(o *options) []string {
 	var dirs []string
-	for _, d := range o.adoptRoots {
+	for _, d := range o.adopt.roots {
 		if !slices.Contains(dirs, d) {
 			dirs = append(dirs, d)
 		}
@@ -227,7 +227,7 @@ func adoptRootDirs(o *options) []string {
 // outDirRoots checks before the run that every root module that may get a
 // file under -out-dir has a path there.
 func outDirRoots(o *options) error {
-	if o.outDir == "" {
+	if o.adopt.outDir == "" {
 		return nil
 	}
 	cwd, err := realCwd()
@@ -235,8 +235,8 @@ func outDirRoots(o *options) error {
 		return err
 	}
 	dirs := adoptRootDirs(o)
-	if !o.noQuery {
-		dirs = append(dirs, o.roots...)
+	if !o.src.noQuery {
+		dirs = append(dirs, o.src.roots...)
 	}
 	for _, d := range dirs {
 		if _, err := relRoot(cwd, d); err != nil {
@@ -272,7 +272,7 @@ func adoptTarget(o *options, r model.Resource, roots map[string]bool) string {
 		return canonDir(r.Source)
 	}
 	if name, ok := sourceName(r.Source); ok {
-		if d, ok := o.adoptRoots[name]; ok {
+		if d, ok := o.adopt.root(name); ok {
 			return canonDir(d)
 		}
 	}
@@ -321,7 +321,7 @@ func placeOrphans(o *options, orphans []model.Resource, copies map[string][]mode
 		if own != "" && !slices.Contains(dirs, own) {
 			dirs = append(dirs, own)
 		}
-		if len(dirs) > 1 && o.outDir != "" {
+		if len(dirs) > 1 && o.adopt.outDir != "" {
 			var names []string
 			for _, d := range dirs {
 				names = append(names, rel(d))
@@ -379,7 +379,7 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 		return 0, err
 	}
 	roots := map[string]bool{}
-	for _, r := range o.roots {
+	for _, r := range o.src.roots {
 		roots[r] = true
 	}
 	files := map[string][]model.Resource{}
@@ -403,9 +403,9 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 		file := filepath.Join(rel, "imports.tf")
 		files[file] = append(files[file], r)
 	}
-	parent, base := splitOutDir(o.outDir)
+	parent, base := splitOutDir(o.adopt.outDir)
 	if base == "" || base == "." || base == ".." {
-		return 0, fmt.Errorf("-out-dir %s: name a new directory", o.outDir)
+		return 0, fmt.Errorf("-out-dir %s: name a new directory", o.adopt.outDir)
 	}
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return 0, err
@@ -453,16 +453,16 @@ func adoptDir(o *options, orphans []model.Resource, reserved map[string]bool, he
 	}
 	// Checked again: the scan may have taken a while.
 	if _, err := os.Lstat(out); err == nil {
-		return 0, fmt.Errorf("-out-dir %s already exists: adopt writes a new directory and never overwrites", o.outDir)
+		return 0, fmt.Errorf("-out-dir %s already exists: adopt writes a new directory and never overwrites", o.adopt.outDir)
 	}
 	if err := os.Rename(tmp, out); err != nil {
 		return 0, err
 	}
 	done = true
-	fmt.Fprintf(stderr, "Wrote %d import blocks to %d files under %s. Next, copy each <root>/imports.tf into its root module and run there:\n  terraform plan -generate-config-out=generated.tf\n", written, len(names), report.Clean(o.outDir))
+	fmt.Fprintf(stderr, "Wrote %d import blocks to %d files under %s. Next, copy each <root>/imports.tf into its root module and run there:\n  terraform plan -generate-config-out=generated.tf\n", written, len(names), report.Clean(o.adopt.outDir))
 	for _, f := range names {
 		if name, ok := unassigned[f]; ok {
-			fmt.Fprintf(stderr, "note: %d objects of %s are in %s, not assigned to a root module: move them into the root module that points at the same account, or pass -adopt-root %s=DIR.\n", len(files[f]), report.Clean(sourceLabel(name, o)), report.Clean(filepath.Join(o.outDir, f)), report.Clean(name))
+			fmt.Fprintf(stderr, "note: %d objects of %s are in %s, not assigned to a root module: move them into the root module that points at the same account, or pass -adopt-root %s=DIR.\n", len(files[f]), report.Clean(sourceLabel(name, o)), report.Clean(filepath.Join(o.adopt.outDir, f)), report.Clean(name))
 		}
 	}
 	return written, nil
@@ -487,7 +487,7 @@ func splitOutDir(dir string) (parent, base string) {
 
 // sourceLabel names a source in messages as the command line spells it.
 func sourceLabel(name string, o *options) string {
-	if slices.Contains(o.scans, name) {
+	if slices.Contains(o.src.scans, name) {
 		return "-scan " + name
 	}
 	return name

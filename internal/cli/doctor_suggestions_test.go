@@ -217,7 +217,7 @@ func TestDoctorArgumentFixesAcrossRoots(t *testing.T) {
 				t.Fatalf("invalid next command: %v", err)
 			}
 			actual := []string{}
-			for _, arg := range next.args {
+			for _, arg := range next.src.args {
 				value := arg.Name + "=" + strings.Join(arg.Values, ",")
 				if arg.Types != "" {
 					value = arg.Types + ":" + value
@@ -247,7 +247,7 @@ func TestDoctorArgumentFixesAcrossRoots(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				plan := tf.BuildPlan(&schemas, declared, tf.PlanOptions{Args: next.args, Configs: configs, ProviderConfigs: providerConfigs})
+				plan := tf.BuildPlan(&schemas, declared, tf.PlanOptions{Args: next.src.args, Configs: configs, ProviderConfigs: providerConfigs})
 				if len(plan.Skipped) != 0 || len(plan.Queries) == 0 {
 					t.Fatalf("suggested args do not plan root %s: %+v", root, plan)
 				}

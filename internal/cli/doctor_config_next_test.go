@@ -62,9 +62,9 @@ func TestDoctorNextConfigArguments(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := append(slices.Clone(original.args), tf.Arg{Name: "zone", Values: []string{"auto"}})
-				if !reflect.DeepEqual(next.args, want) {
-					t.Fatalf("next args %+v want %+v, command %q", next.args, want, d.NextCommand)
+				want := append(slices.Clone(original.src.args), tf.Arg{Name: "zone", Values: []string{"auto"}})
+				if !reflect.DeepEqual(next.src.args, want) {
+					t.Fatalf("next args %+v want %+v, command %q", next.src.args, want, d.NextCommand)
 				}
 				if cli != "" && strings.Contains(strings.Join(d.NextCommand, " "), "eu-north-1") {
 					t.Fatalf("overridden config restored: %q", d.NextCommand)
@@ -104,8 +104,8 @@ func TestDoctorNextConfigLists(t *testing.T) {
 		{Name: "endpoint", Values: []string{"https://host/state?REDACTED"}},
 		{Name: "zone", Values: []string{"auto"}},
 	}
-	if !reflect.DeepEqual(next.args, want) || !reflect.DeepEqual(next.scans, []string{"cloudflare", "proxmox"}) {
-		t.Fatalf("args=%+v scans=%q command=%q", next.args, next.scans, command)
+	if !reflect.DeepEqual(next.src.args, want) || !reflect.DeepEqual(next.src.scans, []string{"cloudflare", "proxmox"}) {
+		t.Fatalf("args=%+v scans=%q command=%q", next.src.args, next.src.scans, command)
 	}
 	noFix := doctorNext(doctorConfiguredArgs(original, nil), nil)
 	if slices.Contains(noFix, "-arg") || slices.Contains(noFix, "-scan") {
@@ -115,7 +115,7 @@ func TestDoctorNextConfigLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(unchanged.args, original.args) || !reflect.DeepEqual(unchanged.scans, original.scans) {
+	if !reflect.DeepEqual(unchanged.src.args, original.src.args) || !reflect.DeepEqual(unchanged.src.scans, original.src.scans) {
 		t.Fatalf("config changed without fixes: %+v", unchanged)
 	}
 }

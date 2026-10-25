@@ -128,8 +128,8 @@ func TestDiscoveryPredicate(t *testing.T) {
 	}{
 		{0, 0, false, true}, {1, 0, false, false}, {0, 1, false, false}, {2, 1, false, false}, {0, 0, true, false},
 	} {
-		o := &options{plugins: make(listFlag, tc.plugins), printQuery: tc.printQuery}
-		if got := nothingChecked(o, report.Summary{Ran: tc.ran}); got != tc.wantNothing {
+		o := &options{src: sourceOptions{plugins: make(listFlag, tc.plugins), printQuery: tc.printQuery}}
+		if got := nothingChecked(&o.src, report.Summary{Ran: tc.ran}); got != tc.wantNothing {
 			t.Fatalf("%+v: %t", tc, got)
 		}
 	}

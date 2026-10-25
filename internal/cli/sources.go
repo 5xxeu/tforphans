@@ -21,17 +21,17 @@ var sources = map[string]dsource.Adapter{
 // withSource runs one root, scan or plugin under -source-timeout and says
 // so when that ran out.
 func withSource[T any](ctx context.Context, o *options, f func(context.Context) (T, error)) (T, error) {
-	if o.sourceTimeout <= 0 {
+	if o.src.sourceTimeout <= 0 {
 		return f(ctx)
 	}
 	// Waiting for the turn to run terraform init does not count.
-	srcCtx, cancel := tf.WithBudget(ctx, o.sourceTimeout)
+	srcCtx, cancel := tf.WithBudget(ctx, o.src.sourceTimeout)
 	defer cancel()
 	v, err := f(srcCtx)
 	// Also when f returned no error: work after its last command may not
 	// look at the context, and a result past the deadline is not complete.
 	if ctx.Err() == nil && srcCtx.Err() != nil {
-		err = sourceTimeout{o.sourceTimeout, cmp.Or(err, srcCtx.Err())}
+		err = sourceTimeout{o.src.sourceTimeout, cmp.Or(err, srcCtx.Err())}
 	}
 	return v, err
 }

@@ -42,19 +42,19 @@ Flags:
 func doctorFlags(all *flag.FlagSet, o *options) *flag.FlagSet {
 	fs := flag.NewFlagSet("tforphans doctor", flag.ContinueOnError)
 	allowed := strings.Fields("config no-config terraform state state-roots current-workspace terragrunt terragrunt-unit types exclude-types arg no-aliases scan scan-scope no-query format v quiet timeout source-timeout max-state-size state-parallelism max-roots plugin")
-	o.doctorConfigFlags = map[string]bool{}
-	o.doctorIgnoreFlags = all
+	o.doctor.configFlags = map[string]bool{}
+	o.doctor.ignoreFlags = all
 	all.VisitAll(func(f *flag.Flag) {
 		if slices.Contains(allowed, f.Name) {
 			fs.Var(f.Value, f.Name, f.Usage)
 		} else {
-			o.doctorConfigFlags[f.Name] = true
+			o.doctor.configFlags[f.Name] = true
 		}
 	})
 	fs.Lookup("format").Usage = "output format: text or json"
-	fs.BoolVar(&o.offline, "offline", false, "skip workspace, state and authentication reads; report unknown")
-	fs.BoolVar(&o.checkAuth, "check-auth", false, "read supported providers' account identities (does not test resource read permissions)")
-	o.doctorFlagSet = fs
+	fs.BoolVar(&o.doctor.offline, "offline", false, "skip workspace, state and authentication reads; report unknown")
+	fs.BoolVar(&o.doctor.checkAuth, "check-auth", false, "read supported providers' account identities (does not test resource read permissions)")
+	o.doctor.flagSet = fs
 	return fs
 }
 
@@ -132,7 +132,7 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	if !o.quiet && isTerminal(stderr) {
-		o.steps = stderr
+		o.run.steps = stderr
 	}
 	if o.timeout > 0 {
 		var cancel context.CancelFunc
@@ -141,13 +141,13 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	}
 	d := doctorReport{SchemaVersion: 1, Checks: []doctorCheck{}, verbose: o.verbose}
 	d.add("config", "ok", "command line and config parsed", "", "")
-	if o.impliedNoRoot {
+	if o.src.impliedNoRoot {
 		d.Notes = append(d.Notes, impliedNoRootNote)
 	}
-	if o.offline {
+	if o.doctor.offline {
 		d.add("offline", "warning", "installed provider processes may contact the network during schema startup; offline does not enforce network isolation", "", "")
 	}
-	if _, err := loadIgnore(ctx, o); err != nil {
+	if _, err := loadIgnore(ctx, o.ignore); err != nil {
 		d.add("ignore", "failed", "ignore file or presets could not be parsed", "", "Fix the ignore file or presets in the config file")
 	} else {
 		d.add("ignore", "ok", "ignore file and presets parsed", "", "")
@@ -164,13 +164,13 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	for _, n := range sum.Notes {
 		d.add("roots", "warning", n, "", "")
 	}
-	all := slices.Clone(o.roots)
+	all := slices.Clone(o.src.roots)
 	for _, dir := range dirs {
 		if !slices.ContainsFunc(all, func(r string) bool { return sameDir(r, dir) }) {
 			all = append(all, dir)
 		}
 	}
-	if len(all) > 0 || len(o.stateRoots) > 0 || o.terragrunt || len(o.tgUnits) > 0 || len(o.scans) > 0 {
+	if len(all) > 0 || len(o.src.stateRoots) > 0 || o.src.terragrunt || len(o.src.tgUnits) > 0 || len(o.src.scans) > 0 {
 		d.version(ctx, o)
 	} else {
 		d.add("terraform.version", "skipped", "Terraform is not needed for explicit state sources and plugins without roots or scans", "", "")
@@ -179,14 +179,14 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 	var checkedRoots []string
 	for _, root := range all {
 		o.stepf("checking %s", root)
-		if d.root(ctx, o, root, slices.Contains(o.roots, root) && !o.noQuery, listable) {
+		if d.root(ctx, o, root, slices.Contains(o.src.roots, root) && !o.src.noQuery, listable) {
 			checkedRoots = append(checkedRoots, root)
 		} else {
 			d.add("states.read", "skipped", "temporary file cleanup failed", root, "")
 		}
 	}
 	var snapshots []state.Snapshot
-	if o.offline {
+	if o.doctor.offline {
 		d.add("states.read", "skipped", "offline: workspace list and state pull disabled", "", "")
 		d.add("states.identity", "skipped", "offline: no states read", "", "")
 	} else {
@@ -222,10 +222,10 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.Notes = append(d.Notes, "State pull confirms backend access only, not permission to read cloud resources.")
 	}
 	idx := state.NewIndex()
-	if o.scopeState {
+	if o.src.scopeState {
 		idx.AddSnapshots(snapshots)
 	}
-	for _, name := range o.scans {
+	for _, name := range o.src.scans {
 		a := sources[name]
 		pin := dsource.VersionRoot(checkedRoots, a.Provider)
 		if pin == "" {
@@ -233,17 +233,17 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		} else {
 			d.add("scan."+name+".pin", "ok", "provider version and hashes pinned", pin, "")
 		}
-		d.scanPlan(ctx, o, name, pin, scanScope(o, a, idx))
+		d.scanPlan(ctx, o, name, pin, scanScope(&o.src, a, idx))
 		why := "-check-auth was not requested"
-		if o.offline {
+		if o.doctor.offline {
 			why = "offline: authentication disabled"
 		} else if a.Probe == "" {
 			why = "provider has no supported identity probe"
 		} else if pin == "" {
 			why = "provider is not pinned"
-		} else if o.checkAuth {
+		} else if o.doctor.checkAuth {
 			_, err := withSource(ctx, o, func(ctx context.Context) (struct{}, error) {
-				return struct{}{}, dsource.CheckAuth(ctx, a, dsource.Options{TerraformBin: o.terraformBin, VersionRoot: pin})
+				return struct{}{}, dsource.CheckAuth(ctx, a, dsource.Options{TerraformBin: o.src.terraformBin, VersionRoot: pin})
 			})
 			if err != nil {
 				d.add("auth."+name, "failed", "identity probe failed", pin, "Check provider credentials and connectivity")
@@ -255,10 +255,10 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.add("auth."+name, "skipped", why, "", "")
 	}
 	d.discovery(o)
-	if len(o.plugins) > 0 {
+	if len(o.src.plugins) > 0 {
 		d.add("plugins", "skipped", "plugins are not executed: the plugin protocol has no diagnostic mode", "", "")
 	}
-	if o.scopeState && !o.offline && len(snapshots) == 0 {
+	if o.src.scopeState && !o.doctor.offline && len(snapshots) == 0 {
 		d.add("scan.scope", "failed", "-scan-scope state needs at least one readable state", "", "Supply -state or -state-roots")
 	}
 	if ctx.Err() != nil {
@@ -266,13 +266,13 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.add("run", "failed", "diagnostics interrupted or overall timeout exceeded", "", "Increase -timeout or retry")
 	}
 	d.NextCommand = doctorNext(doctorConfiguredArgs(o, d.fixes), d.fixes)
-	if o.offline {
+	if o.doctor.offline {
 		d.recheck = append(d.recheck, "-offline")
 	}
-	if o.checkAuth {
+	if o.doctor.checkAuth {
 		d.recheck = append(d.recheck, "-check-auth")
 	}
-	code := d.result(o.offline)
+	code := d.result(o.doctor.offline)
 	if err := d.write(report.WithColor(stdout, colorEnabled(stdout)), o.format); err != nil {
 		fmt.Fprintln(stderr, "error:", report.Clean(err.Error()))
 		return 1
@@ -285,7 +285,7 @@ func (d *doctorReport) version(ctx context.Context, o *options) {
 		Version string `json:"terraform_version"`
 	}
 	v, err := withSource(ctx, o, func(ctx context.Context) (version, error) {
-		out, _, err := (tf.Runner{Bin: o.terraformBin, Dir: "."}).Exec(ctx, "version", "-json")
+		out, _, err := (tf.Runner{Bin: o.src.terraformBin, Dir: "."}).Exec(ctx, "version", "-json")
 		var v version
 		if err == nil {
 			err = json.Unmarshal(out, &v)
@@ -300,8 +300,8 @@ func (d *doctorReport) version(ctx context.Context, o *options) {
 		d.incomplete = true
 		return
 	}
-	if !o.noQuery {
-		if err := tf.CheckQueryVersion(o.terraformBin, v.Version); err != nil {
+	if !o.src.noQuery {
+		if err := tf.CheckQueryVersion(o.src.terraformBin, v.Version); err != nil {
 			d.add("terraform.version", "failed", err.Error(), "", "Install Terraform 1.14 or newer")
 			return
 		}
@@ -320,7 +320,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		return false
 	}
 
-	if o.terragrunt && !query {
+	if o.src.terragrunt && !query {
 		kind, err := tf.TerragruntKind(root)
 		if err == nil && kind != tf.TerragruntNone {
 			d.add("root.config", "ok", "Terragrunt unit configuration parsed", root, "")
@@ -331,7 +331,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		}
 	}
 
-	r := tf.Runner{Bin: o.terraformBin, Dir: root, MaxStateSize: o.maxStateSize}
+	r := tf.Runner{Bin: o.src.terraformBin, Dir: root, MaxStateSize: o.src.maxStateSize}
 	init := "terraform -chdir=" + shellQuote(root) + " init"
 	declared, err := tf.LocalNames(root)
 	// State-only roots count too: their provider may need -scan.
@@ -373,7 +373,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.add("root.query", "skipped", "used only for state", root, "")
 		return true
 	}
-	if o.offline && !r.Initialized() {
+	if o.doctor.offline && !r.Initialized() {
 		d.add("providers.schema", "skipped", "offline: root is not initialized", root, init)
 		d.skipPlan(root, "provider schema unavailable")
 		d.add("auth.providers", "skipped", "offline: authentication disabled", root, "")
@@ -421,7 +421,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		d.add("query.plan", "failed", "provider configuration could not be parsed", root, "")
 		return true
 	}
-	p := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.args, Include: o.include, Exclude: o.exclude, Configs: sc, NoAliases: o.noAliases, ProviderConfigs: pc})
+	p := tf.BuildPlan(schemas, declared, tf.PlanOptions{Args: o.src.args, Include: o.src.include, Exclude: o.src.exclude, Configs: sc, NoAliases: o.src.noAliases, ProviderConfigs: pc})
 	userLists, err := tf.UserLists(root)
 	if err != nil {
 		d.add("query.plan", "failed", "user list blocks could not be parsed", root, "Check .tfquery.hcl files")
@@ -489,7 +489,7 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 			status, fix = "failed", "Supply an explicit -arg value instead of auto"
 		} else if strings.HasPrefix(sk.Reason, "provider ") || strings.HasPrefix(sk.Reason, "provider configuration ") {
 			id, aliasStatus = "query.aliases", "warning"
-			if o.noAliases && strings.HasSuffix(sk.Reason, " not listed (-no-aliases)") {
+			if o.src.noAliases && strings.HasSuffix(sk.Reason, " not listed (-no-aliases)") {
 				status = "warning"
 			} else {
 				status = "failed"
@@ -525,11 +525,11 @@ func (d *doctorReport) root(ctx context.Context, o *options, root string, query 
 		c := configs[ref]
 		id := "auth." + ref
 		why := "-check-auth was not requested"
-		if o.offline {
+		if o.doctor.offline {
 			why = "offline: authentication disabled"
 		} else if len(tf.IdentitySources[model.ProviderFamily(c.Source)]) == 0 {
 			why = "provider has no supported identity reader"
-		} else if o.checkAuth {
+		} else if o.doctor.checkAuth {
 			type identities struct {
 				scopes map[string]map[string]string
 				failed map[string]error
@@ -572,9 +572,9 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 		n, total  int
 		err       error
 	}
-	results := make([]read, len(roots)+len(o.states))
+	results := make([]read, len(roots)+len(o.src.states))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, o.stateParallelism)
+	sem := make(chan struct{}, o.src.stateParallelism)
 	for i := range results {
 		wg.Add(1)
 		go func() {
@@ -585,18 +585,18 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 				v := read{total: 1}
 				if i < len(roots) {
 					root := roots[i]
-					if slices.Contains(o.roots, root) {
+					if slices.Contains(o.src.roots, root) {
 						v.snapshots, v.n, v.err = pullRootCount(ctx, o, root, &v.total)
 					} else {
 						v.snapshots, v.n, v.err = pullStateRootCount(ctx, o, root, &v.total)
 					}
 					return v, v.err
 				}
-				raw, err := state.Fetch(ctx, o.states[i-len(roots)], false, o.maxStateSize)
+				raw, err := state.Fetch(ctx, o.src.states[i-len(roots)], false, o.src.maxStateSize)
 				if err != nil {
 					return v, err
 				}
-				snapshot, err := state.ParseSnapshot(raw, state.Redact(o.states[i-len(roots)]))
+				snapshot, err := state.ParseSnapshot(raw, state.Redact(o.src.states[i-len(roots)]))
 				if err == nil {
 					v.n = 1
 					v.snapshots = []state.Snapshot{snapshot}
@@ -615,7 +615,7 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 		if i < len(roots) {
 			root = roots[i]
 		} else {
-			root = state.Redact(o.states[i-len(roots)])
+			root = state.Redact(o.src.states[i-len(roots)])
 		}
 		n += v.n
 		total += v.total
@@ -640,7 +640,7 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 }
 
 func doctorConfiguredArgs(o *options, fixes []string) []commandArg {
-	args := slices.Clone(o.doctorArgs)
+	args := slices.Clone(o.doctor.args)
 	set := map[string]bool{}
 	for _, arg := range args {
 		if !arg.positional && !arg.end {
@@ -654,7 +654,7 @@ func doctorConfiguredArgs(o *options, fixes []string) []commandArg {
 			continue
 		}
 		set[name] = true
-		f := o.doctorFlagSet.Lookup(name)
+		f := o.doctor.flagSet.Lookup(name)
 		if f == nil {
 			continue
 		}
@@ -952,7 +952,7 @@ func doctorStateRemediation(root string, err error, o *options) string {
 	message := strings.ToLower(err.Error())
 	for _, text := range []string{"module source has changed", "backend initialization required", "required plugins are not installed", "please run terraform init", "run terraform init", "not initialized", "initialization required", "initialization is required", "module not installed", `run "terraform init"`, "run 'terraform init'"} {
 		if strings.Contains(message, text) {
-			if o.terragrunt {
+			if o.src.terragrunt {
 				if kind, e := tf.TerragruntKind(root); e == nil && kind != tf.TerragruntNone {
 					return "cd " + shellQuote(root) + " && terragrunt run -- init"
 				}
@@ -981,7 +981,7 @@ func doctorAutoArg(source, name string) bool {
 
 func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin string, scope map[string][]string) {
 	id := "scan." + name + ".plan"
-	if o.offline && o.scopeState {
+	if o.doctor.offline && o.src.scopeState {
 		d.add(id, "skipped", "offline: -scan-scope state requires reading states; scan plan unconfirmed", pin, "")
 		return
 	}
@@ -990,11 +990,11 @@ func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin strin
 		return
 	}
 	p, err := withSource(ctx, o, func(ctx context.Context) (*dsource.PlanReport, error) {
-		return dsource.InspectPlan(ctx, sources[name], dsource.Options{TerraformBin: o.terraformBin, VersionRoot: pin, Include: o.include, Exclude: o.exclude, Scope: scope})
+		return dsource.InspectPlan(ctx, sources[name], dsource.Options{TerraformBin: o.src.terraformBin, VersionRoot: pin, Include: o.src.include, Exclude: o.src.exclude, Scope: scope})
 	})
 	if err != nil {
 		status := "failed"
-		if o.offline && errors.Is(err, dsource.ErrProviderNotInstalled) {
+		if o.doctor.offline && errors.Is(err, dsource.ErrProviderNotInstalled) {
 			status = "skipped"
 		}
 		d.add(id, status, report.NewUnreadState(pin, err).Error, pin, "terraform -chdir="+shellQuote(pin)+" init")
@@ -1018,12 +1018,12 @@ func (d *doctorReport) scanPlan(ctx context.Context, o *options, name, pin strin
 
 func (d *doctorReport) discovery(o *options) {
 	queries := d.queries
-	if o.noQuery {
+	if o.src.noQuery {
 		queries = 0
 	}
-	count := queries + d.scanBlocks + len(o.plugins)
+	count := queries + d.scanBlocks + len(o.src.plugins)
 	status, fix := "ok", ""
-	if !hasDiscovery(queries+d.scanBlocks, len(o.plugins)) {
+	if !hasDiscovery(queries+d.scanBlocks, len(o.src.plugins)) {
 		status = "failed"
 		fix = "Use -plugin COMMAND or a root with list resources; review -types and -exclude-types"
 		for _, name := range slices.Sorted(maps.Keys(sources)) {
@@ -1034,7 +1034,7 @@ func (d *doctorReport) discovery(o *options) {
 			}
 		}
 	}
-	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scan blocks, %d plugins selected", queries, d.scanBlocks, len(o.plugins)), "", fix)
+	d.add("discovery", status, fmt.Sprintf("%d list queries, %d scan blocks, %d plugins selected", queries, d.scanBlocks, len(o.src.plugins)), "", fix)
 	d.Checks[len(d.Checks)-1].Count = &count
 }
 

@@ -41,7 +41,7 @@ func TestDoctorStaleRoots(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					o.offline = offline
+					o.doctor.offline = offline
 					var d doctorReport
 					ok := d.root(context.Background(), o, ".", query, map[state.TypeKey]bool{})
 					c := doctorFindCheck(t, d, "root.stale", ".")
