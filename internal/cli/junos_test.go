@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -18,7 +18,7 @@ func TestJunosPlugin(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not in PATH")
 	}
-	plugin := "python3 examples/plugins/junos.py testdata/junos/config.json"
+	plugin := "python3 ../../examples/plugins/junos.py testdata/junos/config.json"
 	report := func(args ...string) (int, map[string]any, string) {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), append([]string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", plugin, "-format", "json"}, args...), &out, &errb)
@@ -42,7 +42,7 @@ func TestJunosPlugin(t *testing.T) {
 	// A device that cannot be read is a warning: the run goes on, coverage
 	// is incomplete.
 	var out, errb bytes.Buffer
-	code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 examples/plugins/junos.py testdata/junos/missing.json", "-strict"}, &out, &errb)
+	code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 ../../examples/plugins/junos.py testdata/junos/missing.json", "-strict"}, &out, &errb)
 	if code != exitError || !bytes.Contains(errb.Bytes(), []byte("cannot read the configuration")) || !bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE")) {
 		t.Errorf("unreadable device: exit %d\n%s", code, errb.String())
 	}
@@ -61,7 +61,7 @@ func TestJunosPlugin(t *testing.T) {
 		}
 		out.Reset()
 		errb.Reset()
-		code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 examples/plugins/junos.py '" + f + "'", "-strict"}, &out, &errb)
+		code = run(context.Background(), []string{"-no-query", "-state", "testdata/junos/terraform.tfstate", "-plugin", "python3 ../../examples/plugins/junos.py '" + f + "'", "-strict"}, &out, &errb)
 		if code != exitError || !bytes.Contains(errb.Bytes(), []byte("junos: ")) || !bytes.Contains(errb.Bytes(), []byte("coverage: INCOMPLETE")) || bytes.Contains(out.Bytes(), []byte("p1")) {
 			t.Errorf("%s: exit %d\n%s\n%s", name, code, out.String(), errb.String())
 		}
@@ -87,7 +87,7 @@ func TestJunosPluginEmptyConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "python3 examples/plugins/junos.py '" + conf + "'", "-strict", "-format", "json"}, &out, &errb)
+	code := run(context.Background(), []string{"-no-config", "-no-query", "-plugin", "python3 ../../examples/plugins/junos.py '" + conf + "'", "-strict", "-format", "json"}, &out, &errb)
 	if code != exitOK {
 		t.Fatalf("exit %d: %s", code, &errb)
 	}

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -10,17 +10,17 @@ import (
 	"github.com/5xxeu/tforphans/internal/tf"
 )
 
-// TestMain lets tests run the real main, with its signal handling and exit
+// TestMain lets tests run the real Main, with its signal handling and exit
 // codes, as a child process of this test binary.
 func TestMain(m *testing.M) {
 	tf.RunWrapper()
 	if os.Getenv("TFORPHANS_TEST_MAIN") == "1" {
-		main()
+		Main("")
 	}
 	os.Exit(m.Run())
 }
 
-// tool is tforphans as a process: this test binary running main.
+// tool is tforphans as a process: this test binary running Main.
 func tool(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	exe, err := os.Executable()

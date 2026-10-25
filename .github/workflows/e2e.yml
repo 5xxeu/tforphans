@@ -37,4 +37,4 @@ jobs:
           # Without them the test skips, which must not pass as a run.
           : "${CLOUDFLARE_API_TOKEN:?not set}"
           : "${E2E_ZONE_ID:?not set}"
-          go test -tags e2e -count=1 -run '^TestE2E' -v .
+          go test -tags e2e -count=1 -run '^TestE2E' -v ./internal/cli/

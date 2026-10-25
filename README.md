@@ -220,8 +220,12 @@ coverage](docs/usage.md).
 
 ```sh
 go test ./...
-go test -tags integration .   # needs terraform; builds testdata/fakeprovider
+go test -tags integration ./internal/cli/   # needs terraform; builds testdata/fakeprovider
 ```
+
+The command line lives in `internal/cli` (`main.go` in the root only calls
+it, so `go install github.com/5xxeu/tforphans@latest` keeps working); the
+`testdata` paths below are relative to that directory.
 
 CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, the unit tests with
 the race detector, golangci-lint, govulncheck and the integration tests
@@ -231,16 +235,16 @@ and resource identity, and run the whole flow including the import round
 trip; the Proxmox test runs the real `bpg/proxmox` against a fake Proxmox VE
 API.
 
-Some tests run the binary itself (this test binary as `main`): exit codes,
+Some tests run the binary itself (this test binary running `cli.Main`): exit codes,
 stdout and stderr, SIGTERM and SIGINT with plugin children, and (with
 `-tags integration`) a stop during `terraform query` that must leave no
 temporary file in the root. `testdata/golden` holds JSON reports of a fixed
 state and plugin output; after an intended change of the format, rewrite
-them with `TFORPHANS_UPDATE_GOLDEN=1 go test -run TestGoldenJSON .` and
+them with `TFORPHANS_UPDATE_GOLDEN=1 go test -run TestGoldenJSON ./internal/cli/` and
 review the diff. `coverage-incomplete.json` pins the coverage of a run with a
 failed listing and a type that needs an argument, reason codes included; it
 needs Terraform (`TFORPHANS_UPDATE_GOLDEN=1 go test -tags integration -run
-TestIntegrationGoldenIncompleteCoverage .`). Every key of these reports must be described in
+TestIntegrationGoldenIncompleteCoverage ./internal/cli/`). Every key of these reports must be described in
 `docs/json.md`.
 
 Fuzz targets check that plugin output always becomes import blocks that
@@ -263,7 +267,7 @@ only needs to read that zone's DNS) and the zone ID live in the
 `cloudflare-e2e` environment. Locally:
 
 ```sh
-CLOUDFLARE_API_TOKEN=... E2E_ZONE_ID=... go test -tags e2e -run '^TestE2E' -v .
+CLOUDFLARE_API_TOKEN=... E2E_ZONE_ID=... go test -tags e2e -run '^TestE2E' -v ./internal/cli/
 ```
 
 A `v*` tag on a commit of main waits for that commit's `ci` run to pass,

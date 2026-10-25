@@ -1,6 +1,6 @@
 //go:build integration
 
-package main
+package cli
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ func TestIntegrationGoldenIncompleteCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docs, err := os.ReadFile(filepath.Join("docs", "json.md"))
+	docs, err := os.ReadFile(filepath.Join("..", "..", "docs", "json.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

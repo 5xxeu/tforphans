@@ -1,6 +1,6 @@
 //go:build integration && unix
 
-package main
+package cli
 
 import (
 	"bytes"

@@ -1,6 +1,6 @@
 //go:build unix
 
-package main
+package cli
 
 import (
 	"bytes"
@@ -30,7 +30,7 @@ func TestGoldenJSON(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	docs, err := os.ReadFile(filepath.Join("docs", "json.md"))
+	docs, err := os.ReadFile(filepath.Join("..", "..", "docs", "json.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestGoldenListingJSON(t *testing.T) {
 	if !bytes.Equal(data, want) {
 		t.Fatalf("listings differ from %s (TFORPHANS_UPDATE_GOLDEN=1 rewrites it):\n%s", path, data)
 	}
-	docs, err := os.ReadFile(filepath.Join("docs", "json.md"))
+	docs, err := os.ReadFile(filepath.Join("..", "..", "docs", "json.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

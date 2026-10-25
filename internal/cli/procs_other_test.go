@@ -1,5 +1,5 @@
 //go:build !unix
 
-package main
+package cli
 
 func killDescendants(int) error { return nil }

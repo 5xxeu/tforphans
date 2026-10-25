@@ -6,7 +6,7 @@
 // own provider configuration, and compares their resource identities with
 // the module's state plus any extra states. Providers without list support
 // are covered by plugins: commands that print the same data as JSON lines.
-package main
+package cli
 
 import (
 	"cmp"
@@ -212,8 +212,8 @@ type options struct {
 	doctorArgs                 []commandArg
 }
 
-// version is set by release builds; go install builds take the module
-// version.
+// version is the release version given to Main; go install builds take
+// the module version.
 var version = ""
 
 func buildVersion() string {
@@ -226,7 +226,10 @@ func buildVersion() string {
 	return "unknown"
 }
 
-func main() {
+// Main runs tforphans with the command line of the process and exits.
+// v is the release version, empty for other builds.
+func Main(v string) {
+	version = v
 	// Started by terragrunt as its terraform (see tf.TerragruntStatePull).
 	tf.RunWrapper()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

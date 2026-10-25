@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -66,7 +66,7 @@ func TestVaultPlugin(t *testing.T) {
 	} {
 		t.Setenv("VAULT_MODE", tc.mode)
 		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{"-no-query", "-state", state, "-plugin", "sh examples/plugins/vault.sh", "-format", "json", "-strict"}, &out, &errb)
+		code := run(context.Background(), []string{"-no-query", "-state", state, "-plugin", "sh ../../examples/plugins/vault.sh", "-format", "json", "-strict"}, &out, &errb)
 		var rep struct {
 			Summary struct {
 				Complete bool `json:"complete"`
@@ -148,7 +148,7 @@ func TestVaultPluginDependencies(t *testing.T) {
 			t.Setenv("VAULT_MODE", c.mode)
 			t.Setenv("VAULT_TEST_JQ", jq)
 			var out, errb bytes.Buffer
-			cmd := exec.Command(sh, "examples/plugins/vault.sh")
+			cmd := exec.Command(sh, "../../examples/plugins/vault.sh")
 			cmd.Stdout, cmd.Stderr = &out, &errb
 			if err := cmd.Run(); err == nil {
 				t.Fatalf("successful exit: %s", &out)
