@@ -31,7 +31,7 @@ type Server struct {
 	Tokens atomic.Value
 	// STSCalls holds the host of the last web identity request to STS.
 	STSCalls atomic.Value
-	URL       string
+	URL      string
 }
 
 // Start serves s and points the AWS SDK of this test at it, with fixed
