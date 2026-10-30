@@ -134,7 +134,7 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 			}
 		}
 		if previous && errors.Is(err, iofs.ErrNotExist) {
-			return fmt.Errorf("%s from %s no longer exists; give the directories to scan: tforphans init -update DIR...", report.Clean(given), defaultConfigFile)
+			return fmt.Errorf("%s from %s no longer exists; pass the directories to scan as arguments: tforphans init -update DIR", report.Clean(given), defaultConfigFile)
 		}
 		if err != nil {
 			return err
