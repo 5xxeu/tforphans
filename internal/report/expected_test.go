@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseExpect(t *testing.T) {
@@ -33,12 +35,17 @@ func TestParseExpect(t *testing.T) {
 	if _, err := ParseExpect([]string{"a=" + strings.Join(numbered(101), ",") + " b=" + strings.Join(numbered(100), ",")}); err == nil {
 		t.Error("product above the limit accepted")
 	}
+	// Many values (a config file is read before -timeout) fail fast.
+	start := time.Now()
+	if _, err := ParseExpect([]string{"a=" + strings.Repeat("x,", 1<<19) + strings.Join(numbered(MaxExpected+1), ",")}); err == nil || time.Since(start) > 5*time.Second {
+		t.Errorf("many values: %v after %s", err, time.Since(start))
+	}
 }
 
 func numbered(n int) []string {
 	out := make([]string, n)
 	for i := range out {
-		out[i] = strings.Repeat("v", i+1)
+		out[i] = "v" + strconv.Itoa(i)
 	}
 	return out
 }

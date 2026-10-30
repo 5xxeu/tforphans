@@ -52,10 +52,17 @@ func ParseExpect(entries []string) ([]map[string]string, error) {
 				return nil, fmt.Errorf("-expect %q: %s given twice", entry, key)
 			}
 			keys = append(keys, key)
+			// A config file may come with someone else's repository and
+			// is read before -timeout applies: no quadratic work on it.
+			have := map[string]bool{}
 			for _, v := range strings.Split(vals, ",") {
-				if v = strings.TrimSpace(v); v != "" && !slices.Contains(values[key], v) {
+				if v = strings.TrimSpace(v); v != "" && !have[v] {
+					have[v] = true
 					values[key] = append(values[key], v)
 				}
+			}
+			if len(values[key]) > MaxExpected {
+				return nil, fmt.Errorf("-expect: more than %d scopes", MaxExpected)
 			}
 			if len(values[key]) == 0 {
 				return nil, fmt.Errorf("-expect %q: %s has no value", entry, key)
@@ -68,13 +75,13 @@ func ParseExpect(entries []string) ([]map[string]string, error) {
 		for _, key := range keys {
 			var next []map[string]string
 			for _, c := range combos {
+				if len(out)+len(next)+len(values[key]) > MaxExpected {
+					return nil, fmt.Errorf("-expect: more than %d scopes", MaxExpected)
+				}
 				for _, v := range values[key] {
 					m := maps.Clone(c)
 					m[key] = v
 					next = append(next, m)
-				}
-				if len(out)+len(next) > MaxExpected {
-					return nil, fmt.Errorf("-expect: more than %d scopes", MaxExpected)
 				}
 			}
 			combos = next
