@@ -359,7 +359,11 @@ func noInitRoots(ctx context.Context, dirs []string) error {
 	}
 	var example []string
 	for _, d := range withConfig[:min(2, len(withConfig))] {
-		example = append(example, shellArg(d))
+		if strings.HasPrefix(d, "-") && !slices.Contains(example, "--") {
+			// A directory named like a flag needs the end of flags first.
+			example = append([]string{"--"}, example...)
+		}
+		example = append(example, initDirArg(d))
 	}
 	more := ""
 	if len(withConfig) > 5 {

@@ -224,6 +224,20 @@ func TestInitNamesConfigWithoutRoot(t *testing.T) {
 	if code != exitError || !strings.Contains(stderr.String(), "these only have configuration: a, b; pass the roots among them as DIR, e.g. tforphans init a b") {
 		t.Errorf("exit %d\n%s", code, stderr.String())
 	}
+	// A directory named like a flag: the example must still parse.
+	if err := os.Rename("a", "-scan"); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	code = run(context.Background(), []string{"init", "-dry-run"}, &stdout, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "e.g. tforphans init -- -scan b") {
+		t.Errorf("exit %d\n%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(context.Background(), []string{"init", "-dry-run", "--", "-scan"}, &stdout, &stderr); code == exitError && strings.Contains(stderr.String(), "flag needs an argument") {
+		t.Errorf("example does not parse:\n%s", stderr.String())
+	}
 }
 
 func TestDoctorShowsIgnoreError(t *testing.T) {
