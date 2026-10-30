@@ -103,6 +103,6 @@ func printFlags(w io.Writer, fs *flag.FlagSet, title string, names []string) {
 		byName[cur] = append(byName[cur], line...)
 	}
 	for _, n := range names {
-		w.Write(byName[n])
+		_, _ = w.Write(byName[n])
 	}
 }

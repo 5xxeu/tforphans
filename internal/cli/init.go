@@ -337,7 +337,8 @@ func initDirArg(dir string) string {
 func noInitRoots(ctx context.Context, dirs []string) error {
 	var withConfig []string
 	for _, dir := range dirs {
-		filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
+		// Only a hint: the walk stops quietly at the first error.
+		_ = filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
 			if err != nil || ctx.Err() != nil || len(withConfig) > 5 {
 				return filepath.SkipAll
 			}
