@@ -33,6 +33,17 @@ type Arg struct {
 // Key identifies the argument among repeated -arg flags.
 func (a Arg) Key() string { return a.Types + ":" + a.Name }
 
+// Secret reports whether the argument's name looks like it holds a
+// secret (a token, password or key). Its values are left out of instance
+// keys and printed queries: the keys end up in reports.
+func (a Arg) Secret() bool {
+	camelKey := strings.HasSuffix(a.Name, "Key")
+	name := strings.ToLower(a.Name)
+	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' || r == '.' })
+	return camelKey || name == "key" || len(words) > 0 && words[len(words)-1] == "key" ||
+		strings.Contains(name, "token") || strings.Contains(name, "secret") || strings.Contains(name, "password") || strings.Contains(name, "credential")
+}
+
 // Auto is the value that stands for every zone or region (see AutoArgs).
 const Auto = "auto"
 
@@ -557,7 +568,12 @@ func (q Query) HCL(limit int) []byte {
 				}
 				lists = append(lists, "["+strings.Join(vals, ", ")+"]")
 			}
-			key = append(key, fmt.Sprintf("%s=${c[%d]}", a.Name, i))
+			if a.Secret() {
+				// The position of the value, which the key still tells apart.
+				key = append(key, fmt.Sprintf("%s=#${index(%s, c[%d]) + 1}", a.Name, lists[i], i))
+			} else {
+				key = append(key, fmt.Sprintf("%s=${c[%d]}", a.Name, i))
+			}
 			fields = append(fields, fmt.Sprintf("%s = c[%d]", a.Name, i))
 		}
 		combos := "setproduct(" + strings.Join(lists, ", ") + ")"
@@ -575,7 +591,11 @@ func (q Query) HCL(limit int) []byte {
 		for _, combo := range product(q.Args) {
 			var key, fields []string
 			for i, a := range q.Args {
-				key = append(key, a.Name+"="+combo[i])
+				if a.Secret() {
+					key = append(key, fmt.Sprintf("%s=#%d", a.Name, slices.Index(a.Values, combo[i])+1))
+				} else {
+					key = append(key, a.Name+"="+combo[i])
+				}
 				fields = append(fields, fmt.Sprintf("%s = %s", a.Name, HCLString(combo[i])))
 			}
 			fmt.Fprintf(&b, "    %s = { %s }\n", HCLString(strings.Join(key, ",")), strings.Join(fields, ", "))

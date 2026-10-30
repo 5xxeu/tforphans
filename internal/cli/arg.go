@@ -15,12 +15,7 @@ func redactArg(arg string) string {
 		return "<redacted>"
 	}
 	key, _, _ := strings.Cut(arg, "=")
-	name := parsed.Name
-	camelKey := strings.HasSuffix(name, "Key")
-	name = strings.ToLower(name)
-	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' || r == '.' })
-	secret := strings.Contains(name, "token") || strings.Contains(name, "secret") || strings.Contains(name, "password") || strings.Contains(name, "credential")
-	if secret || camelKey || name == "key" || len(words) > 0 && words[len(words)-1] == "key" {
+	if parsed.Secret() {
 		return key + "=<redacted>"
 	}
 	if strings.Contains(arg, "://") {

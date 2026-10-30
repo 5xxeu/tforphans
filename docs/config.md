@@ -51,6 +51,11 @@ default, but a larger value is an error, even if the command line overrides
 it. Pass a larger limit on the command line or in a file given with
 `-config`.
 
+A config file must be a regular file of at most 1 MiB: it is read before
+`-timeout` applies, so a named pipe or a device is refused rather than
+waited on. `tforphans doctor` shares the file with the audit and ignores a
+`format` it does not have (`summary`).
+
 The paths of `.tforphans.yaml` (`roots`, `state-roots`, `ignore`) must
 exist and stay within the current directory, resolved as the system does
 (symbolic links included): no `..`, absolute paths or `~/` leading out of

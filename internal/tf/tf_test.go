@@ -103,6 +103,30 @@ func TestBuildPlan(t *testing.T) {
 	}
 }
 
+// Instance keys end up in reports (listing addresses): a secret value is
+// told apart by its position instead.
+func TestQueryHCLSecretArgKeys(t *testing.T) {
+	token, _ := ParseArg("api_token=s3cret-1,s3cret-2")
+	region, _ := ParseArg("region=eu")
+	zone, _ := ParseArg("zone=auto")
+	static := Query{Type: "aws_instance", Provider: "aws", Args: []Arg{token, region}}
+	auto := Query{Type: "google_compute_instance", Provider: "google", Source: "registry.terraform.io/hashicorp/google", Args: []Arg{zone, token}}
+	for q, wants := range map[*Query][]string{
+		&static: {`"api_token=#1,region=eu" = { api_token = "s3cret-1", region = "eu" }`, `"api_token=#2,region=eu" =`},
+		&auto:   {`"zone=${c[0]},api_token=#${index(["s3cret-1", "s3cret-2"], c[1]) + 1}"`},
+	} {
+		hcl := string(q.HCL(10))
+		for _, want := range wants {
+			if !strings.Contains(hcl, want) {
+				t.Errorf("HCL lacks %q:\n%s", want, hcl)
+			}
+		}
+		if strings.Contains(hcl, `api_token=s3cret`) || strings.Contains(hcl, `api_token=${c`) {
+			t.Errorf("secret value in a key:\n%s", hcl)
+		}
+	}
+}
+
 func TestBuildPlanArgSatisfiesRequired(t *testing.T) {
 	a, _ := ParseArg("rest_api_id=abc")
 	p := BuildPlan(schemas(t), nil, PlanOptions{Args: []Arg{a}, Include: glob.CompileList([]string{"aws_api_gateway_stage"})})
@@ -758,6 +782,9 @@ func TestTempFiles(t *testing.T) {
 		path := filepath.Join(dir, tempName(suffix))
 		if err := writeTemp(path, []byte(versionOverride)); err != nil {
 			t.Fatal(err)
+		}
+		if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Errorf("mode of %s: %v, %v", suffix, info, err)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil || string(data) != tempMarker+versionOverride || !strings.HasPrefix(string(data), tempMarkerPrefix) {
