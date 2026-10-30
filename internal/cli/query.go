@@ -95,8 +95,7 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	}
 	sum.NoList = append(sum.NoList, plan.NoList...)
 	if o.src.printQuery {
-		printQueryFiles(stdout, root, plan, o.src.limit)
-		return nil, nil
+		return nil, printQueryFiles(stdout, root, plan, o.src.limit)
 	}
 
 	snapshots, n, err := pullRoot(ctx, o, root)
@@ -392,7 +391,7 @@ func (o *options) listingFailure(f tf.Failure) bool {
 // credentials redacted, one temporary file after the other:
 // terraform reads .tf and .tfquery.hcl differently,
 // so they must not run together into one document.
-func printQueryFiles(w io.Writer, root string, plan tf.Plan, limit int) {
+func printQueryFiles(w io.Writer, root string, plan tf.Plan, limit int) error {
 	plan.Queries = slices.Clone(plan.Queries)
 	for i := range plan.Queries {
 		q := &plan.Queries[i]
@@ -405,16 +404,22 @@ func printQueryFiles(w io.Writer, root string, plan tf.Plan, limit int) {
 			}
 		}
 	}
-	fmt.Fprintf(w, "# root %s\n", root)
+	// A failed write must fail the run: the files are meant to be saved.
+	if _, err := fmt.Fprintf(w, "# root %s\n", report.Clean(root)); err != nil {
+		return err
+	}
 	for _, f := range []struct{ name, text string }{
 		{"zz_tforphans_<pid>_override.tf", string(plan.ProvidersHCL())},
 		{"zz_tforphans_<pid>_auto.tf", string(plan.AutoHCL())},
 		{"zz_tforphans_<pid>.tfquery.hcl", string(plan.HCL(limit))},
 	} {
 		if strings.TrimSpace(f.text) != "" {
-			fmt.Fprintf(w, "\n# file %s\n%s", f.name, f.text)
+			if _, err := fmt.Fprintf(w, "\n# file %s\n%s", f.name, f.text); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // hasTags reports whether some provider's schema of the type has a tags

@@ -58,7 +58,9 @@ file permissions. See [initialization](init.md).
   `# tforphans temporary file, run `. Each file's marker includes a run ID
   generated once per process. Symlinks and unmarked files are left alone.
   A marked file belonging to a live process prevents another run from
-  starting in the same root. Adding `zz_tforphans_*` to `.gitignore`
+  starting in the same root. On Windows tforphans cannot tell whether that
+  process still exists, so it removes no such files: after a killed run,
+  delete them by hand when no other run is working there. Adding `zz_tforphans_*` to `.gitignore`
   keeps them out of commits in any case.
 - `-state-roots` and `-init` run terraform in every root module they find,
   with your environment. Point them only at repositories you would run

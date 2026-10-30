@@ -11,12 +11,13 @@ terraform plan -generate-config-out=generated.tf
 Import blocks use resource identity (Terraform 1.12+) and name the provider
 when its local name is not the type prefix; objects found by your own list
 blocks keep that block's provider (an alias such as `aws.other_account`). `-o` never overwrites an
-existing file. Resource names come from the object's own name (its
+existing file: move it away or choose another name. Resource names come from the object's own name (its
 display name, which for some AWS list resources is just the ID);
 `-names-from-tags` uses the `Name` tag instead where the type has tags
 (AWS, Azure), at the cost of fetching whole objects for those types (a list
 block of your own needs `include_resource = true` for that; a note says so). Resource names avoid addresses that the states or the root
-modules' configuration already use (`web` becomes `web_2`), so an import
+modules' configuration already use (`web` becomes `web_2`; objects are
+numbered in natural order, `policy-2` before `policy-10`), so an import
 never lands on someone else's resource block. Import blocks already in a root
 module (an earlier `adopt` not applied yet, also into child modules) keep
 their addresses, and objects they target are not written again: same type,

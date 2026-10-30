@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/5xxeu/tforphans/internal/cliflag"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/state"
 )
@@ -33,32 +34,41 @@ Flags:
 // the exit status: 2 when NEW has added findings, 1 on error, 0 otherwise.
 func Run(argv []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("tforphans diff", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		fmt.Fprint(stderr, diffUsage)
-		fs.PrintDefaults()
-	}
 	format := fs.String("format", "text", "output format: text or json")
 	verbose := fs.Bool("v", false, "show all findings and coverage changes")
+	help := func(w io.Writer) {
+		fmt.Fprint(w, diffUsage)
+		fs.SetOutput(w)
+		fs.PrintDefaults()
+	}
+	fail := func(err error) int {
+		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
+		fmt.Fprintln(stderr, cliflag.HelpHint("tforphans diff"))
+		return exitError
+	}
+	// Flags may follow the paths; after -- everything is a path.
 	var paths []string
 	for rest := argv; ; {
-		if err := fs.Parse(rest); err != nil {
+		if err := cliflag.Parse(fs, rest, stdout, help); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return exitOK
 			}
-			return exitError
+			return fail(err)
 		}
 		rest = fs.Args()
 		if len(rest) == 0 {
 			break
 		}
+		// Parse stops at the first path, or after --, which it drops.
+		if n := len(argv) - len(rest); n > 0 && argv[n-1] == "--" {
+			paths = append(paths, rest...)
+			break
+		}
 		paths = append(paths, rest[0])
-		rest = rest[1:]
+		argv, rest = rest[1:], rest[1:]
 	}
 	if len(paths) != 2 {
-		fmt.Fprintln(stderr, "error: diff needs OLD.json and NEW.json")
-		fs.Usage()
-		return exitError
+		return fail(errors.New("diff needs OLD.json and NEW.json"))
 	}
 	if *format != "text" && *format != "json" {
 		fmt.Fprintf(stderr, "error: unknown -format %q\n", report.Clean(*format))

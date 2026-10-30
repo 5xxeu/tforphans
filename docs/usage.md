@@ -42,6 +42,22 @@ streams, `TERM=dumb`, or a nonempty `NO_COLOR` environment variable
 (`NO_COLOR=1 tforphans ...`). JSON, generated queries and import blocks
 contain no presentation codes.
 
+With nothing unmanaged found, stdout says `No unmanaged resources found.`
+only when coverage is complete; otherwise the line adds `but coverage is
+incomplete (see Coverage)`. A run that checked nothing prints no result on
+stdout at all. With `-baseline` the block is `New unmanaged resources`,
+since known findings are hidden there.
+
+`-h` prints the help, grouped by purpose, to stdout (`tforphans -h | less`);
+`-version` goes to stdout too. A wrong flag prints one error line and
+`Run "tforphans -h" for usage.` to stderr. Before Terraform runs, a
+`ROOT_DIR` or `-state-roots` directory that does not exist is an error
+(`tforphans doctr` asks whether you meant `tforphans doctor`), and so is a
+current directory without `.tf` files when no `ROOT_DIR`, `-state`,
+`-state-roots`, `-scan` or plugin says what to read. `-max-roots`,
+`-timeout` and `-source-timeout` take `0` for no limit; negative values are
+rejected.
+
 `-max-state-size` limits each state read to 1 GiB by default, including
 `-state` files, stdin and HTTP responses, Terraform and Terragrunt state
 pulls, and JSON output from `-refresh`. Oversized input is rejected with an
@@ -165,7 +181,8 @@ tforphans -baseline baseline.json -strict
 ```
 
 With `-baseline FILE`, exit `2` means new orphans exist. Known orphans stay
-in JSON, marked `"baseline": "known"`, and are hidden in text output.
+in JSON, marked `"baseline": "known"`, and are hidden in text output
+(the block is called `New unmanaged resources`).
 A line in the `Baseline` block, before `Coverage`, counts new, known,
 resolved and not verified findings (`-v` lists the not verified ones).
 `-strict` still exits `1` for incomplete coverage or uncertain matches,

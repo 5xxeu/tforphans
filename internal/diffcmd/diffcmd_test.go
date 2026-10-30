@@ -59,7 +59,7 @@ func TestRun(t *testing.T) {
 		t.Fatalf("unchanged exit %d: %s%s", code, stdout, stderr)
 	}
 	code, stdout, stderr = runDiff(t, "-h")
-	if code != exitOK || stdout != "" || !strings.Contains(stderr, "Usage: tforphans diff") {
+	if code != exitOK || stderr != "" || !strings.Contains(stdout, "Usage: tforphans diff") {
 		t.Fatalf("help exit %d: %s%s", code, stdout, stderr)
 	}
 	bad := filepath.Join(dir, "bad.json")
@@ -76,5 +76,20 @@ func TestRun(t *testing.T) {
 		if code != exitError || stdout != "" || stderr == "" {
 			t.Errorf("%v exit %d: %s%s", args, code, stdout, stderr)
 		}
+	}
+}
+
+// TestRunEndOfFlags: after -- both paths stay paths, even with a dash.
+func TestRunEndOfFlags(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for _, p := range []string{"old.json", "-new.json"} {
+		if err := os.WriteFile(p, []byte(`{"schema_version":1,"orphans":[],"summary":{}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, stdout, stderr := runDiff(t, "--", "old.json", "-new.json")
+	if code != exitOK || !strings.Contains(stdout, "added (0)") {
+		t.Fatalf("exit %d: %s%s", code, stdout, stderr)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/5xxeu/tforphans/internal/cliflag"
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/state"
@@ -37,7 +38,13 @@ Run "tforphans init" to discover roots and create .tforphans.yaml.
 Run "tforphans doctor -h" to check readiness before an audit.
 Run "tforphans diff -h" to compare two saved JSON reports.
 
-Flags:
+Examples:
+  tforphans                         audit the root module in the current directory
+  tforphans -state-roots infra      also count every state under infra/ as managed
+  tforphans -scan cloudflare -state-roots dns
+                                    list Cloudflare through data sources
+  tforphans -format json > old.json && tforphans -baseline old.json
+                                    later: report only what is new
 `
 
 const adoptUsage = `Usage: tforphans adopt [flags] [ROOT_DIR...]
@@ -57,9 +64,20 @@ as unmanaged and be imported a second time (-allow-incomplete writes anyway).
 
 Exit status: 0 on success, whether or not anything was found; 1 on error
 (also on incomplete coverage with -strict, duplicate ownership with -strict-ownership).
-
-Flags:
 `
+
+// flagGroups orders -h of the audit, adopt and doctor; each lists only the
+// flags it defines.
+var flagGroups = []cliflag.Group{
+	{Title: "States that count as managed", Names: []string{"state-roots", "state", "current-workspace", "refresh", "init", "terragrunt", "terragrunt-unit", "allow-http", "max-roots", "state-parallelism", "max-state-size"}},
+	{Title: "What to list", Names: []string{"types", "exclude-types", "arg", "no-aliases", "scan", "scan-scope", "allow-unpinned", "plugin", "no-query", "include-attrs", "limit", "max-query-size", "ignore-required-version", "terraform"}},
+	{Title: "Ignoring and comparing", Names: []string{"ignore", "ignore-preset", "no-default-presets", "baseline", "environment"}},
+	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "proxmox-cluster-states", "plugin-cluster-states"}},
+	{Title: "Import blocks", Names: []string{"o", "out-dir", "adopt-root", "allow-incomplete", "names-from-tags"}},
+	{Title: "Checks", Names: []string{"offline", "check-auth"}},
+	{Title: "Output", Names: []string{"format", "explain", "v", "quiet", "print-query"}},
+	{Title: "Run", Names: []string{"config", "no-config", "timeout", "source-timeout", "version"}},
+}
 
 type listFlag []string
 
@@ -165,6 +183,9 @@ type sourceOptions struct {
 	// impliedNoRoot: no root given and none in the current directory, but
 	// other state sources are: the directory is not read as a root.
 	impliedNoRoot bool
+	// emptyDefaultRoot: "." was taken for the root without any Terraform
+	// configuration in it and no -scan or -plugin (checkRoots).
+	emptyDefaultRoot bool
 	// stateParallelism is how many -state-roots are read at once.
 	stateParallelism int
 	terragrunt       bool
@@ -236,7 +257,81 @@ type runState struct {
 
 const impliedNoRootNote = "no ROOT_DIR given and no Terraform configuration in the current directory: only the given states are read; list objects with -scan, -plugin or a root with list resources"
 
-func parseFlags(argv []string, stderr io.Writer) (*options, error) {
+const noRootError = "no Terraform configuration in the current directory: pass a ROOT_DIR, -state-roots DIR, -scan or -plugin (tforphans init finds the root modules under a directory)"
+
+var commands = []string{"adopt", "doctor", "init", "diff"}
+
+// checkRoots fails before a run that could not check anything: no
+// directory to look at, or a root or -state-roots directory that does not
+// exist, of which terraform would only report that it cannot start there.
+// A missing directory named like a command is most likely a misplaced or
+// misspelt one.
+func checkRoots(src *sourceOptions) error {
+	if src.emptyDefaultRoot {
+		return errors.New(noRootError)
+	}
+	roots, stateRoots := src.roots, src.stateRoots
+	for _, list := range []struct {
+		what  string
+		paths []string
+	}{{"ROOT_DIR", roots}, {"-state-roots", stateRoots}} {
+		for _, p := range list.paths {
+			fi, err := os.Stat(p)
+			switch {
+			case err == nil && !fi.IsDir():
+				return fmt.Errorf("%s %q is not a directory", list.what, report.Clean(p))
+			case err == nil:
+				continue
+			case !errors.Is(err, os.ErrNotExist):
+				return fmt.Errorf("%s %q: %w", list.what, report.Clean(p), err)
+			}
+			msg := fmt.Sprintf("%s %q does not exist", list.what, report.Clean(p))
+			if list.what == "ROOT_DIR" {
+				if c := nearCommand(p); c == p {
+					msg += fmt.Sprintf("; the command goes first: tforphans %s [flags]", c)
+				} else if c != "" {
+					msg += fmt.Sprintf("; did you mean tforphans %s?", c)
+				}
+			}
+			return errors.New(msg)
+		}
+	}
+	return nil
+}
+
+// nearCommand returns the command name within two edits of s, or "".
+func nearCommand(s string) string {
+	for _, c := range commands {
+		if editDistance(s, c) <= 2 {
+			return c
+		}
+	}
+	return ""
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
+// parseFlags parses the command line of the audit, adopt or doctor. -h and
+// -version print to out.
+func parseFlags(argv []string, out io.Writer) (*options, error) {
 	o := &options{src: sourceOptions{maxStateSize: state.DefaultMaxSize, maxQuerySize: tf.DefaultMaxQuerySize}}
 	name, help := "tforphans", usage
 	// A root module directory named "adopt" can be passed as ./adopt.
@@ -248,11 +343,6 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		name, help = "tforphans doctor", doctorUsage
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		fmt.Fprint(stderr, help)
-		fs.PrintDefaults()
-	}
 	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots listFlag
 	fs.Var(&o.src.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.IntVar(&o.src.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
@@ -303,7 +393,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	fs.BoolVar(&o.verbose, "v", false, "list skipped resource types and every failed query, and the projects and accounts results came from")
 	fs.BoolVar(&o.quiet, "quiet", false, "print no progress lines (by default printed on a terminal: roots read, roots queried, data source scans, -refresh)")
 	fs.BoolVar(&o.src.printQuery, "print-query", false, "print the temporary files a run would write into each root (provider override, auto data sources, list blocks), each under a \"# file\" header, and exit")
-	fs.BoolVar(&o.src.noQuery, "no-query", false, "do not run terraform query: read the roots' states and run plugins only")
+	fs.BoolVar(&o.src.noQuery, "no-query", false, "do not run terraform query: read the roots' states, run -scan and plugins only")
 	fs.StringVar(&o.src.terraformBin, "terraform", "terraform", "terraform binary")
 	fs.StringVar(&o.configFile, "config", "", "read flags from this YAML file (keys are flag names, lists repeat a flag, roots lists root modules; the command line wins); default "+defaultConfigFile+" in the current directory, if present")
 	noConfig := fs.Bool("no-config", false, "do not read "+defaultConfigFile)
@@ -311,8 +401,6 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 
 	if o.doctor != nil {
 		fs = doctorFlags(fs, o)
-		fs.SetOutput(stderr)
-		fs.Usage = func() { fmt.Fprint(stderr, doctorUsage); fs.PrintDefaults() }
 	}
 	// Allow flags after positional arguments, until --.
 	args := commandArgs(fs, argv)
@@ -322,7 +410,11 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 			flags = append(flags, arg.parts()...)
 		}
 	}
-	if err := fs.Parse(flags); err != nil {
+	printHelp := func(w io.Writer) {
+		fmt.Fprint(w, help)
+		cliflag.PrintGroups(w, fs, flagGroups)
+	}
+	if err := cliflag.Parse(fs, flags, out, printHelp); err != nil {
 		return nil, err
 	}
 	for _, arg := range args {
@@ -334,7 +426,7 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 		o.doctor.args = args
 	}
 	if *showVersion {
-		fmt.Fprintln(stderr, "tforphans", buildVersion())
+		fmt.Fprintln(out, "tforphans", buildVersion())
 		return nil, flag.ErrHelp
 	}
 	if !*noConfig {
@@ -382,6 +474,20 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 	// thousands of terraform processes at once.
 	if o.src.stateParallelism < 1 || o.src.stateParallelism > 64 {
 		return nil, errors.New("-state-parallelism must be between 1 and 64")
+	}
+	// 0 is the documented "no limit"; a negative value would disable the
+	// limit too, without saying so.
+	for _, n := range []struct {
+		name string
+		neg  bool
+	}{
+		{"max-roots", o.src.maxRoots < 0},
+		{"timeout", o.timeout < 0},
+		{"source-timeout", o.src.sourceTimeout < 0},
+	} {
+		if n.neg {
+			return nil, fmt.Errorf("-%s must not be negative (0: no limit)", n.name)
+		}
 	}
 	if o.adopt != nil && o.audit.baseline != "" {
 		return nil, errors.New("-baseline is not supported with adopt")
@@ -479,6 +585,9 @@ func parseFlags(argv []string, stderr io.Writer) (*options, error) {
 			o.src.impliedNoRoot = true
 		} else {
 			o.src.roots = []string{"."}
+			// checkRoots stops before the run: "." would read an empty
+			// local state and list nothing.
+			o.src.emptyDefaultRoot = len(o.src.scans) == 0 && len(o.src.plugins) == 0 && !tf.HasConfig(".")
 		}
 	}
 	if n := len(slices.DeleteFunc(slices.Clone(o.src.states), func(s string) bool { return s != "-" })); n > 1 {

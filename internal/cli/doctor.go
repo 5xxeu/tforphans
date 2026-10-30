@@ -27,8 +27,6 @@ Exit status: 0 ready (warnings allowed), 2 configuration or access obstacles,
 -offline skips state and authentication reads and reports unknown, with exit
 2 if local checks failed, otherwise 0. Schemas may still start installed
 provider processes; use a network sandbox when network isolation is required.
-
-Flags:
 `
 
 func doctorFlags(all *flag.FlagSet, o *options) *flag.FlagSet {
@@ -51,16 +49,20 @@ func doctorFlags(all *flag.FlagSet, o *options) *flag.FlagSet {
 }
 
 func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
-	o, err := parseFlags(argv, stderr)
+	o, err := parseFlags(argv, stdout)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
+		usageError(stderr, err, "tforphans doctor")
 		return 1
 	}
 	if o.format != "text" && o.format != "json" {
 		fmt.Fprintln(stderr, "error: doctor -format must be text or json")
+		return 1
+	}
+	if err := checkRoots(&o.src); err != nil {
+		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
 		return 1
 	}
 	if !o.quiet && isTerminal(stderr) {
@@ -80,7 +82,8 @@ func runDoctor(ctx context.Context, argv []string, stdout, stderr io.Writer) int
 		d.add("offline", "warning", "installed provider processes may contact the network during schema startup; offline does not enforce network isolation", "", "")
 	}
 	if _, err := loadIgnore(ctx, o.ignore); err != nil {
-		d.add("ignore", "failed", "ignore file or presets could not be parsed", "", "Fix the ignore file or presets in the config file")
+		// The parser names the file and line: keep it.
+		d.add("ignore", "failed", "ignore file or presets could not be parsed: "+report.CleanLines(err.Error()), "", "Fix the ignore file or presets in the config file")
 	} else {
 		d.add("ignore", "ok", "ignore file and presets parsed", "", "")
 	}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -405,7 +406,7 @@ func compareResources(a, b model.Resource) int {
 	// The bare name ignores display details such as a guest's node.
 	// Break ties by source, provider and identity so import suffixes
 	// _2, _3 do not depend on the API's listing order.
-	if c := strings.Compare(baseName(a), baseName(b)); c != 0 {
+	if c := naturalCompare(baseName(a), baseName(b)); c != 0 {
 		return c
 	}
 	if c := strings.Compare(a.Source, b.Source); c != 0 {
@@ -426,6 +427,42 @@ func compareResources(a, b model.Resource) int {
 	// Quoted keys and values distinguish identities with separators in them.
 	return strings.Compare(a.Key(), b.Key())
 }
+
+// naturalCompare orders digit runs by value, so that policy-2 comes before
+// policy-10; strings equal that way ("a01", "a1") fall back to bytes.
+func naturalCompare(a, b string) int {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if isDigit(a[i]) && isDigit(b[j]) {
+			si, sj := i, j
+			for i < len(a) && isDigit(a[i]) {
+				i++
+			}
+			for j < len(b) && isDigit(b[j]) {
+				j++
+			}
+			x := strings.TrimLeft(a[si:i], "0")
+			y := strings.TrimLeft(b[sj:j], "0")
+			if c := cmp.Compare(len(x), len(y)); c != 0 {
+				return c
+			}
+			if c := strings.Compare(x, y); c != 0 {
+				return c
+			}
+			continue
+		}
+		if c := cmp.Compare(a[i], b[j]); c != 0 {
+			return c
+		}
+		i, j = i+1, j+1
+	}
+	if c := cmp.Compare(len(a)-i, len(b)-j); c != 0 {
+		return c
+	}
+	return strings.Compare(a, b)
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 func baseName(r model.Resource) string {
 	if r.BaseName != "" {

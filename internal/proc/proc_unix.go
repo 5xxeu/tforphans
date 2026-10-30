@@ -17,6 +17,9 @@ func ownGroup(cmd *exec.Cmd) {
 	}
 }
 
+// CanTellAlive reports whether Alive can see that a process has exited.
+const CanTellAlive = true
+
 // Alive reports whether a process with this ID exists.
 func Alive(pid int) bool {
 	err := syscall.Kill(pid, 0)

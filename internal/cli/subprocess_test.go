@@ -40,7 +40,7 @@ func TestBinaryExitCodes(t *testing.T) {
 		{"unmanaged found", []string{"-plugin", orphan}, exitOrphans, "vault_policy", "2 live, 1 managed, 0 uncertain, 0 ignored, 1 unmanaged", false},
 		{"json report", []string{"-plugin", orphan, "-format", "json"}, exitOrphans, `"orphans"`, "1 unmanaged", true},
 		{"adopt writes imports", []string{"adopt", "-plugin", orphan}, exitOK, "to = vault_policy.new", "", false},
-		{"failed plugin", []string{"-plugin", managed, "-plugin", "exit 3"}, exitError, "No unmanaged resources found.", "plugin2 failed", false},
+		{"failed plugin", []string{"-plugin", managed, "-plugin", "exit 3"}, exitError, "No unmanaged resources found, but coverage is incomplete", "plugin2 failed", false},
 		{"failed plugin keeps json", []string{"-plugin", managed, "-plugin", "exit 3", "-format", "json"}, exitError, `"failed_sources"`, "plugin2 failed", true},
 		{"unknown flag", []string{"-no-such-flag"}, exitError, "", "flag provided but not defined", false},
 	} {

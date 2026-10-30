@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/5xxeu/tforphans/internal/cliflag"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
@@ -52,8 +53,6 @@ type initOptions struct {
 
 func runInit(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("tforphans init", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { fmt.Fprint(stderr, initUsage); fs.PrintDefaults() }
 	var o initOptions
 	fs.BoolVar(&o.update, "update", false, "refresh roots under the previous search directories, preserving other settings")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "show discovery and the proposed config without writing it")
@@ -68,10 +67,16 @@ func runInit(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 			flags = append(flags, arg.parts()...)
 		}
 	}
-	if err := fs.Parse(flags); err != nil {
+	help := func(w io.Writer) {
+		fmt.Fprint(w, initUsage)
+		fs.SetOutput(w)
+		fs.PrintDefaults()
+	}
+	if err := cliflag.Parse(fs, flags, stdout, help); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
 		}
+		usageError(stderr, err, "tforphans init")
 		return exitError
 	}
 	fs.Visit(func(f *flag.Flag) { o.maxRootsSet = o.maxRootsSet || f.Name == "max-roots" })
@@ -190,7 +195,7 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 		details = append(details, detail)
 	}
 	if len(queryRoots) == 0 {
-		return errors.New("no Terraform configuration found; pass a root directory explicitly, or use -scan/-plugin for a provider without a root")
+		return noInitRoots(ctx, dirs)
 	}
 	config, err := initConfig(old, queryRoots, dirs, scans, o.scans != nil, saveMaxRoots)
 	if err != nil {
@@ -324,4 +329,40 @@ func initDirArg(dir string) string {
 		return shellArg("<directory with control characters>")
 	}
 	return shellArg(dir)
+}
+
+// noInitRoots explains an init that found no root module. Directories with
+// configuration but no backend block or local state are not taken for
+// roots on their own (child modules look the same): name a few of them.
+func noInitRoots(ctx context.Context, dirs []string) error {
+	var withConfig []string
+	for _, dir := range dirs {
+		filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
+			if err != nil || ctx.Err() != nil || len(withConfig) > 5 {
+				return filepath.SkipAll
+			}
+			if !d.IsDir() {
+				return nil
+			}
+			if path != dir && (strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "testdata") {
+				return filepath.SkipDir
+			}
+			if path != dir && tf.HasConfig(path) {
+				withConfig = append(withConfig, path)
+			}
+			return nil
+		})
+	}
+	if len(withConfig) == 0 {
+		return errors.New("no Terraform configuration found; pass a root directory explicitly, or use -scan/-plugin for a provider without a root")
+	}
+	var example []string
+	for _, d := range withConfig[:min(2, len(withConfig))] {
+		example = append(example, shellArg(d))
+	}
+	more := ""
+	if len(withConfig) > 5 {
+		withConfig, more = withConfig[:5], " ..."
+	}
+	return fmt.Errorf("no root module found: directories count as roots by a backend or cloud block or a local state, and these only have configuration: %s%s; pass the roots among them as DIR, e.g. tforphans init %s", report.Clean(strings.Join(withConfig, ", ")), more, report.Clean(strings.Join(example, " ")))
 }
