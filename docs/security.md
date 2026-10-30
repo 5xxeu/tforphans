@@ -36,7 +36,12 @@ file permissions. See [initialization](init.md).
   `TF_HTTP_USERNAME`/`TF_HTTP_PASSWORD`, only over https and only on the
   original host (a redirect to another https host, such as a presigned
   storage URL, is followed without them and without a Referer; a redirect
-  from https to http is refused). There is no
+  from https to http is refused), and `s3://` sources, read with the AWS
+  SDK's default credentials (requests are signed, the secret key is not
+  sent) from AWS or the endpoint in `AWS_ENDPOINT_URL[_S3]`, never over
+  plain http without `-allow-http` (over http the access key ID, a session
+  token if any, and the state itself are visible in transit). The bucket's region is found with an
+  unsigned `HeadBucket` to AWS. There is no
   telemetry. State contents are kept in memory and never printed. Each
   state read is limited to 1 GiB by default, including state pulls and
   refresh JSON; `-max-state-size` sets a positive byte count or a size such

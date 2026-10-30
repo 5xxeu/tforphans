@@ -19,7 +19,27 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 		n, total  int
 		err       error
 	}
-	results := make([]read, len(roots)+len(o.src.states))
+	// An s3:// prefix stands for the states under it; one that cannot be
+	// listed is a failed source of its own.
+	// doctor has no -allow-http.
+	s3 := &state.S3{}
+	var sources []string
+	var listFailed []read
+	var listRoots []string
+	for _, src := range o.src.states {
+		if !state.IsS3Prefix(src) {
+			sources = append(sources, src)
+			continue
+		}
+		srcs, _, err := listS3(ctx, o, s3, src)
+		if err != nil {
+			listFailed = append(listFailed, read{total: 1, err: err})
+			listRoots = append(listRoots, state.Redact(src))
+			continue
+		}
+		sources = append(sources, srcs...)
+	}
+	results := make([]read, len(roots)+len(sources))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, o.src.stateParallelism)
 	for i := range results {
@@ -39,11 +59,18 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 					}
 					return v, v.err
 				}
-				raw, err := state.Fetch(ctx, o.src.states[i-len(roots)], false, o.src.maxStateSize)
+				src := sources[i-len(roots)]
+				var raw []byte
+				var err error
+				if _, _, ok, _ := state.S3Source(src); ok {
+					raw, err = s3.Get(ctx, src, o.src.maxStateSize)
+				} else {
+					raw, err = state.Fetch(ctx, src, false, o.src.maxStateSize)
+				}
 				if err != nil {
 					return v, err
 				}
-				snapshot, err := state.ParseSnapshot(raw, state.Redact(o.src.states[i-len(roots)]))
+				snapshot, err := state.ParseSnapshot(raw, state.Redact(src))
 				if err == nil {
 					v.n = 1
 					v.snapshots = []state.Snapshot{snapshot}
@@ -55,14 +82,17 @@ func (d *doctorReport) states(ctx context.Context, o *options, roots []string) [
 		}()
 	}
 	wg.Wait()
+	results = append(results, listFailed...)
 	var all []state.Snapshot
 	n, total := 0, 0
 	for i, v := range results {
 		root := ""
 		if i < len(roots) {
 			root = roots[i]
+		} else if j := i - len(roots); j < len(sources) {
+			root = state.Redact(sources[j])
 		} else {
-			root = state.Redact(o.src.states[i-len(roots)])
+			root = listRoots[j-len(sources)]
 		}
 		n += v.n
 		total += v.total

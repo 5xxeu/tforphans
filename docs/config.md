@@ -33,7 +33,7 @@ job may then run, so what a file may set depends on what it could do:
 
 | Keys | `.tforphans.yaml` | `-config FILE` |
 |---|---|---|
-| `plugin`, `terraform`, `terragrunt`, `allow-http`, `o`, `out-dir`, `adopt-root`, `check-auth`, `state` URLs | no | no |
+| `plugin`, `terraform`, `terragrunt`, `allow-http`, `o`, `out-dir`, `adopt-root`, `check-auth`, `state` URLs (https, s3) | no | no |
 | `init`, `refresh`, `allow-unpinned`, `include-attrs`, `state` files, `proxmox-cluster-states`, `plugin-cluster-states`, `allow-incomplete` | no | yes |
 | `max-state-size`, `max-query-size` | at most 1 GiB | any positive size |
 | everything else (`roots`, `state-roots`, `types`, `scan`, `scan-scope`, `ignore`, `strict`, `expect`, `baseline`, `environment`, ...) | yes | yes |
