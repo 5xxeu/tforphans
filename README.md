@@ -14,7 +14,7 @@ writes the `import` blocks to bring them under Terraform.
    root module's own provider configuration. Providers without them are
    listed through their plural data sources (`-scan`) or a plugin.
 2. **Read every state.** The roots' own states, every root under
-   `-state-roots`, and any `-state` file or URL, for every workspace.
+   `-state-roots`, and any `-state` file, URL or S3 prefix, for every workspace.
 3. **Match.** Each live object is looked up in the states by its
    [resource identity](https://developer.hashicorp.com/terraform/plugin/framework/resources/identity)
    (or by attributes for older state).
@@ -147,7 +147,7 @@ the findings to tools that do.
 ## Features
 
 - 🔎 **No Provider Knowledge to Maintain**: Resource types come from the providers' own list resources, so coverage follows provider releases.
-- 🗂 **Every State Counts**: `-state-roots` finds and reads every root module and workspace in a tree, through any backend Terraform supports; Terragrunt units too.
+- 🗂 **Every State Counts**: `-state-roots` finds and reads every root module and workspace in a tree, through any backend Terraform supports; Terragrunt units too. `-state s3://BUCKET/PREFIX/` reads every state in a bucket without terraform.
 - 🪪 **Exact Matching**: Resource identity from state (Terraform 1.12+), checked against the provider that listed the object; older state is matched by attributes, and a match that cannot confirm the account or cluster is reported as uncertain, not as managed.
 - 🧭 **Setup and Readiness**: `tforphans init` finds the roots of a repository and writes `.tforphans.yaml` from local files only; `tforphans doctor` checks Terraform, provider schemas, states and list arguments before the first audit and prints the next command to run.
 - ✅ **Honest Coverage**: The `coverage:` line says whether "nothing unmanaged" can be trusted, with every failed listing, unread state and skipped type counted; `-strict` turns gaps into a failed CI job.

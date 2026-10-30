@@ -220,7 +220,8 @@ func ReadLimited(r io.Reader, maxSize int64) ([]byte, error) {
 }
 
 // Fetch reads a state source: "-" for stdin, an https URL (for example a
-// GitLab Terraform state address) or a local file. HTTP requests use
+// GitLab Terraform state address), an S3 object (s3://bucket/key, see S3)
+// or a local file. HTTP requests use
 // TF_HTTP_USERNAME and TF_HTTP_PASSWORD like Terraform's http backend, and
 // only over https. Plain http needs allowHTTP and never carries credentials.
 func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]byte, error) {
@@ -270,10 +271,12 @@ func Fetch(ctx context.Context, src string, allowHTTP bool, maxSize int64) ([]by
 			return nil, fmt.Errorf("GET %s: %w", Redact(src), err)
 		}
 		return data, nil
+	case scheme == "s3":
+		return (&S3{AllowHTTP: allowHTTP}).Get(ctx, src, maxSize)
 	case scheme != "":
 		// Any other scheme://: reading it as a file would quote the
 		// whole string, credentials included, in the error.
-		return nil, fmt.Errorf("unsupported state URL %s: use https, a file or -", Redact(src))
+		return nil, fmt.Errorf("unsupported state URL %s: use https, s3, a file or -", Redact(src))
 	default:
 		return ReadFile(ctx, src, maxSize)
 	}
@@ -331,6 +334,13 @@ func urlScheme(src string) string {
 // Redact removes credentials from a state source before it is printed: the
 // user info and the query (presigned URLs carry signatures there).
 func Redact(src string) string {
+	// An S3 key is not percent-encoded and may hold '?' or '%'.
+	if bucket, key, ok, err := S3Source(src); ok {
+		if err != nil {
+			return "<invalid URL>"
+		}
+		return "s3://" + bucket + "/" + key
+	}
 	u, err := url.Parse(src)
 	if err != nil {
 		if strings.Contains(src, "://") {

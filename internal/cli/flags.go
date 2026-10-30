@@ -346,7 +346,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots, expect listFlag
-	fs.Var(&o.src.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
+	fs.Var(&o.src.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD), s3://BUCKET/KEY, s3://BUCKET/PREFIX/ for every .tfstate under it (AWS default credentials) or - for stdin; repeatable")
 	fs.IntVar(&o.src.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
 	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
 	fs.DurationVar(&o.src.sourceTimeout, "source-timeout", 0, "give up on one root, -scan or plugin after this long and go on with the others, e.g. 10m (0: no limit)")
@@ -363,7 +363,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.BoolVar(&o.audit.strictAPI, "strict-api", true, "count listings that failed because the API is not enabled (GCP) as incomplete coverage (the default: a disabled API can still hold data, Cloud Storage and BigQuery keep theirs); -strict-api=false takes it as holding no objects, -strict-ignore TYPE_GLOB exempts named types")
 	fs.Var(&strictIgnore, "strict-ignore", "types matching these globs do not make coverage incomplete when their listing fails or they are skipped for want of an argument (still listed when possible, and still reported), e.g. google_firebase_*")
 	fs.Var(&expect, "expect", "scopes this run must check, e.g. \"account_id=111,222 region=eu-west-1\" (every combination) or project=a,b; one that no complete listing confirms makes coverage incomplete; keys are those of the JSON listings' scope (account_id, region, project, subscription_id, zone_id); repeatable")
-	fs.IntVar(&o.src.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules than this, before terraform runs in them (0: no limit)")
+	fs.IntVar(&o.src.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules, or an s3:// -state prefix more states, than this, before any is read (0: no limit)")
 	fs.BoolVar(&o.src.terragrunt, "terragrunt", false, "with -state-roots, also read Terragrunt units (directories with a terragrunt.hcl, except parents that units include) through terragrunt in PATH; terragrunt initializes them (.terragrunt-cache)")
 	fs.Var(&o.src.tgUnits, "terragrunt-unit", "with -terragrunt, read DIR as a Terragrunt unit even though units include its terragrunt.hcl (taken for shared configuration otherwise); repeatable")
 	fs.BoolVar(&o.src.init, "init", false, "run terraform init in root modules that are not initialized (creates .terraform there)")

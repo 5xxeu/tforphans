@@ -126,8 +126,15 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 
 // readStates adds the states given with -state to idx.
 func readStates(ctx context.Context, o *options, idx *state.Index, sum *report.Summary) error {
+	s3 := &state.S3{AllowHTTP: o.src.allowHTTP}
 	for _, src := range o.src.states {
-		data, err := state.Fetch(ctx, src, o.src.allowHTTP, o.src.maxStateSize)
+		if state.IsS3Prefix(src) {
+			if err := readS3Prefix(ctx, o, s3, src, idx, sum); err != nil {
+				return err
+			}
+			continue
+		}
+		data, err := fetchState(ctx, o, s3, src)
 		if err != nil {
 			return fmt.Errorf("state %s: %w", state.Redact(src), err)
 		}

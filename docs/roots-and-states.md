@@ -69,12 +69,49 @@ tforphans infra/network infra/apps \
   -state old.tfstate
 ```
 
-`-state` takes a file, `-` for stdin, or an https URL. URLs are read with
+`-state` takes a file, `-` for stdin, an https URL or an S3 object or prefix
+(below). URLs are read with
 `TF_HTTP_USERNAME` and `TF_HTTP_PASSWORD` (or the URL's user info), like
 Terraform's http backend (GitLab managed state included), so these
 credentials go to every URL given. Plain http needs `-allow-http` and never
 carries credentials, since state read over it could be altered in transit.
 State must be raw state (`terraform state pull`), not `terraform show -json`.
+
+### States in S3
+
+`-state s3://BUCKET/KEY` reads one object of an S3 backend, and a prefix
+reads every state under it, without terraform and without the root modules:
+
+```sh
+tforphans -no-query -scan cloudflare -state s3://acme-tfstate/cloudflare/
+tforphans infra/apps -state s3://acme-tfstate/
+```
+
+A source is a prefix when it ends in `/` or names only the bucket. Every
+object under it whose key ends in `.tfstate` is read, workspaces
+(`env:/NAME/...`) included; other objects are counted in a note, and a state
+stored under another key is given as `-state s3://BUCKET/KEY`. A prefix
+with no state is an error (more likely a typo than an empty environment),
+as is a listing that fails or holds more than `-max-roots` states (200 by
+default). An object that cannot be read is an unread state, as with
+`-state-roots`, and the others still count. Objects are read
+`-state-parallelism` at a time, each limited by `-max-state-size` and
+`-source-timeout`; only the latest version is read.
+
+The key is taken as written, like the `key` of the s3 backend: no
+percent-decoding, and `?` or `#` are part of it.
+
+Credentials are the AWS SDK defaults, as for Terraform's s3 backend:
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE` (SSO profiles
+included), web identity, ECS and EC2 roles. Reading needs `s3:ListBucket`
+on the bucket (for a prefix), `s3:GetObject` on the states, and
+`kms:Decrypt` for SSE-KMS. The bucket's region is looked up with an
+anonymous `HeadBucket`, so `AWS_REGION` need not match it. Another S3
+service (MinIO, Ceph, Cloudflare R2) is set with `AWS_ENDPOINT_URL_S3` or
+`AWS_ENDPOINT_URL` (or `endpoint_url` in the AWS config) and addressed
+path-style; its CA with `AWS_CA_BUNDLE`. An http endpoint needs
+`-allow-http`. `s3://` sources are accepted only on the command line, like
+https ones.
 
 ## Terragrunt
 
