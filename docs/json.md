@@ -273,4 +273,27 @@ only `states_complete`. Both are always present. `summary.complete` retains its
 meaning: both state reading and discovery were complete. Uncertain matches
 still fail `-strict` independently.
 
+## Expected scopes
+
+`summary.expected`, omitted without `-expect`, has one record per expected
+scope, in the order given (an entry's combinations in the order of its keys
+and values):
+
+```json
+{"scope": {"account_id": "111111111111", "region": "eu-west-1"},
+ "status": "missing", "listings": 0,
+ "reason_code": "expected_scope_missing"}
+```
+
+- `scope` is the expected scope as KEY=VALUE pairs, matched against
+  `summary.listings[].scope`: a listing counts when its scope holds every pair.
+- `status` is `confirmed` (at least one such listing is `complete`),
+  `incomplete` (there are such listings, none complete) or `missing` (none).
+- `listings` counts the listings whose scope holds every pair.
+- `reason_code` is `expected_scope_incomplete` or `expected_scope_missing`;
+  confirmed records omit it (see [reasons](reasons.md)).
+
+A record that is not confirmed makes `summary.discovery_complete` and
+`summary.complete` false.
+
 [Back to the README](../README.md) · [All guides](README.md)

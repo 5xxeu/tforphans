@@ -373,6 +373,8 @@ type Summary struct {
 	ByScope map[string]*TypeCount `json:"by_scope,omitempty"`
 	// Coverage says for every type and scope whether it was listed in full.
 	Coverage []Coverage `json:"coverage"`
+	// Expected are the scopes -expect names, each confirmed or a gap.
+	Expected []Expected `json:"expected,omitempty"`
 }
 
 type TypeCount struct {

@@ -380,9 +380,17 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
 	}
+	// An account or project left out of the configuration lists nothing
+	// and fails nothing: only an expectation shows it is missing.
+	expected, unknownKeys := report.CheckExpected(o.audit.expect, sum.Listings)
+	sum.Expected = expected
+	if len(unknownKeys) > 0 {
+		sum.Notes = append(sum.Notes, fmt.Sprintf("-expect: no listing of this run reports scope %s (a typo, or sources that do not say where they look: plugins, -scan blocks without a parent, user list blocks with references)", strings.Join(unknownKeys, ", ")))
+	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
 	sum.DiscoveryComplete = !nothingChecked(&o.src, *sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
-		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete })
+		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete }) &&
+		!slices.ContainsFunc(sum.Expected, func(e report.Expected) bool { return e.Status != report.ExpectConfirmed })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
 	sum.Environment = o.audit.environment
 	var baseline *report.Baseline

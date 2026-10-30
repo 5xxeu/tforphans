@@ -122,6 +122,7 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 			return err
 		}
 	}
+	printExpected(w, o, s.Expected)
 	fmt.Fprintln(w)
 	report.Section(w, "Coverage")
 	// The last line says whether "nothing unmanaged" can be trusted.
@@ -191,6 +192,9 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 		}
 		gaps = append(gaps, fmt.Sprintf("%d states not read: %s", n, report.Clean(strings.Join(firstN(which, 5), "; "))))
 	}
+	if n := len(slices.DeleteFunc(slices.Clone(s.Expected), func(e report.Expected) bool { return e.Status == report.ExpectConfirmed })); n > 0 {
+		gaps = append(gaps, fmt.Sprintf("%d of %d expected scopes not confirmed", n, len(s.Expected)))
+	}
 	if n := len(s.Warnings); n > 0 {
 		gaps = append(gaps, plural(n, "warning")+" in Diagnostics")
 	}
@@ -206,6 +210,41 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 	}
 	fmt.Fprintf(w, "coverage: INCOMPLETE (%s): %s; -strict makes this exit 1\n", strings.Join(gaps, ", "), effect)
 	return nil
+}
+
+// printExpected lists the -expect scopes that no complete listing
+// confirmed; the confirmed ones only with -v, since a product of accounts
+// and regions can be long.
+func printExpected(w io.Writer, o *options, expected []report.Expected) {
+	if len(expected) == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	report.Section(w, "Expected scopes")
+	confirmed, shown := 0, 0
+	for _, e := range expected {
+		if e.Status == report.ExpectConfirmed {
+			confirmed++
+			if !o.verbose {
+				continue
+			}
+		} else if shown++; shown > 20 && !o.verbose {
+			continue
+		}
+		line := e.Status
+		if e.Status != report.ExpectConfirmed {
+			line = report.Accent(w, report.Attention, strings.ToUpper(e.Status))
+		}
+		link := ""
+		if o.verbose {
+			link = reasonLink(e.ReasonCode)
+		}
+		fmt.Fprintf(w, "  %s %s (%s)%s\n", line, report.Clean(report.ScopeText(e.Scope)), plural(e.Listings, "listing"), link)
+	}
+	if shown > 20 && !o.verbose {
+		fmt.Fprintf(w, "  and %d more (-v lists them)\n", shown-20)
+	}
+	fmt.Fprintf(w, "%d of %d expected scopes confirmed by a complete listing\n", confirmed, len(expected))
 }
 
 // countAccent colors a count that is not zero: a highlighted 0 draws the

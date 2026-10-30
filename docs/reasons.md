@@ -12,7 +12,7 @@ It is a hint for a person, not authorization to change infrastructure.
 `missing_keys` is optional and contains sorted, unique key names, never values.
 The field is omitted when those names are unknown.
 
-`explain`, `summary.skipped_types`, and baseline `unverified_findings` carry
+`explain`, `summary.skipped_types`, `summary.expected`, and baseline `unverified_findings` carry
 these fields beside `reason`. Coverage can have several causes:
 `summary.coverage[].reason_details` contains `{reason, reason_code, action?,
 missing_keys?}`, sorted by reason, then code and action. Distinct codes or
@@ -257,3 +257,15 @@ The listing configuration or execution context changed since the baseline.
 ## scope_changed
 
 The listing account, project, region or other scope changed since the baseline.
+
+<a id="expected_scope_missing"></a>
+
+## expected_scope_missing
+
+No listing of this run reported a scope named with `-expect`. The configuration may no longer reach that account, project or region, the key or value may be mistyped, or the sources that list it do not report scope.
+
+<a id="expected_scope_incomplete"></a>
+
+## expected_scope_incomplete
+
+Listings reported a scope named with `-expect`, but none of them ran to the end.
