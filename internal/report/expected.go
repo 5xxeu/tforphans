@@ -32,6 +32,10 @@ type Expected struct {
 	model.ReasonDetails
 }
 
+// maxExpectKeys bounds the keys of one entry: a scope has a few
+// (account_id and region), and each key multiplies the work.
+const maxExpectKeys = 16
+
 var expectKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // ParseExpect reads -expect entries: "KEY=V[,V...] [KEY=V[,V...]...]".
@@ -47,6 +51,9 @@ func ParseExpect(entries []string) ([]map[string]string, error) {
 			key, vals, ok := strings.Cut(field, "=")
 			if !ok || !expectKey.MatchString(key) {
 				return nil, fmt.Errorf("-expect %q: want KEY=VALUE[,VALUE...] pairs separated by spaces, e.g. account_id=111,222 region=eu-west-1", entry)
+			}
+			if len(keys) == maxExpectKeys {
+				return nil, fmt.Errorf("-expect %q: more than %d keys", entry, maxExpectKeys)
 			}
 			if _, dup := values[key]; dup {
 				return nil, fmt.Errorf("-expect %q: %s given twice", entry, key)
@@ -71,25 +78,33 @@ func ParseExpect(entries []string) ([]map[string]string, error) {
 		if len(keys) == 0 {
 			return nil, fmt.Errorf("-expect %q: no KEY=VALUE pair", entry)
 		}
-		combos := []map[string]string{{}}
+		// The product is sized before any map is built: a config file
+		// may come with someone else's repository.
+		size := 1
 		for _, key := range keys {
-			var next []map[string]string
-			for _, c := range combos {
-				if len(out)+len(next)+len(values[key]) > MaxExpected {
+			if size *= len(values[key]); size > MaxExpected {
+				return nil, fmt.Errorf("-expect %q: more than %d scopes", entry, MaxExpected)
+			}
+		}
+		at := make([]int, len(keys))
+		for range size {
+			c := make(map[string]string, len(keys))
+			for i, key := range keys {
+				c[key] = values[key][at[i]]
+			}
+			if k := ScopeText(c); !seen[k] {
+				if len(out) == MaxExpected {
 					return nil, fmt.Errorf("-expect: more than %d scopes", MaxExpected)
 				}
-				for _, v := range values[key] {
-					m := maps.Clone(c)
-					m[key] = v
-					next = append(next, m)
-				}
-			}
-			combos = next
-		}
-		for _, c := range combos {
-			if k := ScopeText(c); !seen[k] {
 				seen[k] = true
 				out = append(out, c)
+			}
+			// The last key varies fastest, as in the order given.
+			for i := len(keys) - 1; i >= 0; i-- {
+				if at[i]++; at[i] < len(values[keys[i]]) {
+					break
+				}
+				at[i] = 0
 			}
 		}
 	}

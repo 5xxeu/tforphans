@@ -35,6 +35,21 @@ func TestParseExpect(t *testing.T) {
 	if _, err := ParseExpect([]string{"a=" + strings.Join(numbered(101), ",") + " b=" + strings.Join(numbered(100), ",")}); err == nil {
 		t.Error("product above the limit accepted")
 	}
+	// Repeated entries count once, also near the limit.
+	half := "project=" + strings.Join(numbered(6000), ",")
+	if got, err := ParseExpect([]string{half, half}); err != nil || len(got) != 6000 {
+		t.Errorf("repeated entries: %d %v", len(got), err)
+	}
+	if _, err := ParseExpect([]string{half, "zone=" + strings.Join(numbered(5000), ",")}); err == nil {
+		t.Error("unique scopes above the limit accepted")
+	}
+	keys := make([]string, maxExpectKeys+1)
+	for i := range keys {
+		keys[i] = "k" + strconv.Itoa(i) + "=v"
+	}
+	if _, err := ParseExpect([]string{strings.Join(keys, " ")}); err == nil {
+		t.Error("too many keys accepted")
+	}
 	// Many values (a config file is read before -timeout) fail fast.
 	start := time.Now()
 	if _, err := ParseExpect([]string{"a=" + strings.Repeat("x,", 1<<19) + strings.Join(numbered(MaxExpected+1), ",")}); err == nil || time.Since(start) > 5*time.Second {
