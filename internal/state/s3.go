@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -129,10 +130,24 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 		return client, nil
 	}
 	if c.cfg == nil {
-		cfg, err := config.LoadDefaultConfig(ctx,
-			config.WithHTTPClient(awshttp.NewBuildableClient().WithTimeout(2*time.Minute)))
+		cfg, err := config.LoadDefaultConfig(ctx, config.WithHTTPClient(awshttp.NewBuildableClient()))
 		if err != nil {
 			return nil, fmt.Errorf("AWS configuration: %w", err)
+		}
+		// The SDK follows 307 and 308 to any scheme, which would take the
+		// state (and the signed headers) from https to plain http. Nothing
+		// here needs a redirect: the bucket's region is looked up first. The
+		// transport keeps what the configuration set, AWS_CA_BUNDLE included.
+		built, ok := cfg.HTTPClient.(*awshttp.BuildableClient)
+		if !ok {
+			return nil, fmt.Errorf("AWS configuration: unexpected HTTP client %T", cfg.HTTPClient)
+		}
+		cfg.HTTPClient = &http.Client{
+			Transport: built.GetTransport(),
+			Timeout:   2 * time.Minute,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		}
 		if cfg.Region == "" {
 			// Only a starting point: the bucket's own region is looked up.

@@ -3,6 +3,9 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -98,5 +101,20 @@ func TestS3PlainHTTPEndpoint(t *testing.T) {
 	_, err = (&S3{AllowHTTP: true}).Get(context.Background(), "s3://states/a.tfstate", DefaultMaxSize)
 	if err == nil || strings.Contains(err.Error(), "-allow-http") {
 		t.Errorf("plain http endpoint with -allow-http: %v", err)
+	}
+}
+
+// A redirect is never followed: the SDK alone would follow a 307 from the
+// https endpoint to plain http.
+func TestS3NoRedirect(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("redirect followed to %s", r.URL)
+		fmt.Fprint(w, `{"version":4}`)
+	}))
+	defer plain.Close()
+	fake := &s3fake.Server{Bucket: "states", Redirect: map[string]string{"a.tfstate": plain.URL + "/states/a.tfstate"}}
+	fake.Start(t)
+	if _, err := (&S3{AllowHTTP: true}).Get(context.Background(), "s3://states/a.tfstate", DefaultMaxSize); err == nil || !strings.Contains(err.Error(), "307") {
+		t.Errorf("redirect: %v", err)
 	}
 }

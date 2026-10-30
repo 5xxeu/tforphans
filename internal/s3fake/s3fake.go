@@ -18,9 +18,11 @@ import (
 // Server serves Objects (key to body) of one Bucket. A key in Denied
 // answers 403. Lists return PageSize keys per page.
 type Server struct {
-	Bucket   string
-	Objects  map[string]string
-	Denied   map[string]bool
+	Bucket  string
+	Objects map[string]string
+	Denied  map[string]bool
+	// Redirect answers a key with a 307 to this URL.
+	Redirect map[string]string
 	PageSize int
 	// Unsigned counts requests without a SigV4 Authorization header.
 	Unsigned atomic.Int32
@@ -105,6 +107,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		res.KeyCount = len(keys)
 		w.Header().Set("Content-Type", "application/xml")
 		_ = xml.NewEncoder(w).Encode(res)
+		return
+	}
+	if to := s.Redirect[key]; to != "" {
+		http.Redirect(w, r, to, http.StatusTemporaryRedirect)
 		return
 	}
 	if s.Denied[key] {
