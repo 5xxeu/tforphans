@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"slices"
 	"syscall"
 
+	"github.com/5xxeu/tforphans/internal/cliflag"
 	"github.com/5xxeu/tforphans/internal/diffcmd"
 	"github.com/5xxeu/tforphans/internal/report"
 	"github.com/5xxeu/tforphans/internal/tf"
@@ -65,12 +67,12 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	}
 	terminalErr := isTerminal(stderr)
 	stderr = report.WithColor(stderr, colorEnabled(stderr))
-	o, err := parseFlags(argv, stderr)
+	o, err := parseFlags(argv, stdout)
 	if errors.Is(err, flag.ErrHelp) {
 		return exitOK
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "error:", report.CleanLines(err.Error()))
+		usageError(stderr, err, commandName(argv))
 		return exitError
 	}
 	if !o.quiet {
@@ -96,6 +98,20 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	return exitOK
+}
+
+// usageError prints an error of the command line and where to find usage.
+func usageError(w io.Writer, err error, command string) {
+	fmt.Fprintln(w, "error:", report.CleanLines(err.Error()))
+	fmt.Fprintln(w, cliflag.HelpHint(command))
+}
+
+// commandName is "tforphans" or "tforphans <command>" for -h hints.
+func commandName(argv []string) string {
+	if len(argv) > 0 && slices.Contains(commands, argv[0]) {
+		return "tforphans " + argv[0]
+	}
+	return "tforphans"
 }
 
 type exitCode int

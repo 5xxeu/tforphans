@@ -248,6 +248,11 @@ func RemoveStaleCount(dir string) (int, error) {
 		removed++
 	}
 	if len(busy) > 0 {
+		if !proc.CanTellAlive {
+			// Waiting would not help: a run killed here leaves files that
+			// look busy forever.
+			return removed, fmt.Errorf("%s holds files of another tforphans run, and this system cannot tell whether it still works; when no other tforphans runs there, remove them: %s", dir, strings.Join(busy, ", "))
+		}
 		return removed, fmt.Errorf("%s holds files of another tforphans run that may still be working; wait for it, or remove them: %s", dir, strings.Join(busy, ", "))
 	}
 	return removed, nil

@@ -822,27 +822,64 @@ func sharedScopeKeys(rs []model.Resource) map[string]string {
 
 // Text prints the unmanaged objects, then those that may be managed.
 func Text(w io.Writer, orphans []model.Resource, uncertain []Uncertain) error {
+	return TextWith(w, orphans, uncertain, TextOptions{})
+}
+
+// TextOptions qualify the empty result of TextWith.
+type TextOptions struct {
+	// New: a run with -baseline, orphans holds only the new findings, so
+	// "none" must not read as "nothing unmanaged".
+	New bool
+	// Incomplete: coverage has gaps, so "none" is not an all-clear.
+	Incomplete bool
+}
+
+// TextWith is Text with the empty result worded by opt.
+func TextWith(w io.Writer, orphans []model.Resource, uncertain []Uncertain, opt TextOptions) error {
+	title, none := "Unmanaged resources", "No unmanaged resources found"
+	if opt.New {
+		title, none = "New unmanaged resources", "No new unmanaged resources found"
+	}
+	if opt.Incomplete {
+		none += ", but coverage is incomplete (see Coverage)."
+	} else {
+		none += "."
+	}
+	// A failed write (a full disk under > report.txt) must fail the run.
+	var err error
+	println := func(a ...any) {
+		if err == nil {
+			_, err = fmt.Fprintln(w, a...)
+		}
+	}
 	if len(orphans) == 0 {
-		Section(w, "Unmanaged resources (0)")
-		// Uncertain objects below may be unmanaged: no all-clear color then.
+		println(SectionLine(w, title+" (0)"))
+		// Uncertain objects below may be unmanaged, and a gap may hide
+		// some: no all-clear color then.
 		tone := Good
-		if len(uncertain) > 0 {
+		if len(uncertain) > 0 || opt.Incomplete {
 			tone = ""
 		}
-		fmt.Fprintln(w, Accent(w, tone, "No unmanaged resources found."))
+		println(Accent(w, tone, none))
 	} else {
-		Section(w, fmt.Sprintf("Unmanaged resources (%d)", len(orphans)))
+		println(SectionLine(w, fmt.Sprintf("%s (%d)", title, len(orphans))))
+		if err != nil {
+			return err
+		}
 		if err := orphanTable(w, orphans); err != nil {
 			return err
 		}
 	}
-	if len(uncertain) == 0 {
-		return nil
+	if len(uncertain) == 0 || err != nil {
+		return err
 	}
-	fmt.Fprintln(w)
-	Section(w, fmt.Sprintf("Uncertain resources (%d)", len(uncertain)))
-	fmt.Fprintln(w, "Matched to state, but the account or cluster could not be confirmed.")
-	fmt.Fprintln(w)
+	println()
+	println(SectionLine(w, fmt.Sprintf("Uncertain resources (%d)", len(uncertain))))
+	println("Matched to state, but the account or cluster could not be confirmed.")
+	println()
+	if err != nil {
+		return err
+	}
 	var table bytes.Buffer
 	tw := tabwriter.NewWriter(&table, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TYPE\tNAME\tIDENTITY\tSOURCE\tSTATE ADDRESS")

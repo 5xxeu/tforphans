@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -44,6 +45,9 @@ func loadIgnore(ctx context.Context, ig ignoreOptions) (*report.Ignore, error) {
 }
 
 func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
+	if err := checkRoots(&o.src); err != nil {
+		return err
+	}
 	var previous *report.Snapshot
 	if o.audit.baseline != "" {
 		var err error
@@ -428,7 +432,13 @@ func writeReport(ctx context.Context, o *options, idx *state.Index, stateDirs []
 			return err
 		}
 		textOut := report.WithColor(stdout, colorEnabled(stdout))
-		err = report.Text(textOut, out.shown, out.uncertain)
+		switch {
+		case nothingChecked(&o.src, *sum) && len(out.shown) == 0 && len(out.uncertain) == 0:
+			// The run fails below: "No unmanaged resources found" would
+			// read as a clean result.
+		default:
+			err = report.TextWith(textOut, out.shown, out.uncertain, report.TextOptions{New: out.baseline != nil, Incomplete: !sum.Complete})
+		}
 		if err == nil {
 			err = report.ExplainText(textOut, sum.Explain)
 		}
@@ -453,22 +463,13 @@ func writeReport(ctx context.Context, o *options, idx *state.Index, stateDirs []
 // printDetails prints what -baseline and -v add to the summary.
 func printDetails(w io.Writer, o *options, baseline *report.Baseline, scopes []model.Resource) error {
 	if baseline != nil {
-		why := "their type or scope was not fully listed this run"
-		if baseline.EnvironmentChanged {
-			why = "the baseline is from another environment"
-		}
 		resolved := ""
 		if parts := transitionSummary(baseline.ResolvedFindings); parts != "" {
 			resolved = " (" + parts + ")"
 		}
-		if n := countTransition(baseline.UnverifiedFindings, report.BecameUnsure); n == baseline.Unverified && n > 0 {
-			why = "now uncertain"
-		} else if n > 0 {
-			why = fmt.Sprintf("%d now uncertain; the others: %s", n, why)
-		}
 		fmt.Fprintln(w)
 		report.Section(w, "Baseline")
-		fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified (%s)\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, why)
+		fmt.Fprintf(w, "baseline: %d new, %d known (not shown), %d resolved%s, %d not verified%s\n", baseline.New, baseline.Known, baseline.Resolved, resolved, baseline.Unverified, unverifiedReasons(baseline.UnverifiedFindings))
 		if o.verbose {
 			if err := report.PrintFindings(w, baseline.UnverifiedFindings, 8); err != nil {
 				return err
@@ -479,6 +480,32 @@ func printDetails(w io.Writer, o *options, baseline *report.Baseline, scopes []m
 		printScopes(w, scopes)
 	}
 	return nil
+}
+
+// unverifiedReasons counts the reasons of findings the run could not
+// verify, " (listing incomplete 2, plugin results cannot be verified 1)",
+// most frequent first; "" for none.
+func unverifiedReasons(fs []report.Finding) string {
+	counts := map[string]int{}
+	for _, f := range fs {
+		reason := f.Reason
+		if reason == "" {
+			reason = "no listing evidence"
+		}
+		counts[reason]++
+	}
+	reasons := slices.Collect(maps.Keys(counts))
+	slices.SortFunc(reasons, func(a, b string) int {
+		return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b))
+	})
+	var parts []string
+	for _, r := range reasons {
+		parts = append(parts, fmt.Sprintf("%s %d", report.Clean(r), counts[r]))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 // writeImports writes import blocks for the orphans (adopt). While a state

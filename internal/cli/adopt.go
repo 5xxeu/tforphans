@@ -83,9 +83,14 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 	}
 	// The hint goes to stderr, so it also reaches people who redirect
 	// stdout to a file.
-	providerHint := func() {
+	afterWrite := func() {
 		if slices.ContainsFunc(orphans, func(r model.Resource) bool { return r.Provider != "" }) {
 			fmt.Fprintln(stderr, providerNote)
+		}
+		// The coverage line comes at the end of the summary: say it next
+		// to what was written, too.
+		if !sum.Complete {
+			fmt.Fprintln(stderr, "Coverage is incomplete (see Coverage below): unmanaged objects may be missing from the import blocks.")
 		}
 	}
 	head := adoptHeader(sum)
@@ -93,7 +98,7 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		n, err := adoptDir(o, orphans, reserved, head, stderr)
 		if err == nil {
 			skipped(n)
-			providerHint()
+			afterWrite()
 		}
 		return err
 	}
@@ -104,11 +109,14 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		n, err := report.Import(stdout, orphans, reserved)
 		skipped(n)
 		if err == nil {
-			providerHint()
+			afterWrite()
 		}
 		return err
 	}
 	f, err := os.OpenFile(o.adopt.out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%s already exists, and adopt does not overwrite files: move it away or choose another -o", report.Clean(o.adopt.out))
+	}
 	if err != nil {
 		return err
 	}
@@ -128,8 +136,8 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 		return err
 	}
 	skipped(n)
-	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", n, o.adopt.out)
-	providerHint()
+	fmt.Fprintf(stderr, "Wrote %d import blocks to %s. Next, in the root module:\n  terraform plan -generate-config-out=generated.tf\n", n, report.Clean(o.adopt.out))
+	afterWrite()
 	return nil
 }
 

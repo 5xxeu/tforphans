@@ -9,3 +9,6 @@ func ownGroup(*exec.Cmd) {}
 
 // Alive cannot tell here and assumes the process exists.
 func Alive(int) bool { return true }
+
+// CanTellAlive reports whether Alive can see that a process has exited.
+const CanTellAlive = false

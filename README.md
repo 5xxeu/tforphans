@@ -155,7 +155,7 @@ the findings to tools that do.
 - 🧹 **Little Noise**: Objects the cloud creates on its own (default security groups, GKE nodes, managed rulesets) are hidden by default presets that go only by marks users cannot set; an ignore file covers the rest.
 - 🌍 **All Regions and Zones**: `-arg region=...` fans list queries out; `-arg zone=auto` reads every Google Cloud zone.
 - ☁️ **Beyond List Resources**: Plural data sources for Cloudflare and Proxmox VE, with crash isolation; plugins for anything else.
-- 🔐 **Read Only**: Never applies your configuration and plans it only with `-refresh`, which writes nothing; read-only credentials are enough; no telemetry.
+- 🔐 **Read Only**: Never applies your configuration; the only plans are `-refresh` and a targeted plan that reads the account of AWS, Google and Azure providers, and neither writes anything; read-only credentials are enough; no telemetry.
 - 📄 **Scriptable**: Versioned JSON output, counts per type and per scope, a config file per audit.
 
 ## When Not to Use It

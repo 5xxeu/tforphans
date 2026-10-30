@@ -428,7 +428,7 @@ func TestBaselineEnvironmentRun(t *testing.T) {
 	saveReportTest(t, "staging.json", []model.Resource{known}, report.Summary{Environment: "staging"})
 	code, stdout, stderr := runReportTest(t, append(base, "-environment", "prod", "-baseline", "staging.json", "-format", "json")...)
 	if code != exitOrphans || !strings.Contains(stdout, `"environment": "prod"`) || !strings.Contains(stdout, `"environment_changed": true`) ||
-		!strings.Contains(stderr, "baseline: 1 new, 0 known (not shown), 0 resolved, 1 not verified (the baseline is from another environment)") ||
+		!strings.Contains(stderr, "baseline: 1 new, 0 known (not shown), 0 resolved, 1 not verified (environment changed 1)") ||
 		!strings.Contains(stderr, `the baseline is from environment "staging", this run is "prod"`) {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}

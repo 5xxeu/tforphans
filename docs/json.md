@@ -7,6 +7,12 @@
 field is removed or changes its type or meaning, so a consumer can refuse a
 format it does not know; new fields do not change it.
 
+Terms: `orphans` in JSON are what the text output calls unmanaged
+resources (live, and in none of the states read). String fields that do not
+apply to an object (`provider`, `provider_source`, `undeclared_provider`,
+`list_address`, `display_name`) are present with the value `""`, not
+left out, so a consumer can read every key without checking for it.
+
 - `orphans`, `uncertain`: objects with `type`, `identity` (the keys state is
   matched on), `display_name`, `scope` (where it lives, `-scan` and some
   list resources), `import_id`, `provider` (local name in the root),

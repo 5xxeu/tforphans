@@ -83,10 +83,14 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 	fmt.Fprintln(w)
 	report.Section(w, "Summary")
 	fmt.Fprintf(w, "%d live, %s managed, %s uncertain, %d ignored, %s unmanaged\n",
-		s.Live, report.Accent(w, report.Good, fmt.Sprint(s.Managed)),
-		report.Accent(w, report.Attention, fmt.Sprint(s.Uncertain)), s.Ignored,
-		report.Accent(w, report.Attention, fmt.Sprint(s.Orphans)))
+		s.Live, countAccent(w, report.Good, s.Managed),
+		countAccent(w, report.Attention, s.Uncertain), s.Ignored,
+		countAccent(w, report.Attention, s.Orphans))
 	fmt.Fprintf(w, "%d states read, %d resource types queried, %d skipped", s.States, s.Queried, len(s.Skipped))
+	if n := len(o.src.plugins); n > 0 {
+		// Plugin results have no queried types: say where they came from.
+		fmt.Fprintf(w, ", %s run", plural(n, "plugin"))
+	}
 	if len(s.Skipped) > 0 && !o.verbose {
 		fmt.Fprint(w, " (-v to list)")
 	}
@@ -188,7 +192,7 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 		gaps = append(gaps, fmt.Sprintf("%d states not read: %s", n, report.Clean(strings.Join(firstN(which, 5), "; "))))
 	}
 	if n := len(s.Warnings); n > 0 {
-		gaps = append(gaps, fmt.Sprintf("%d other warnings", n))
+		gaps = append(gaps, plural(n, "warning")+" in Diagnostics")
 	}
 	if len(gaps) == 0 {
 		gaps = append(gaps, "nothing was listed")
@@ -202,6 +206,15 @@ func printSummary(w io.Writer, o *options, s report.Summary, details func(io.Wri
 	}
 	fmt.Fprintf(w, "coverage: INCOMPLETE (%s): %s; -strict makes this exit 1\n", strings.Join(gaps, ", "), effect)
 	return nil
+}
+
+// countAccent colors a count that is not zero: a highlighted 0 draws the
+// eye to nothing.
+func countAccent(w io.Writer, tone report.Tone, n int) string {
+	if n == 0 {
+		return "0"
+	}
+	return report.Accent(w, tone, fmt.Sprint(n))
 }
 
 // printDiagnostics writes to a section that gets its heading on the first
