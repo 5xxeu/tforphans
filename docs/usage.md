@@ -162,7 +162,33 @@ coverage rows with the reason `-strict-ignore: ...`), so that a CI gate
 fails only on what it did not expect, for example a product the project
 does not use (`-strict-ignore 'google_firebase_*'`). Unlike
 `-exclude-types`, which does not list a type at all, its objects are still
-found. Before the slow part,
+found.
+
+Complete coverage means that everything this run selected was checked. An
+account, project or region that the configuration no longer reaches (a
+removed provider alias, a root left out of `roots`) lists nothing and fails
+nothing, so it does not show. Name the scopes the run must reach with
+`-expect`:
+
+```sh
+tforphans -expect "account_id=111111111111,222222222222 region=eu-west-1,us-east-1" -strict
+tforphans -expect project=prod-a,prod-b -strict
+```
+
+One entry stands for every combination of its values (four scopes in the
+first line). A scope is confirmed when at least one listing that ran to the
+end reported every pair of it, as `summary.listings[].scope` records it
+(AWS `account_id` and `region`, Google `project`, `region` and `zone`,
+AzureRM `subscription_id` and `tenant_id`, Cloudflare scans `account_id`
+or `zone_id`). A scope whose listings all failed is `incomplete`, one that no
+listing reported is `missing`; both make coverage incomplete. The text
+output has an `Expected scopes` block before `Coverage`, the JSON report
+`summary.expected`. Plugins, Proxmox scans and user list blocks with
+references report no scope and confirm nothing; a key that no listing of
+the run reports gets a note, since it is usually a typo. An automatic
+`.tforphans.yaml` may set `expect` (it only makes the check stricter).
+
+Before the slow part,
 a `plan:` line says what the run checks: which roots are queried, how many
 states are read, what is scanned and with which scope. On a terminal,
 progress lines follow (each root's state read, each root queried, each

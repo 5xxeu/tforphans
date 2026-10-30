@@ -72,7 +72,7 @@ var flagGroups = []cliflag.Group{
 	{Title: "States that count as managed", Names: []string{"state-roots", "state", "current-workspace", "refresh", "init", "terragrunt", "terragrunt-unit", "allow-http", "max-roots", "state-parallelism", "max-state-size"}},
 	{Title: "What to list", Names: []string{"types", "exclude-types", "arg", "no-aliases", "scan", "scan-scope", "allow-unpinned", "plugin", "no-query", "include-attrs", "limit", "max-query-size", "ignore-required-version", "terraform"}},
 	{Title: "Ignoring and comparing", Names: []string{"ignore", "ignore-preset", "no-default-presets", "baseline", "environment"}},
-	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "proxmox-cluster-states", "plugin-cluster-states"}},
+	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "expect", "proxmox-cluster-states", "plugin-cluster-states"}},
 	{Title: "Import blocks", Names: []string{"o", "out-dir", "adopt-root", "allow-incomplete", "names-from-tags"}},
 	{Title: "Checks", Names: []string{"offline", "check-auth"}},
 	{Title: "Output", Names: []string{"format", "explain", "v", "quiet", "print-query"}},
@@ -209,6 +209,8 @@ type auditOptions struct {
 	strictOwnership bool
 	strictAPI       bool
 	strictIgnore    glob.List // -strict-ignore
+	// expect are the scopes some listing has to confirm (-expect).
+	expect []map[string]string
 }
 
 // adoptOptions are the flags of the adopt subcommand: write import blocks.
@@ -343,7 +345,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 		name, help = "tforphans doctor", doctorUsage
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots listFlag
+	var argFlags, include, exclude, scans, presets, attrs, scanScopes, strictIgnore, adoptRoots, expect listFlag
 	fs.Var(&o.src.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD) or - for stdin; repeatable")
 	fs.IntVar(&o.src.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
 	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
@@ -360,6 +362,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.BoolVar(&o.src.refresh, "refresh", false, "read each root's state through terraform plan -refresh-only (no lock, nothing written) instead of state pull: state written before Terraform 1.12 gets resource identities, so matches are exact; slower, needs the root's credentials and variables")
 	fs.BoolVar(&o.audit.strictAPI, "strict-api", true, "count listings that failed because the API is not enabled (GCP) as incomplete coverage (the default: a disabled API can still hold data, Cloud Storage and BigQuery keep theirs); -strict-api=false takes it as holding no objects, -strict-ignore TYPE_GLOB exempts named types")
 	fs.Var(&strictIgnore, "strict-ignore", "types matching these globs do not make coverage incomplete when their listing fails or they are skipped for want of an argument (still listed when possible, and still reported), e.g. google_firebase_*")
+	fs.Var(&expect, "expect", "scopes this run must check, e.g. \"account_id=111,222 region=eu-west-1\" (every combination) or project=a,b; one that no complete listing confirms makes coverage incomplete; keys are those of the JSON listings' scope (account_id, region, project, subscription_id, zone_id); repeatable")
 	fs.IntVar(&o.src.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules than this, before terraform runs in them (0: no limit)")
 	fs.BoolVar(&o.src.terragrunt, "terragrunt", false, "with -state-roots, also read Terragrunt units (directories with a terragrunt.hcl, except parents that units include) through terragrunt in PATH; terragrunt initializes them (.terragrunt-cache)")
 	fs.Var(&o.src.tgUnits, "terragrunt-unit", "with -terragrunt, read DIR as a Terragrunt unit even though units include its terragrunt.hcl (taken for shared configuration otherwise); repeatable")
@@ -575,6 +578,11 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	o.src.include = glob.CompileList(include.csv())
 	o.src.exclude = glob.CompileList(exclude.csv())
 	o.audit.strictIgnore = glob.CompileList(strictIgnore.csv())
+	expected, err := report.ParseExpect(expect)
+	if err != nil {
+		return nil, err
+	}
+	o.audit.expect = expected
 	if len(o.src.roots) == 0 && !o.src.noQuery {
 		if (len(o.src.scans) > 0 || len(o.src.plugins) > 0) && !tf.HasConfig(".") {
 			// Nothing to query here: -scan and -plugin need no root.
