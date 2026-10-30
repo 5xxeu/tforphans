@@ -187,8 +187,9 @@ func tempPID(name string) (int, bool) {
 }
 
 // writeTemp creates a marked file, refusing to overwrite an existing file.
+// Only the owner may read it: list blocks hold the -arg values.
 func writeTemp(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}

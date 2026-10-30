@@ -47,3 +47,21 @@ func TestIgnoreFIFOTimeout(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigFIFO: the config is read before -timeout applies, so a named
+// pipe (or a device) in its place is refused instead of read.
+func TestConfigFIFO(t *testing.T) {
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, defaultConfigFile), 0o600); err != nil {
+		t.Skip(err)
+	}
+	t.Chdir(dir)
+	for _, args := range [][]string{{"-no-query", "-plugin", "true"}, {"-config", "/dev/zero", "-no-query", "-plugin", "true"}, {"init", "-update"}} {
+		var stdout, stderr bytes.Buffer
+		start := time.Now()
+		code := run(context.Background(), args, &stdout, &stderr)
+		if code != exitError || !strings.Contains(stderr.String(), "regular file") || time.Since(start) > 10*time.Second {
+			t.Errorf("%v: exit %d after %s\n%s", args, code, time.Since(start), &stderr)
+		}
+	}
+}

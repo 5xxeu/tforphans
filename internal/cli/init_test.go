@@ -279,6 +279,21 @@ func TestInitUpdateRejectsInvalidYamlAndSymlink(t *testing.T) {
 	})
 }
 
+func TestInitUpdateVanishedDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	initFixture(t, "live/main.tf", `terraform {
+ backend "local" {}
+}`)
+	initFixture(t, defaultConfigFile, "state-roots: [gone, live]\n")
+	code, _, stderr := invokeInit(t, "-update")
+	if code != 1 || !strings.Contains(stderr, "gone from .tforphans.yaml no longer exists") || !strings.Contains(stderr, "init -update DIR") {
+		t.Fatalf("%d\n%s", code, stderr)
+	}
+	if code, out, stderr := invokeInit(t, "-update", "live"); code != 0 {
+		t.Fatalf("%d\n%s%s", code, out, stderr)
+	}
+}
+
 func TestInitUpdateDoesNotClobberConcurrentEdit(t *testing.T) {
 	t.Chdir(t.TempDir())
 	original := []byte("roots: [.]\n")

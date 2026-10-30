@@ -207,6 +207,17 @@ func TestTerraformPath(t *testing.T) {
 
 // Paths of a file read on its own stay within the current directory, as
 // the system resolves them: a link before .. and "x://" count.
+func TestConfigTooLarge(t *testing.T) {
+	t.Chdir(t.TempDir())
+	big := "# " + strings.Repeat("x", maxConfigSize) + "\n"
+	if err := os.WriteFile(defaultConfigFile, []byte(big), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("oversized config: %v", err)
+	}
+}
+
 func TestConfigInside(t *testing.T) {
 	base := t.TempDir()
 	repo, outside := filepath.Join(base, "repo"), filepath.Join(base, "outside")

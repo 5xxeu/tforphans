@@ -27,7 +27,7 @@ func initExisting(update bool) ([]byte, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("%s must be a regular file, not a symbolic link or directory", defaultConfigFile)
 	}
-	raw, err := os.ReadFile(defaultConfigFile)
+	raw, err := readConfig(defaultConfigFile)
 	return raw, info, err
 }
 
@@ -174,7 +174,7 @@ func writeInitConfig(data, old []byte, previous os.FileInfo) error {
 	if !current.Mode().IsRegular() || !os.SameFile(previous, current) {
 		return errors.New("config changed during discovery; retry init -update")
 	}
-	latest, err := os.ReadFile(defaultConfigFile)
+	latest, err := readConfig(defaultConfigFile)
 	if err != nil {
 		return err
 	}

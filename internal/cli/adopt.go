@@ -117,11 +117,14 @@ func adopt(o *options, orphans []model.Resource, reserved map[string]bool, sum *
 	if err == nil {
 		n, err = report.Import(f, orphans, reserved)
 	}
+	// The file is new (O_EXCL): a part of it would look like a whole one.
 	if err != nil {
 		f.Close()
+		os.Remove(o.adopt.out)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(o.adopt.out)
 		return err
 	}
 	skipped(n)

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -108,7 +109,9 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 			o.maxRoots = n
 		}
 	}
+	previous := false
 	if len(o.dirs) == 0 && len(old) > 0 {
+		previous = true
 		o.dirs, err = initPreviousDirs(old)
 		if err != nil {
 			return err
@@ -122,16 +125,19 @@ func prepareInit(ctx context.Context, o initOptions, w io.Writer) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		given := dir
 		dir, err = inside(configPath("", dir), false)
+		if err == nil {
+			var st os.FileInfo
+			if st, err = os.Stat(dir); err == nil && !st.IsDir() {
+				return fmt.Errorf("%s is not a directory", report.Clean(dir))
+			}
+		}
+		if previous && errors.Is(err, iofs.ErrNotExist) {
+			return fmt.Errorf("%s from %s no longer exists; give the directories to scan: tforphans init -update DIR...", report.Clean(given), defaultConfigFile)
+		}
 		if err != nil {
 			return err
-		}
-		st, err := os.Stat(dir)
-		if err != nil {
-			return err
-		}
-		if !st.IsDir() {
-			return fmt.Errorf("%s is not a directory", report.Clean(dir))
 		}
 		if !slices.Contains(dirs, dir) {
 			dirs = append(dirs, dir)

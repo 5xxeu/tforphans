@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,35 @@ import (
 
 // defaultConfigFile is read from the current directory when present.
 const defaultConfigFile = ".tforphans.yaml"
+
+// maxConfigSize bounds a config file: it is read before -timeout applies,
+// and a repository may bring it.
+const maxConfigSize = 1 << 20
+
+// readConfig reads a config file. Only a regular file is opened: a named
+// pipe would block before -timeout applies, and a device has no end.
+func readConfig(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxConfigSize {
+		return nil, fmt.Errorf("%s: larger than %d bytes", path, maxConfigSize)
+	}
+	return data, nil
+}
 
 // commandLineOnly are keys no config file may set, not even one given with
 // -config: they run commands (plugin, terraform, terragrunt, check-auth),
@@ -47,7 +77,7 @@ var modeOnly = []string{"format", "allow-incomplete", "names-from-tags", "offlin
 // the root module arguments. Whatever the command line sets, list or not,
 // replaces the file's value.
 func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error {
-	data, err := os.ReadFile(path)
+	data, err := readConfig(path)
 	if err != nil {
 		return err
 	}
@@ -129,6 +159,11 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 			}
 		}
 		if set[key] {
+			continue
+		}
+		// The audit's other formats (summary, import) mean nothing to
+		// doctor; the shared file still gives the audit its format.
+		if o.doctor != nil && key == "format" && len(vals) == 1 && vals[0] != "text" && vals[0] != "json" {
 			continue
 		}
 		if _, isBool := f.Value.(interface{ IsBoolFlag() bool }); isBool && len(vals) != 1 {

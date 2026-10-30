@@ -66,6 +66,16 @@ no-default-presets: true
 	if err != nil || !o.src.include.Match("fake_thing") || o.audit.strict || o.audit.baseline != "" || !o.ignore.noDefaults {
 		t.Fatalf("config: %+v, %v", o, err)
 	}
+	// The audit's summary format, shared through the file, is not
+	// doctor's; json is.
+	for format, want := range map[string]string{"summary": "text", "json": "json"} {
+		if err := os.WriteFile(defaultConfigFile, []byte("format: "+format+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if o, err := parseFlags([]string{"doctor"}, io.Discard); err != nil || o.format != want {
+			t.Errorf("format %s: %+v, %v", format, o, err)
+		}
+	}
 	if err := os.WriteFile(defaultConfigFile, []byte("terraform: malicious\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

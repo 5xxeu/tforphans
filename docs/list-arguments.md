@@ -90,6 +90,8 @@ tforphans -print-query      # show the temporary files (list blocks and helpers)
 
 `-print-query` redacts values whose argument names indicate secrets, as well
 as URL credentials and queries. The executable query uses the original
-values. Argument parsing errors never include values.
+values. Argument parsing errors never include values. The instance keys of
+the list blocks, which reports show in listing addresses, name such a value
+by its position instead (`api_token=#2`).
 
 [Back to the README](../README.md) · [All guides](README.md)
