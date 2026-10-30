@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -122,5 +124,29 @@ func TestS3NoRedirect(t *testing.T) {
 	fake.Start(t)
 	if _, err := (&S3{AllowHTTP: true}).Get(context.Background(), "s3://states/a.tfstate", DefaultMaxSize); err == nil || !strings.Contains(err.Error(), "307") {
 		t.Errorf("redirect: %v", err)
+	}
+}
+
+// Web identity credentials work with no region set anywhere: the STS
+// client is built while the configuration loads.
+func TestS3WebIdentityWithoutRegion(t *testing.T) {
+	fake := &s3fake.Server{Bucket: "states", Objects: map[string]string{"a.tfstate": `{"version":4}`}}
+	fake.Start(t)
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte("jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		"AWS_REGION": "", "AWS_DEFAULT_REGION": "", "AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": "",
+		"AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/read", "AWS_WEB_IDENTITY_TOKEN_FILE": token,
+		"AWS_ENDPOINT_URL_STS": fake.URL,
+	} {
+		t.Setenv(k, v)
+	}
+	if _, err := (&S3{}).Get(context.Background(), "s3://states/a.tfstate", DefaultMaxSize); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if fake.STSCalls.Load() == nil || fake.Tokens.Load() != "ROLETOKEN" {
+		t.Errorf("STS asked: %v, session token %v", fake.STSCalls.Load(), fake.Tokens.Load())
 	}
 }

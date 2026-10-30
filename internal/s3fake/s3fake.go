@@ -27,7 +27,11 @@ type Server struct {
 	PageSize int
 	// Unsigned counts requests without a SigV4 Authorization header.
 	Unsigned atomic.Int32
-	URL      string
+	// Tokens is the session token of the last S3 request.
+	Tokens atomic.Value
+	// STSCalls holds the host of the last web identity request to STS.
+	STSCalls atomic.Value
+	URL       string
 }
 
 // Start serves s and points the AWS SDK of this test at it, with fixed
@@ -76,6 +80,16 @@ type listResult struct {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
+	// STS, for web identity credentials (AWS_ENDPOINT_URL_STS).
+	if r.Method == http.MethodPost && r.URL.Path == "/" {
+		if err := r.ParseForm(); err == nil && r.PostForm.Get("Action") == "AssumeRoleWithWebIdentity" {
+			s.STSCalls.Store(r.Host)
+			w.Header().Set("Content-Type", "text/xml")
+			_, _ = w.Write([]byte(`<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>AKIDROLE</AccessKeyId><SecretAccessKey>rolesecret</SecretAccessKey><SessionToken>ROLETOKEN</SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>`))
+			return
+		}
+	}
+	s.Tokens.Store(r.Header.Get("X-Amz-Security-Token"))
 	if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") {
 		s.Unsigned.Add(1)
 	}

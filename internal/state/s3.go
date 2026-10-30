@@ -139,7 +139,13 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 		return client, nil
 	}
 	if c.cfg == nil {
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithHTTPClient(awshttp.NewBuildableClient()))
+		cfg, err := config.LoadDefaultConfig(ctx,
+			config.WithHTTPClient(awshttp.NewBuildableClient()),
+			// Only a starting point, used when nothing sets a region: the
+			// bucket's own region is looked up. It is given here, not after
+			// loading, because loading already builds the STS client of web
+			// identity and assumed-role credentials.
+			config.WithDefaultRegion("us-east-1"))
 		if err != nil {
 			return nil, fmt.Errorf("AWS configuration: %w", err)
 		}
@@ -157,10 +163,6 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
-		}
-		if cfg.Region == "" {
-			// Only a starting point: the bucket's own region is looked up.
-			cfg.Region = "us-east-1"
 		}
 		c.cfg = &cfg
 	}
