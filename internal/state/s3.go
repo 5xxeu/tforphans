@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // bucketPattern accepts current bucket names and the legacy ones (capitals,
@@ -100,14 +101,22 @@ func (c *S3) List(ctx context.Context, src string, maxObjects int) (states []str
 	if err != nil {
 		return nil, 0, err
 	}
-	pages := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
+	// Keys come back URL-encoded: a key may hold characters XML cannot
+	// carry, and one such object would fail the whole page.
+	pages := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket), Prefix: aws.String(prefix), EncodingType: types.EncodingTypeUrl,
+	})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
 			return nil, 0, err
 		}
 		for _, obj := range page.Contents {
-			key := aws.ToString(obj.Key)
+			// S3 encodes like a form: a space is "+".
+			key, err := url.QueryUnescape(aws.ToString(obj.Key))
+			if err != nil {
+				return nil, 0, fmt.Errorf("listing %s: undecodable key: %w", Redact(src), err)
+			}
 			if !strings.HasSuffix(key, ".tfstate") {
 				other++
 				continue

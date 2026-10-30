@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -102,7 +103,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			keys = keys[:s.PageSize]
 		}
 		for _, k := range keys {
-			res.Contents = append(res.Contents, content{k, len(s.Objects[k])})
+			name := k
+			if r.URL.Query().Get("encoding-type") == "url" {
+				name = url.QueryEscape(k)
+			}
+			res.Contents = append(res.Contents, content{name, len(s.Objects[k])})
 		}
 		res.KeyCount = len(keys)
 		w.Header().Set("Content-Type", "application/xml")

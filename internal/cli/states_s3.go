@@ -13,7 +13,10 @@ import (
 // shared client.
 func fetchState(ctx context.Context, o *options, s3 *state.S3, src string) ([]byte, error) {
 	if _, _, ok, _ := state.S3Source(src); ok {
-		return s3.Get(ctx, src, o.src.maxStateSize)
+		// Bounded by -source-timeout like each object under a prefix.
+		return withSource(ctx, o, func(ctx context.Context) ([]byte, error) {
+			return s3.Get(ctx, src, o.src.maxStateSize)
+		})
 	}
 	return state.Fetch(ctx, src, o.src.allowHTTP, o.src.maxStateSize)
 }
