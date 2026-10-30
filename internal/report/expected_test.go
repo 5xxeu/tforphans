@@ -50,6 +50,17 @@ func TestParseExpect(t *testing.T) {
 	if _, err := ParseExpect([]string{strings.Join(keys, " ")}); err == nil {
 		t.Error("too many keys accepted")
 	}
+	// Long values times many combinations fail before they are built.
+	long := strings.Repeat("x", maxExpectValue)
+	if _, err := ParseExpect([]string{"project=" + long + " zone=" + long + " region=" + strings.Join(numbered(MaxExpected), ",")}); err == nil || !strings.Contains(err.Error(), "bytes") {
+		t.Errorf("large product: %v", err)
+	}
+	if _, err := ParseExpect([]string{"project=" + long + "x"}); err == nil {
+		t.Error("value above the length limit accepted")
+	}
+	if _, err := ParseExpect([]string{"k" + strings.Repeat("x", 64) + "=v"}); err == nil {
+		t.Error("key above the length limit accepted")
+	}
 	// Many values (a config file is read before -timeout) fail fast.
 	start := time.Now()
 	if _, err := ParseExpect([]string{"a=" + strings.Repeat("x,", 1<<19) + strings.Join(numbered(MaxExpected+1), ",")}); err == nil || time.Since(start) > 5*time.Second {

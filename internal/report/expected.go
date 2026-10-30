@@ -36,7 +36,15 @@ type Expected struct {
 // (account_id and region), and each key multiplies the work.
 const maxExpectKeys = 16
 
-var expectKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// Lengths bound the memory of the scopes built: account, project, region
+// and zone IDs are short, and a config file may come with someone else's
+// repository.
+const (
+	maxExpectValue = 256
+	maxExpectBytes = 4 << 20 // all scopes written out as KEY=VALUE pairs
+)
+
+var expectKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // ParseExpect reads -expect entries: "KEY=V[,V...] [KEY=V[,V...]...]".
 // An entry stands for every combination of its values; the same scope from
@@ -44,6 +52,7 @@ var expectKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 func ParseExpect(entries []string) ([]map[string]string, error) {
 	var out []map[string]string
 	seen := map[string]bool{}
+	total := 0
 	for _, entry := range entries {
 		var keys []string
 		values := map[string][]string{}
@@ -63,7 +72,11 @@ func ParseExpect(entries []string) ([]map[string]string, error) {
 			// is read before -timeout applies: no quadratic work on it.
 			have := map[string]bool{}
 			for _, v := range strings.Split(vals, ",") {
-				if v = strings.TrimSpace(v); v != "" && !have[v] {
+				v = strings.TrimSpace(v)
+				if len(v) > maxExpectValue {
+					return nil, fmt.Errorf("-expect: %s has a value longer than %d bytes", key, maxExpectValue)
+				}
+				if v != "" && !have[v] {
 					have[v] = true
 					values[key] = append(values[key], v)
 				}
@@ -84,6 +97,16 @@ func ParseExpect(entries []string) ([]map[string]string, error) {
 		for _, key := range keys {
 			if size *= len(values[key]); size > MaxExpected {
 				return nil, fmt.Errorf("-expect %q: more than %d scopes", entry, MaxExpected)
+			}
+		}
+		// Each value appears in size/len(values) scopes, each key in all.
+		for _, key := range keys {
+			n := 0
+			for _, v := range values[key] {
+				n += len(v)
+			}
+			if total += size/len(values[key])*n + size*(len(key)+2); total > maxExpectBytes {
+				return nil, fmt.Errorf("-expect: the scopes take more than %d bytes", maxExpectBytes)
 			}
 		}
 		at := make([]int, len(keys))
