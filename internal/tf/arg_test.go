@@ -24,3 +24,30 @@ func TestParseArgErrorsHideValues(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckArgCombinations: the bound counts every value a block could
+// combine, scoped -arg of one name merged, before anything is built.
+func TestCheckArgCombinations(t *testing.T) {
+	values := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = strings.Repeat("v", i+1)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		args []Arg
+		ok   bool
+	}{
+		{"one arg at the limit", []Arg{{Name: "zone", Values: values(MaxArgCombinations)}}, true},
+		{"one arg over", []Arg{{Name: "zone", Values: values(MaxArgCombinations + 1)}}, false},
+		{"product", []Arg{{Name: "zone", Values: values(101)}, {Name: "project", Values: values(100)}}, false},
+		{"scoped replaces plain", []Arg{{Name: "zone", Values: values(100)}, {Types: "a_*", Name: "zone", Values: values(50)}, {Name: "project", Values: values(100)}}, true},
+		{"scoped merge", []Arg{{Types: "a_*", Name: "zone", Values: values(60)}, {Types: "*_b", Name: "zone", Values: values(60)}, {Name: "project", Values: values(100)}}, false},
+	} {
+		if err := CheckArgCombinations(tc.args); (err == nil) != tc.ok {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}

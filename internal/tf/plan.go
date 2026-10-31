@@ -97,6 +97,44 @@ func ParseArg(s string) (Arg, error) {
 	return a, nil
 }
 
+// MaxArgCombinations bounds the instances one generated list block may get
+// from -arg values: each is a listing, and the values may come from a
+// config file of someone else's repository.
+const MaxArgCombinations = 10000
+
+// CheckArgCombinations fails when a list block could get more than
+// MaxArgCombinations instances from args. It counts before anything is
+// built, and over-counts rather than under: per name, the values of every
+// type-scoped -arg of that name could merge for one type, and they replace
+// the unscoped ones.
+func CheckArgCombinations(args []Arg) error {
+	scoped, plain := map[string]int{}, map[string]int{}
+	for _, a := range args {
+		if a.Types != "" {
+			scoped[a.Name] += len(a.Values)
+		} else {
+			plain[a.Name] += len(a.Values)
+		}
+	}
+	n := 1
+	for _, name := range slices.Sorted(maps.Keys(scoped)) {
+		n *= max(scoped[name], plain[name])
+		if n > MaxArgCombinations {
+			return fmt.Errorf("-arg: the values make more than %d combinations for one list block; pass fewer values", MaxArgCombinations)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(plain)) {
+		if _, ok := scoped[name]; ok {
+			continue
+		}
+		n *= plain[name]
+		if n > MaxArgCombinations {
+			return fmt.Errorf("-arg: the values make more than %d combinations for one list block; pass fewer values", MaxArgCombinations)
+		}
+	}
+	return nil
+}
+
 // Query is one generated list block.
 type Query struct {
 	SkipReason model.ReasonDetails

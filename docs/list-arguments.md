@@ -35,6 +35,18 @@ is still possible:
 tforphans -arg "google_compute_*:zone=$(gcloud compute zones list --filter='region:europe-west1' --format='value(name)' | paste -sd, -)"
 ```
 
+Each combination of values is one listing, so the values may make at most
+10000 combinations for one list block (`auto` counts as one value); more is
+an error before anything runs.
+
+A value of `region`, `project`, `zone` or another key of the provider's
+scope replaces the provider's value in the scope of that listing
+(`summary.listings[].scope`, which `-expect` and `-baseline` rely on, see
+[usage](usage.md)): `-expect region=eu-north-1` is confirmed by the listing
+given that region, not by the provider block's. Your own list block does
+the same with a literal in its `config`; one set by an expression leaves
+the listing's scope unknown.
+
 Types whose list config has a required argument that no `-arg` supplies (for
 example `rest_api_id` for API Gateway children) are skipped, because one
 invalid list block makes Terraform reject the whole query. `-v` lists them
