@@ -447,6 +447,10 @@ type UserList struct {
 	// Limit is the block's limit: 100 (Terraform's default) when unset, 0
 	// when it is an expression that cannot be read without evaluation.
 	Limit int
+	// Config holds the arguments of the config block given as string
+	// literals; Dynamic names its other arguments.
+	Config  map[string]string
+	Dynamic []string
 }
 
 // ProviderRef returns the provider configuration used by a user list block.
@@ -495,10 +499,36 @@ func UserLists(dir string) (map[string]UserList, error) {
 					}
 				}
 			}
+			l.Config, l.Dynamic = listConfig(body)
 			out["list."+b.Labels[0]+"."+b.Labels[1]] = l
 		}
 	}
 	return out, nil
+}
+
+// listConfig splits the arguments of a list block's config block into
+// string literals and the rest.
+func listConfig(body *hclsyntax.Body) (map[string]string, []string) {
+	var literals map[string]string
+	var dynamic []string
+	for _, block := range body.Blocks {
+		if block.Type != "config" {
+			continue
+		}
+		for name, attr := range block.Body.Attributes {
+			v, diags := attr.Expr.Value(nil)
+			if !diags.HasErrors() && v.Type() == cty.String && v.IsWhollyKnown() && !v.IsNull() {
+				if literals == nil {
+					literals = map[string]string{}
+				}
+				literals[name] = v.AsString()
+			} else {
+				dynamic = append(dynamic, name)
+			}
+		}
+	}
+	sort.Strings(dynamic)
+	return literals, dynamic
 }
 
 // staticUserList rejects function calls and references outside the instance key

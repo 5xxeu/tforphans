@@ -411,3 +411,30 @@ func TestQueryListingScope(t *testing.T) {
 		})
 	}
 }
+
+// TestArgScope: a region or project given to the list block replaces the
+// provider's; one whose value is unknown leaves the scope unknown.
+func TestArgScope(t *testing.T) {
+	scope := map[string]string{"account_id": "1", "region": "us-east-1"}
+	for _, c := range []struct {
+		name    string
+		values  map[string]string
+		unknown []string
+		want    map[string]string
+	}{
+		{"none", nil, nil, scope},
+		{"region", map[string]string{"region": "eu-west-1", "name": "x"}, nil, map[string]string{"account_id": "1", "region": "eu-west-1"}},
+		{"unknown region", nil, []string{"region"}, nil},
+		{"unknown other", nil, []string{"filter"}, scope},
+	} {
+		if got := argScope(scope, c.values, c.unknown); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v", c.name, got)
+		}
+	}
+	if scope["region"] != "us-east-1" {
+		t.Error("provider scope changed")
+	}
+	if argScope(nil, map[string]string{"region": "x"}, nil) != nil {
+		t.Error("unknown provider scope became known")
+	}
+}

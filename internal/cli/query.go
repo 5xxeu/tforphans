@@ -246,8 +246,21 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 			}
 		}
 		scope := scopes[providerOf(q.Address, q.Type)]
-		if user, ok := userLists[block]; ok && !user.Static {
-			scope = nil
+		if user, ok := userLists[block]; ok {
+			scope = argScope(scope, user.Config, user.Dynamic)
+			if !user.Static {
+				scope = nil
+			}
+		}
+		if generated, ok := byAddress[block]; ok && len(generated.Args) > 0 {
+			values, _ := generated.KeyArgs(key)
+			var unknown []string
+			for _, a := range generated.Args {
+				if _, ok := values[a.Name]; !ok {
+					unknown = append(unknown, a.Name)
+				}
+			}
+			scope = argScope(scope, values, unknown)
 		}
 		if _, optIn := tf.OptIn[q.Type]; optIn {
 			// These listings follow credential visibility, which provider
@@ -305,6 +318,28 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 		}
 	}
 	return res.Found, nil
+}
+
+// argScope is the scope of a listing whose config sets some arguments:
+// the provider's scope with the values of arguments named like its keys (a
+// region or project given to the list block). An argument of that name
+// whose value is not known leaves the scope unknown (nil).
+func argScope(scope, values map[string]string, unknown []string) map[string]string {
+	if scope == nil {
+		return nil
+	}
+	for _, name := range unknown {
+		if _, ok := scope[name]; ok {
+			return nil
+		}
+	}
+	out := maps.Clone(scope)
+	for name, v := range values {
+		if _, ok := out[name]; ok {
+			out[name] = v
+		}
+	}
+	return out
 }
 
 // wantedAttrs returns the attributes to keep for a type: -include-attrs and

@@ -112,7 +112,7 @@ list "aws_vpc" "dyn" {
 		t.Fatal(err)
 	}
 	want := map[string]UserList{
-		"list.aws_instance.other": {Provider: "aws.other_account", Static: true, Limit: 5000, Configuration: `list "aws_instance" "other" {
+		"list.aws_instance.other": {Provider: "aws.other_account", Static: true, Limit: 5000, Config: map[string]string{"region": "us-east-1"}, Configuration: `list "aws_instance" "other" {
   provider = aws.other_account
   limit    = 5000
   config {
@@ -449,5 +449,68 @@ func TestUserListStatic(t *testing.T) {
 				t.Fatalf("want Static %t, got %+v", c.static, lists)
 			}
 		})
+	}
+}
+
+// TestUserListConfig: literal strings of the config block are read, every
+// other argument is named as dynamic.
+func TestUserListConfig(t *testing.T) {
+	dir := t.TempDir()
+	text := `list "aws_instance" "a" {
+  for_each = { x = "eu-west-1" }
+  config {
+    region  = "us-east-1"
+    project = "p-${each.key}"
+    zone    = each.value
+    count   = 3
+    filter { name = "x" }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "mine.tfquery.hcl"), []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lists, err := UserLists(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := lists["list.aws_instance.a"]
+	if !reflect.DeepEqual(l.Config, map[string]string{"region": "us-east-1"}) || !reflect.DeepEqual(l.Dynamic, []string{"count", "project", "zone"}) {
+		t.Fatalf("config %v, dynamic %v", l.Config, l.Dynamic)
+	}
+}
+
+// TestKeyArgs: the for_each key of a generated block reads back into the
+// argument values it was built from, secret ones left out.
+func TestKeyArgs(t *testing.T) {
+	q := Query{Args: []Arg{
+		{Name: "region", Values: []string{"eu", "eu,project=x"}},
+		{Name: "project", Values: []string{"p1", "p2"}},
+		{Name: "api_token", Values: []string{"s1", "s2"}},
+	}}
+	for _, c := range []struct {
+		key  string
+		want map[string]string
+		ok   bool
+	}{
+		{"region=eu,project=p2,api_token=#2", map[string]string{"region": "eu", "project": "p2"}, true},
+		{"region=eu,project=x,project=p1,api_token=#1", map[string]string{"region": "eu,project=x", "project": "p1"}, true},
+		{"region=us,project=p1,api_token=#1", nil, false},
+		{"region=eu,project=p1", nil, false},
+		{"region=eu,project=p1,api_token=#", nil, false},
+	} {
+		got, ok := q.KeyArgs(c.key)
+		if ok != c.ok || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v %v", c.key, got, ok)
+		}
+	}
+	auto := Query{Args: []Arg{{Name: "zone", Values: []string{Auto}}, {Name: "project", Values: []string{"p1"}}}}
+	if got, ok := auto.KeyArgs("zone=europe-west1-b,project=p1"); !ok || got["zone"] != "europe-west1-b" || got["project"] != "p1" {
+		t.Errorf("auto: got %v %v", got, ok)
+	}
+	// A value that could end at either separator does not read one way.
+	two := Query{Args: []Arg{{Name: "zone", Values: []string{Auto}}, {Name: "region", Values: []string{Auto}}}}
+	if got, ok := two.KeyArgs("zone=a,region=b,region=c"); ok {
+		t.Errorf("ambiguous auto key: got %v", got)
 	}
 }

@@ -633,6 +633,70 @@ func (p Plan) ProvidersHCL() []byte {
 	return []byte(b.String())
 }
 
+// KeyArgs returns the argument values of the list block instance with the
+// given for_each key. Values left out of the key (secret ones) are missing
+// from values; ok is false when the key does not read one way only.
+func (q Query) KeyArgs(key string) (values map[string]string, ok bool) {
+	var found []map[string]string
+	acc := map[string]string{}
+	var walk func(i int, rest string)
+	walk = func(i int, rest string) {
+		if len(found) > 1 {
+			return
+		}
+		if i == len(q.Args) {
+			if rest == "" {
+				found = append(found, maps.Clone(acc))
+			}
+			return
+		}
+		a := q.Args[i]
+		prefix := a.Name + "="
+		if i > 0 {
+			prefix = "," + prefix
+		}
+		rest, ok := strings.CutPrefix(rest, prefix)
+		if !ok {
+			return
+		}
+		// next tells whether the rest can follow the value.
+		next := func(r string) bool {
+			return i+1 == len(q.Args) && r == "" || i+1 < len(q.Args) && strings.HasPrefix(r, ","+q.Args[i+1].Name+"=")
+		}
+		switch {
+		case a.Secret():
+			n := 1
+			for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+				n++
+			}
+			if strings.HasPrefix(rest, "#") && n > 1 && next(rest[n:]) {
+				walk(i+1, rest[n:])
+			}
+		case a.IsAuto():
+			for j := 0; j <= len(rest); j++ {
+				if next(rest[j:]) {
+					acc[a.Name] = rest[:j]
+					walk(i+1, rest[j:])
+				}
+			}
+			delete(acc, a.Name)
+		default:
+			for _, v := range a.Values {
+				if r, ok := strings.CutPrefix(rest, v); ok && next(r) {
+					acc[a.Name] = v
+					walk(i+1, r)
+				}
+			}
+			delete(acc, a.Name)
+		}
+	}
+	walk(0, key)
+	if len(found) != 1 {
+		return nil, false
+	}
+	return found[0], true
+}
+
 // product returns every combination of argument values.
 func product(args []Arg) [][]string {
 	out := [][]string{{}}

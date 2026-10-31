@@ -822,10 +822,21 @@ var owners = map[string]owner{
 // value means unknown rather than a value to compare.
 var emptyIsUnknown = map[string]bool{"project": true, "account_id": true, "subscription_id": true, "region": true, "zone": true, "location": true}
 
-// UnknownLocation reports whether an identity has an empty location key.
+// unknownLocation reports whether v, the value of identity key k, is a
+// location left unknown: empty or null.
+func unknownLocation(k string, v any) bool {
+	if !emptyIsUnknown[k] {
+		return false
+	}
+	s, ok := model.Canonical(v)
+	return !ok || s == ""
+}
+
+// UnknownLocation reports whether an identity has an empty or null
+// location key.
 func UnknownLocation(identity map[string]any) bool {
 	for k := range emptyIsUnknown {
-		if v, ok := identity[k].(string); ok && v == "" {
+		if v, ok := identity[k]; ok && unknownLocation(k, v) {
 			return true
 		}
 	}
@@ -864,17 +875,19 @@ func compare(r model.Resource, in *Instance) (ok, verified bool, why string, mis
 			if slices.Contains(r.RequiredKeys, k) {
 				return false, false, k + " is null here, which nothing can confirm", nil
 			}
-			continue
 		}
-		// An empty location (google lists some objects with project "")
-		// is not known, so it neither conflicts nor confirms. An empty own
-		// ID (name, id) is no evidence of anything: it must not let the
-		// location alone match.
-		if w == "" && emptyIsUnknown[k] {
+		// An empty or null location (google lists some objects with
+		// project "") is not known, so it neither conflicts nor confirms;
+		// the match is unverified. An empty own ID (name, id) is no
+		// evidence of anything: it must not let the location alone match.
+		if unknownLocation(k, want) {
 			absent++
 			if isPrimary[k] {
 				primaryEmpty++
 			}
+			continue
+		}
+		if !ok {
 			continue
 		}
 		// A key the match must rest on (required with an identity in
@@ -925,12 +938,12 @@ func compare(r model.Resource, in *Instance) (ok, verified bool, why string, mis
 	return true, absent == 0, "", missing
 }
 
-// unknownKeys are the keys of r whose value discovery left empty where
-// empty means unknown (see emptyIsUnknown).
+// unknownKeys are the location keys of r that discovery left empty or
+// null (see emptyIsUnknown).
 func unknownKeys(r model.Resource) []string {
 	var out []string
 	for k, v := range r.Identity {
-		if s, ok := model.Canonical(v); ok && s == "" && emptyIsUnknown[k] {
+		if unknownLocation(k, v) {
 			out = append(out, k)
 		}
 	}

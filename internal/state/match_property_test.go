@@ -57,10 +57,12 @@ func referenceCompare(r model.Resource, in Instance, required, primary []string)
 			if slices.Contains(r.RequiredKeys, k) {
 				return false, false
 			}
-			continue
+			if !emptyIsUnknown[k] {
+				continue
+			}
 		}
 		isPrimary := slices.Contains(primary, k)
-		if want == "" && emptyIsUnknown[k] {
+		if (!known || want == "") && emptyIsUnknown[k] {
 			unsure = true
 			if isPrimary {
 				primaryLeft--
