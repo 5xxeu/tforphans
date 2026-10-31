@@ -83,8 +83,12 @@ func TestBaselineReasonContract(t *testing.T) {
 		})
 	}
 	a := Summary{Listings: []Listing{base}}
+	_, got := CompareRun([]model.Resource{resource}, nil, a, a, nil, func(typ string) bool { return typ == "thing" })
+	if got.Unverified != 1 || got.UnverifiedFindings[0].ReasonCode != "type_filtered" {
+		t.Fatalf("filtered type: %+v", got)
+	}
 	seen := []Seen{{Resource: resource, Status: BecameUnsure, ReasonDetails: model.Reason("state_identity_missing", "project")}}
-	_, got := CompareRun([]model.Resource{resource}, nil, a, a, seen)
+	_, got = CompareRun([]model.Resource{resource}, nil, a, a, seen, nil)
 	if got.Unverified != 1 || got.UnverifiedFindings[0].Action != "refresh_state" || !reflect.DeepEqual(got.UnverifiedFindings[0].MissingKeys, []string{"project"}) {
 		t.Fatalf("uncertain transition: %+v", got)
 	}

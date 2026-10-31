@@ -225,17 +225,19 @@ const environmentChanged = "environment changed"
 // Compare marks current orphans and checks missing findings against listings.
 // An object without an identity or import ID can never be matched or resolved.
 func Compare(old, current []model.Resource, oldSummary, currentSummary Summary) ([]model.Resource, Baseline) {
-	return compare(old, current, oldSummary, currentSummary, nil, false)
+	return compare(old, current, oldSummary, currentSummary, nil, nil, false)
 }
 
 // CompareRun is Compare during a run, which knows every live object: seen
 // are those that are no orphans, and a missing finding among them says
-// what became of it; one not among them was not found at all.
-func CompareRun(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen) ([]model.Resource, Baseline) {
-	return compare(old, current, oldSummary, currentSummary, seen, true)
+// what became of it; one not among them was not found at all. filtered
+// tells the types the run left out of its results (-types): a listing
+// that still ran for them (a user's list block) says nothing of theirs.
+func CompareRun(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen, filtered func(typ string) bool) ([]model.Resource, Baseline) {
+	return compare(old, current, oldSummary, currentSummary, seen, filtered, true)
 }
 
-func compare(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen, live bool) ([]model.Resource, Baseline) {
+func compare(old, current []model.Resource, oldSummary, currentSummary Summary, seen []Seen, filtered func(string) bool, live bool) ([]model.Resource, Baseline) {
 	seenIdx := map[seenKey][]Seen{}
 	for _, s := range seen {
 		if k, ok := keyFinding(s.Resource); ok {
@@ -272,6 +274,10 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 			continue
 		}
 		if now.contains(r) {
+			continue
+		}
+		if filtered != nil && filtered(r.Type) {
+			b.UnverifiedFindings = append(b.UnverifiedFindings, unverifiedFinding(r, "its type is left out by -types or -exclude-types", "type_filtered"))
 			continue
 		}
 		// Seen this run as something else: that is the answer, whatever

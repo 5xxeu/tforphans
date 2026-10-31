@@ -328,7 +328,7 @@ func TestBaselineTransitions(t *testing.T) {
 		{Resource: gone("both"), Status: BecameUnsure, StateAddress: "thing.b2"},
 	}
 	sum := Summary{Listings: []Listing{l}}
-	_, b := CompareRun(old, nil, sum, sum, seen)
+	_, b := CompareRun(old, nil, sum, sum, seen, nil)
 	got := map[string]Finding{}
 	for _, f := range append(b.ResolvedFindings, b.UnverifiedFindings...) {
 		got[f.Identity["id"].(string)] = f
@@ -364,13 +364,13 @@ func TestBaselineTransitionUnknownLocation(t *testing.T) {
 	a := model.Resource{Type: "google_compute_instance", Identity: map[string]any{"name": "node", "zone": "z1", "project": ""}, Source: "root-a", ListAddress: "list.x.a"}
 	b := a
 	b.Source, b.ListAddress = "root-b", "list.x.b"
-	_, res := CompareRun([]model.Resource{a}, nil, Summary{}, Summary{}, []Seen{{Resource: b, Status: BecameIgnored, Rule: "gke"}})
+	_, res := CompareRun([]model.Resource{a}, nil, Summary{}, Summary{}, []Seen{{Resource: b, Status: BecameIgnored, Rule: "gke"}}, nil)
 	if res.Resolved != 0 || res.Unverified != 1 || res.UnverifiedFindings[0].Transition != "" {
 		t.Errorf("another root's object resolved the finding: %+v", res)
 	}
 	l := Listing{Source: "root-a", Address: "list.x.a", Type: "google_compute_instance", Complete: true, Fingerprint: "f1", Scope: map[string]string{"account": "a"}}
 	same := Summary{Listings: []Listing{l}}
-	_, res = CompareRun([]model.Resource{a}, nil, same, same, []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
+	_, res = CompareRun([]model.Resource{a}, nil, same, same, []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}}, nil)
 	if res.Resolved != 1 || res.ResolvedFindings[0].Transition != BecameIgnored {
 		t.Errorf("the same, unchanged listing's object: %+v", res)
 	}
@@ -389,7 +389,7 @@ func TestBaselineTransitionUnknownLocation(t *testing.T) {
 		"no listing evidence":   {{}, {}},
 		"listing not run again": {same, {}},
 	} {
-		_, res = CompareRun([]model.Resource{a}, nil, sums[0], sums[1], []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}})
+		_, res = CompareRun([]model.Resource{a}, nil, sums[0], sums[1], []Seen{{Resource: a, Status: BecameIgnored, Rule: "gke"}}, nil)
 		if res.Resolved != 0 || res.UnverifiedFindings[0].Transition != "" {
 			t.Errorf("%s: %+v", name, res)
 		}

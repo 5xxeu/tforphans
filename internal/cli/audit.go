@@ -344,9 +344,10 @@ type outcome struct {
 func conclude(o *options, idx *state.Index, live []model.Resource, previous *report.Snapshot, sum *report.Summary) outcome {
 	// -types and -exclude-types narrow every source, also the user's own
 	// list blocks and plugins, which list whatever they were written for.
-	live = slices.DeleteFunc(live, func(r model.Resource) bool {
-		return len(o.src.include) > 0 && !o.src.include.Match(r.Type) || o.src.exclude.Match(r.Type)
-	})
+	filtered := func(typ string) bool {
+		return len(o.src.include) > 0 && !o.src.include.Match(typ) || o.src.exclude.Match(typ)
+	}
+	live = slices.DeleteFunc(live, func(r model.Resource) bool { return filtered(r.Type) })
 	scopes := slices.Clone(live) // every source's results, for -v
 	// Every listing that returned an object, also those whose copy dedupe
 	// drops: -baseline looks a finding up under its own listing.
@@ -404,7 +405,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	shown := orphans
 	if previous != nil {
 		var b report.Baseline
-		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, *sum, c.seen)
+		orphans, b = report.CompareRun(previous.Orphans, orphans, previous.Summary, *sum, c.seen, filtered)
 		baseline = &b
 		if b.EnvironmentChanged {
 			sum.Notes = append(sum.Notes, fmt.Sprintf("the baseline is from environment %q, this run is %q (-environment): every finding counts as new, none as resolved", previous.Summary.Environment, o.audit.environment))
