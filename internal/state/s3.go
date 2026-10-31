@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -131,12 +130,36 @@ func (c *S3) List(ctx context.Context, src string, maxObjects int) (states []str
 }
 
 // client returns the client for bucket, loading the shared configuration
-// and finding the bucket's region the first time.
+// and finding the bucket's region the first time. The region is looked up
+// without holding the lock: a slow bucket must not hold up the others.
 func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
+	cfg, client, err := c.cached(ctx, bucket)
+	if client != nil || err != nil {
+		return client, err
+	}
+	client, err = newS3Client(ctx, cfg, bucket, c.AllowHTTP)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if other := c.clients[bucket]; other != nil {
+		return other, nil
+	}
+	if c.clients == nil {
+		c.clients = map[string]*s3.Client{}
+	}
+	c.clients[bucket] = client
+	return client, nil
+}
+
+// cached returns the client of bucket when there is one, and otherwise the
+// shared configuration, loaded the first time.
+func (c *S3) cached(ctx context.Context, bucket string) (aws.Config, *s3.Client, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if client := c.clients[bucket]; client != nil {
-		return client, nil
+		return aws.Config{}, client, nil
 	}
 	if c.cfg == nil {
 		cfg, err := config.LoadDefaultConfig(ctx,
@@ -147,7 +170,7 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 			// identity and assumed-role credentials.
 			config.WithDefaultRegion("us-east-1"))
 		if err != nil {
-			return nil, fmt.Errorf("AWS configuration: %w", err)
+			return aws.Config{}, nil, fmt.Errorf("AWS configuration: %w", err)
 		}
 		// The SDK follows 307 and 308 to any scheme, which would take the
 		// state (and the signed headers) from https to plain http. Nothing
@@ -155,19 +178,24 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 		// transport keeps what the configuration set, AWS_CA_BUNDLE included.
 		built, ok := cfg.HTTPClient.(*awshttp.BuildableClient)
 		if !ok {
-			return nil, fmt.Errorf("AWS configuration: unexpected HTTP client %T", cfg.HTTPClient)
+			return aws.Config{}, nil, fmt.Errorf("AWS configuration: unexpected HTTP client %T", cfg.HTTPClient)
 		}
 		cfg.HTTPClient = &http.Client{
-			Transport: built.GetTransport(),
-			Timeout:   2 * time.Minute,
+			Transport: stallTransport{built.GetTransport()},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
 		c.cfg = &cfg
 	}
+	return *c.cfg, nil, nil
+}
+
+// newS3Client builds the client of bucket: for the endpoint configured, or
+// else in the bucket's own region.
+func newS3Client(ctx context.Context, cfg aws.Config, bucket string, allowHTTP bool) (*s3.Client, error) {
 	custom := ""
-	client := s3.NewFromConfig(*c.cfg, func(o *s3.Options) {
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		if o.BaseEndpoint != nil {
 			custom = *o.BaseEndpoint
 			o.UsePathStyle = true
@@ -177,10 +205,12 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 	})
 	if custom != "" {
 		u, err := url.Parse(custom)
-		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-			return nil, errors.New("invalid AWS endpoint URL: want https://HOST")
+		// The SDK quotes the endpoint in its errors: credentials or a token
+		// in it would end up in the output.
+		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+			return nil, errors.New("invalid AWS endpoint URL: want https://HOST[/PATH], without user info or query")
 		}
-		if u.Scheme == "http" && !c.AllowHTTP {
+		if u.Scheme == "http" && !allowHTTP {
 			return nil, errors.New("refusing to read state from an S3 endpoint over plain http, where it can be read and altered in transit; use https, or -allow-http")
 		}
 	} else {
@@ -188,16 +218,12 @@ func (c *S3) client(ctx context.Context, bucket string) (*s3.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("region of S3 bucket %s: %w", bucket, err)
 		}
-		if region != c.cfg.Region {
-			client = s3.NewFromConfig(*c.cfg, func(o *s3.Options) {
+		if region != cfg.Region {
+			client = s3.NewFromConfig(cfg, func(o *s3.Options) {
 				o.Region = region
 				o.DisableLogOutputChecksumValidationSkipped = true
 			})
 		}
 	}
-	if c.clients == nil {
-		c.clients = map[string]*s3.Client{}
-	}
-	c.clients[bucket] = client
 	return client, nil
 }

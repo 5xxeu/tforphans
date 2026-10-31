@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/5xxeu/tforphans/internal/model"
@@ -369,7 +368,8 @@ func redactURLs(msg string) string {
 // transport is replaced in tests.
 var transport http.RoundTripper = http.DefaultTransport
 
-// httpClient times out instead of hanging on a stalled backend.
+// httpClient gives up on a backend that stops sending (stallTimeout)
+// instead of hanging; a slow but steady download of a large state goes on.
 //
 // On redirects it never sends a Referer (Go would send the previous URL,
 // query and all, which for a presigned URL is the signature), never goes
@@ -380,8 +380,7 @@ var transport http.RoundTripper = http.DefaultTransport
 // the request already was plain http, which needs -allow-http.
 func httpClient() *http.Client {
 	return &http.Client{
-		Transport: transport,
-		Timeout:   2 * time.Minute,
+		Transport: stallTransport{transport},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			req.Header.Del("Referer")
 			if len(via) >= 10 {

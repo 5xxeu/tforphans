@@ -150,3 +150,16 @@ func TestS3WebIdentityWithoutRegion(t *testing.T) {
 		t.Errorf("STS asked: %v, session token %v", fake.STSCalls.Load(), fake.Tokens.Load())
 	}
 }
+
+// The SDK quotes the endpoint in its errors: one with credentials or a
+// token is refused before any request, without quoting it.
+func TestS3EndpointWithCredentials(t *testing.T) {
+	(&s3fake.Server{Bucket: "states"}).Start(t)
+	for _, endpoint := range []string{"https://user:SECRET@127.0.0.1:1", "https://127.0.0.1:1/?X-Amz-Signature=SECRET", "https://127.0.0.1:1/#SECRET"} {
+		t.Setenv("AWS_ENDPOINT_URL_S3", endpoint)
+		_, err := (&S3{}).Get(context.Background(), "s3://states/a.tfstate", DefaultMaxSize)
+		if err == nil || !strings.Contains(err.Error(), "without user info or query") || strings.Contains(err.Error(), "SECRET") {
+			t.Errorf("%s: %v", endpoint, err)
+		}
+	}
+}
