@@ -320,10 +320,16 @@ func scanRoot(ctx context.Context, o *options, root string, idx *state.Index, su
 	return res.Found, nil
 }
 
+// places are scope keys that nest (a zone lies in a region): one set by
+// an argument says nothing of the provider's others.
+var places = map[string]bool{"region": true, "zone": true, "location": true}
+
 // argScope is the scope of a listing whose config sets some arguments:
 // the provider's scope with the values of arguments named like its keys (a
 // region or project given to the list block). An argument of that name
-// whose value is not known leaves the scope unknown (nil).
+// whose value is not known leaves the scope unknown (nil). A place moved
+// elsewhere drops the provider's other places: zone europe-west1-b is not
+// in the provider's region us-central1.
 func argScope(scope, values map[string]string, unknown []string) map[string]string {
 	if scope == nil {
 		return nil
@@ -334,9 +340,18 @@ func argScope(scope, values map[string]string, unknown []string) map[string]stri
 		}
 	}
 	out := maps.Clone(scope)
+	moved := false
 	for name, v := range values {
-		if _, ok := out[name]; ok {
+		if old, ok := out[name]; ok {
+			moved = moved || places[name] && old != v
 			out[name] = v
+		}
+	}
+	if moved {
+		for name := range scope {
+			if _, set := values[name]; places[name] && !set {
+				delete(out, name)
+			}
 		}
 	}
 	return out

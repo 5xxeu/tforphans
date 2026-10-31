@@ -434,6 +434,18 @@ func TestArgScope(t *testing.T) {
 	if scope["region"] != "us-east-1" {
 		t.Error("provider scope changed")
 	}
+	// A zone of another region: the provider's region no longer holds.
+	google := map[string]string{"project": "p", "region": "us-central1", "zone": "us-central1-a"}
+	got := argScope(google, map[string]string{"zone": "europe-west1-b"}, nil)
+	if want := map[string]string{"project": "p", "zone": "europe-west1-b"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("zone elsewhere: got %v", got)
+	}
+	if e, _ := report.CheckExpected([]map[string]string{{"region": "us-central1", "zone": "europe-west1-b"}}, []report.Listing{{Complete: true, Scope: got}}); e[0].Status == report.ExpectConfirmed {
+		t.Error("zone of another region confirmed the provider's region")
+	}
+	if got := argScope(google, map[string]string{"zone": "us-central1-a"}, nil); !reflect.DeepEqual(got, google) {
+		t.Errorf("same zone: got %v", got)
+	}
 	if argScope(nil, map[string]string{"region": "x"}, nil) != nil {
 		t.Error("unknown provider scope became known")
 	}
