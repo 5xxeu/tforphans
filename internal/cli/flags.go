@@ -512,6 +512,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	// Repeated names are merged (-arg region=a -arg region=b): two
 	// attributes of one name would make terraform reject the whole query.
 	argIndex := map[string]int{}
+	argSeen := map[[2]string]bool{}
 	for _, a := range argFlags {
 		parsed, err := tf.ParseArg(a)
 		if err != nil {
@@ -524,10 +525,16 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 			o.src.args = append(o.src.args, tf.Arg{Types: parsed.Types, Name: parsed.Name})
 		}
 		for _, v := range parsed.Values {
-			if !slices.Contains(o.src.args[i].Values, v) {
+			if !argSeen[[2]string{parsed.Key(), v}] {
+				argSeen[[2]string{parsed.Key(), v}] = true
 				o.src.args[i].Values = append(o.src.args[i].Values, v)
 			}
 		}
+	}
+	// -arg may come from the automatic config: bounded before the plan
+	// multiplies the values.
+	if err := tf.CheckArgCombinations(o.src.args); err != nil {
+		return nil, err
 	}
 	o.ignore.presets = presets.csv()
 	for _, p := range o.ignore.presets {

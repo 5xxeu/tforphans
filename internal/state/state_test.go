@@ -543,6 +543,12 @@ func TestMatchEmptyValue(t *testing.T) {
 			Identity: map[string]any{"name": "", "zone": "z1", "project": "p1"}}, false, false},
 		// Nothing known but the empty value: no match.
 		{model.Resource{Type: "google_compute_disk", RequiredKeys: []string{"project"}, Identity: map[string]any{"project": ""}}, false, false},
+		// A null location the source does not require is unknown as well:
+		// state of another project must not confirm the object.
+		{model.Resource{Type: "google_compute_instance", RequiredKeys: []string{"name", "zone"},
+			Identity: map[string]any{"name": "vm", "zone": "z1", "project": nil}}, true, false},
+		{model.Resource{Type: "google_compute_disk", RequiredKeys: []string{"name", "zone"}, AttributeKeys: keys,
+			Identity: map[string]any{"name": "data", "zone": "z1", "project": nil}}, true, false},
 	} {
 		m := ix.Match(c.r)
 		if m.Managed != c.managed || m.Verified != c.veri {
@@ -790,5 +796,16 @@ func TestExplain(t *testing.T) {
 				t.Errorf("Match %+v, Explain %+v", plain, m)
 			}
 		})
+	}
+}
+
+// TestMatchMissingRequiredKey: a required key the live object does not
+// have at all confirms nothing, like an empty one.
+func TestMatchMissingRequiredKey(t *testing.T) {
+	ix := NewIndex()
+	ix.Add([]Instance{{Type: "t", Address: "t.a", Identity: map[string]any{"name": "a", "project": "p"}}})
+	r := model.Resource{Type: "t", RequiredKeys: []string{"name", "project"}, Identity: map[string]any{"project": "p"}}
+	if m := ix.Match(r); m.Managed {
+		t.Errorf("matched without its name: %+v", m)
 	}
 }

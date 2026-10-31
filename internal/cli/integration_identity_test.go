@@ -5,7 +5,11 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 func TestIntegrationBaselineIdentity(t *testing.T) {
@@ -61,5 +65,39 @@ func TestIntegrationBaselineIdentity(t *testing.T) {
 				t.Fatal(left)
 			}
 		})
+	}
+}
+
+// TestIntegrationArgScope: a list argument named like a scope key (here a
+// zone the provider also reports) gives each listing the zone it lists,
+// not the provider's.
+func TestIntegrationArgScope(t *testing.T) {
+	_, root := setup(t)
+	tf.IdentitySources["example.com/fake/fake"] = []tf.IdentityRead{{DataSource: "fake_whoami", Attrs: map[string][]string{"account": {"account"}, "zone": {"account"}}}}
+	write(t, filepath.Join(root, "main.tf"), `terraform {
+ required_providers {
+  fake = { source = "example.com/fake/fake" }
+ }
+}
+`)
+	t.Chdir(root)
+	t.Setenv("FAKE_ACCOUNT", "acct-1")
+	code, output, stderr := runTool("-no-config", "-types", "fake_zoned", "-arg", "zone=a,b", "-format", "json", "-expect", "zone=acct-1", "-expect", "zone=a")
+	if code != exitOK {
+		t.Fatalf("exit %d: %s\n%s", code, output, stderr)
+	}
+	doc := decodeListingReport(t, output)
+	zones := map[string]string{}
+	for _, l := range doc.Summary.Listings {
+		zones[l.Address] = l.Scope["zone"]
+		if l.Scope["account"] != "acct-1" {
+			t.Errorf("account: %+v", l)
+		}
+	}
+	if !reflect.DeepEqual(zones, map[string]string{`list.fake_zoned.tfo_fake_fake_zoned["zone=a"]`: "a", `list.fake_zoned.tfo_fake_fake_zoned["zone=b"]`: "b"}) {
+		t.Fatalf("zones %v: %s", zones, output)
+	}
+	if e := doc.Summary.Expected; len(e) != 2 || e[0].Status != report.ExpectMissing || e[1].Status != report.ExpectConfirmed {
+		t.Fatalf("expected scopes: %s", output)
 	}
 }

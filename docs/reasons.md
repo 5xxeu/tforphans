@@ -67,6 +67,12 @@ Results may be truncated. `action: raise_limit`: raise the relevant list limit o
 
 The baseline and current report have different environment labels. Choose reports for the same environment.
 
+<a id="type_filtered"></a>
+
+## type_filtered
+
+The finding's type is left out of this run by `-types` or `-exclude-types`, so nothing this run listed can show it resolved. Compare runs with the same type filters.
+
 <a id="missing_argument"></a>
 
 ## missing_argument

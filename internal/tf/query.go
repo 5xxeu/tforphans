@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -352,7 +353,40 @@ func (r Runner) Query(ctx context.Context, p Plan, limitFor func(address string)
 	for _, addr := range res.Unfinished {
 		res.Failed = append(res.Failed, Failure{Address: addr, Type: listType(addr), Message: "did not finish"})
 	}
+	if runErr != nil {
+		// Terraform may have died after a block's own error, before others
+		// started: those checked nothing.
+		blocks := make([]string, 0, len(p.Queries))
+		for _, q := range p.Queries {
+			blocks = append(blocks, q.Address())
+		}
+		user, _ := UserLists(r.Dir)
+		blocks = append(blocks, slices.Sorted(maps.Keys(user))...)
+		res.notStarted(blocks)
+	}
 	return res, nil
+}
+
+// notStarted adds a failure for each of the blocks that neither started an
+// instance nor reported an error. A block with no instances (for_each = {})
+// is among them: after a failed run nothing tells it from one that never
+// ran.
+func (res *QueryResult) notStarted(blocks []string) {
+	seen := map[string]bool{}
+	for _, l := range res.Queried {
+		block, _, _ := strings.Cut(l.Address, "[")
+		seen[block] = true
+	}
+	for _, f := range res.Failed {
+		block, _, _ := strings.Cut(f.Address, "[")
+		seen[block] = true
+	}
+	for _, block := range blocks {
+		if !seen[block] {
+			seen[block] = true
+			res.Failed = append(res.Failed, Failure{Address: block, Type: listType(block), Message: "did not start: terraform query failed before it"})
+		}
+	}
 }
 
 // explained reports whether a failed run is accounted for by the list

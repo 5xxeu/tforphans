@@ -30,6 +30,13 @@ type Arg struct {
 	Values []string
 }
 
+// positional reports whether instance keys name the argument's values by
+// position (#N) rather than by value: secret ones, and URLs, which may
+// carry credentials in their user info or query.
+func (a Arg) positional() bool {
+	return a.Secret() || slices.ContainsFunc(a.Values, func(v string) bool { return strings.Contains(v, "://") })
+}
+
 // Key identifies the argument among repeated -arg flags.
 func (a Arg) Key() string { return a.Types + ":" + a.Name }
 
@@ -95,6 +102,44 @@ func ParseArg(s string) (Arg, error) {
 		return Arg{}, fmt.Errorf("invalid -arg %q: %s stands for every value and takes no others", key, Auto)
 	}
 	return a, nil
+}
+
+// MaxArgCombinations bounds the instances one generated list block may get
+// from -arg values: each is a listing, and the values may come from a
+// config file of someone else's repository.
+const MaxArgCombinations = 10000
+
+// CheckArgCombinations fails when a list block could get more than
+// MaxArgCombinations instances from args. It counts before anything is
+// built, and over-counts rather than under: per name, the values of every
+// type-scoped -arg of that name could merge for one type, and they replace
+// the unscoped ones.
+func CheckArgCombinations(args []Arg) error {
+	scoped, plain := map[string]int{}, map[string]int{}
+	for _, a := range args {
+		if a.Types != "" {
+			scoped[a.Name] += len(a.Values)
+		} else {
+			plain[a.Name] += len(a.Values)
+		}
+	}
+	n := 1
+	for _, name := range slices.Sorted(maps.Keys(scoped)) {
+		n *= max(scoped[name], plain[name])
+		if n > MaxArgCombinations {
+			return fmt.Errorf("-arg: the values make more than %d combinations for one list block; pass fewer values", MaxArgCombinations)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(plain)) {
+		if _, ok := scoped[name]; ok {
+			continue
+		}
+		n *= plain[name]
+		if n > MaxArgCombinations {
+			return fmt.Errorf("-arg: the values make more than %d combinations for one list block; pass fewer values", MaxArgCombinations)
+		}
+	}
+	return nil
 }
 
 // Query is one generated list block.
@@ -568,7 +613,7 @@ func (q Query) HCL(limit int) []byte {
 				}
 				lists = append(lists, "["+strings.Join(vals, ", ")+"]")
 			}
-			if a.Secret() {
+			if a.positional() {
 				// The position of the value, which the key still tells apart.
 				key = append(key, fmt.Sprintf("%s=#${index(%s, c[%d]) + 1}", a.Name, lists[i], i))
 			} else {
@@ -591,7 +636,7 @@ func (q Query) HCL(limit int) []byte {
 		for _, combo := range product(q.Args) {
 			var key, fields []string
 			for i, a := range q.Args {
-				if a.Secret() {
+				if a.positional() {
 					key = append(key, fmt.Sprintf("%s=#%d", a.Name, slices.Index(a.Values, combo[i])+1))
 				} else {
 					key = append(key, a.Name+"="+combo[i])
@@ -631,6 +676,70 @@ func (p Plan) ProvidersHCL() []byte {
 	}
 	b.WriteString("  }\n}\n")
 	return []byte(b.String())
+}
+
+// KeyArgs returns the argument values of the list block instance with the
+// given for_each key. Values left out of the key (see positional) are missing
+// from values; ok is false when the key does not read one way only.
+func (q Query) KeyArgs(key string) (values map[string]string, ok bool) {
+	var found []map[string]string
+	acc := map[string]string{}
+	var walk func(i int, rest string)
+	walk = func(i int, rest string) {
+		if len(found) > 1 {
+			return
+		}
+		if i == len(q.Args) {
+			if rest == "" {
+				found = append(found, maps.Clone(acc))
+			}
+			return
+		}
+		a := q.Args[i]
+		prefix := a.Name + "="
+		if i > 0 {
+			prefix = "," + prefix
+		}
+		rest, ok := strings.CutPrefix(rest, prefix)
+		if !ok {
+			return
+		}
+		// next tells whether the rest can follow the value.
+		next := func(r string) bool {
+			return i+1 == len(q.Args) && r == "" || i+1 < len(q.Args) && strings.HasPrefix(r, ","+q.Args[i+1].Name+"=")
+		}
+		switch {
+		case a.positional():
+			n := 1
+			for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+				n++
+			}
+			if strings.HasPrefix(rest, "#") && n > 1 && next(rest[n:]) {
+				walk(i+1, rest[n:])
+			}
+		case a.IsAuto():
+			for j := 0; j <= len(rest); j++ {
+				if next(rest[j:]) {
+					acc[a.Name] = rest[:j]
+					walk(i+1, rest[j:])
+				}
+			}
+			delete(acc, a.Name)
+		default:
+			for _, v := range a.Values {
+				if r, ok := strings.CutPrefix(rest, v); ok && next(r) {
+					acc[a.Name] = v
+					walk(i+1, r)
+				}
+			}
+			delete(acc, a.Name)
+		}
+	}
+	walk(0, key)
+	if len(found) != 1 {
+		return nil, false
+	}
+	return found[0], true
 }
 
 // product returns every combination of argument values.

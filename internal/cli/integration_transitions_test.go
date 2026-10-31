@@ -107,3 +107,36 @@ resource "fake_thing" "m" {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 }
+
+// TestIntegrationBaselineFilteredType: the user's list block runs whatever
+// -exclude-types says, and its object is dropped afterwards; that the same
+// listing ran again does not make the finding resolved.
+func TestIntegrationBaselineFilteredType(t *testing.T) {
+	data, root := setup(t)
+	write(t, filepath.Join(root, "main.tf"), `terraform {
+  required_providers {
+    fake = { source = "example.com/fake/fake" }
+  }
+}
+`)
+	write(t, filepath.Join(root, "mine.tfquery.hcl"), `list "fake_thing" "mine" {
+  provider = fake
+  limit    = 1000
+}
+`)
+	write(t, filepath.Join(data, "thing", "orphan"), "")
+	t.Chdir(root)
+	code, baseline, stderr := runTool("-no-config", "-types", "fake_thing", "-format", "json")
+	if code != exitOrphans {
+		t.Fatalf("baseline run: exit %d\n%s", code, stderr)
+	}
+	write(t, "baseline.json", baseline)
+	code, stdout, stderr := runTool("-no-config", "-exclude-types", "fake_thing", "-format", "json", "-baseline", "baseline.json")
+	if code != exitOK {
+		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	b := decodeListingReport(t, stdout).Baseline
+	if b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].ReasonCode != "type_filtered" {
+		t.Fatalf("%s", stdout)
+	}
+}

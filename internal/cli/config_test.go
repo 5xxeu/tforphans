@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -304,5 +305,23 @@ func TestConfigMaxQuerySize(t *testing.T) {
 	}
 	if o, err := parseFlags([]string{"-config", defaultConfigFile}, io.Discard); err != nil || o.src.maxQuerySize != 2<<30 {
 		t.Errorf("higher with -config: %+v, %v", o, err)
+	}
+}
+
+// TestConfigArgCombinations: -arg values of the automatic config that would
+// multiply into a huge plan are refused before it is built.
+func TestConfigArgCombinations(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var a, b []string
+	for i := range 200 {
+		a = append(a, "z"+strconv.Itoa(i))
+		b = append(b, "p"+strconv.Itoa(i))
+	}
+	conf := "arg:\n  - zone=" + strings.Join(a, ",") + "\n  - project=" + strings.Join(b, ",") + "\n"
+	if err := os.WriteFile(defaultConfigFile, []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "combinations") {
+		t.Fatalf("error %v", err)
 	}
 }

@@ -127,6 +127,20 @@ func TestQueryHCLSecretArgKeys(t *testing.T) {
 	}
 }
 
+// A URL may carry credentials (user info, a token in the query): it is
+// keyed by position too, and the key still reads back.
+func TestQueryHCLURLArgKeys(t *testing.T) {
+	endpoint, _ := ParseArg("endpoint=https://u:pw@host/x?token=t,plain")
+	q := Query{Type: "aws_instance", Provider: "aws", Args: []Arg{endpoint}}
+	hcl := string(q.HCL(10))
+	if !strings.Contains(hcl, `"endpoint=#1" = { endpoint = "https://u:pw@host/x?token=t" }`) || !strings.Contains(hcl, `"endpoint=#2" =`) {
+		t.Errorf("HCL:\n%s", hcl)
+	}
+	if values, ok := q.KeyArgs("endpoint=#1"); !ok || len(values) != 0 {
+		t.Errorf("key args %v %v", values, ok)
+	}
+}
+
 func TestBuildPlanArgSatisfiesRequired(t *testing.T) {
 	a, _ := ParseArg("rest_api_id=abc")
 	p := BuildPlan(schemas(t), nil, PlanOptions{Args: []Arg{a}, Include: glob.CompileList([]string{"aws_api_gateway_stage"})})
@@ -239,6 +253,28 @@ func TestParseQueryStreamUnfinished(t *testing.T) {
 	}
 	if res, _, _ := ParseQueryStream([]byte(stream), "root", noKeys, func(string) int { return 100 }); !res.explained() {
 		t.Error("a block with its own error explains a failed run")
+	}
+}
+
+// TestQueryNotStarted: after a failed run that one block explains, the
+// planned blocks that never started are failures, not passed checks.
+func TestQueryNotStarted(t *testing.T) {
+	in := `{"list_start":{"address":"list.fake_broken.b[\"k\"]","resource_type":"fake_broken"},"type":"list_start"}
+{"diagnostic":{"severity":"error","summary":"access denied","address":"list.fake_broken.b"},"type":"diagnostic"}
+{"list_start":{"address":"list.fake_zoned.z","resource_type":"fake_zoned"},"type":"list_start"}
+{"list_complete":{"address":"list.fake_zoned.z","resource_type":"fake_zoned","total":1},"type":"list_complete"}`
+	res, _, err := ParseQueryStream([]byte(in), "root", noKeys, func(string) int { return 100 })
+	if err != nil || !res.explained() {
+		t.Fatalf("err=%v explained=%v", err, res.explained())
+	}
+	res.notStarted([]string{"list.fake_broken.b", "list.fake_zoned.z", "list.fake_thing.t", "list.fake_thing.t"})
+	var got []string
+	for _, f := range res.Failed {
+		got = append(got, f.Address+" "+f.Type+": "+f.Message)
+	}
+	want := []string{`list.fake_broken.b fake_broken: access denied`, "list.fake_thing.t fake_thing: did not start: terraform query failed before it"}
+	if !slices.Equal(got, want) {
+		t.Errorf("failed = %q", got)
 	}
 }
 
