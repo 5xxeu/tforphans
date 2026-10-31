@@ -127,6 +127,20 @@ func TestQueryHCLSecretArgKeys(t *testing.T) {
 	}
 }
 
+// A URL may carry credentials (user info, a token in the query): it is
+// keyed by position too, and the key still reads back.
+func TestQueryHCLURLArgKeys(t *testing.T) {
+	endpoint, _ := ParseArg("endpoint=https://u:pw@host/x?token=t,plain")
+	q := Query{Type: "aws_instance", Provider: "aws", Args: []Arg{endpoint}}
+	hcl := string(q.HCL(10))
+	if !strings.Contains(hcl, `"endpoint=#1" = { endpoint = "https://u:pw@host/x?token=t" }`) || !strings.Contains(hcl, `"endpoint=#2" =`) {
+		t.Errorf("HCL:\n%s", hcl)
+	}
+	if values, ok := q.KeyArgs("endpoint=#1"); !ok || len(values) != 0 {
+		t.Errorf("key args %v %v", values, ok)
+	}
+}
+
 func TestBuildPlanArgSatisfiesRequired(t *testing.T) {
 	a, _ := ParseArg("rest_api_id=abc")
 	p := BuildPlan(schemas(t), nil, PlanOptions{Args: []Arg{a}, Include: glob.CompileList([]string{"aws_api_gateway_stage"})})

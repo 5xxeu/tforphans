@@ -30,6 +30,13 @@ type Arg struct {
 	Values []string
 }
 
+// positional reports whether instance keys name the argument's values by
+// position (#N) rather than by value: secret ones, and URLs, which may
+// carry credentials in their user info or query.
+func (a Arg) positional() bool {
+	return a.Secret() || slices.ContainsFunc(a.Values, func(v string) bool { return strings.Contains(v, "://") })
+}
+
 // Key identifies the argument among repeated -arg flags.
 func (a Arg) Key() string { return a.Types + ":" + a.Name }
 
@@ -606,7 +613,7 @@ func (q Query) HCL(limit int) []byte {
 				}
 				lists = append(lists, "["+strings.Join(vals, ", ")+"]")
 			}
-			if a.Secret() {
+			if a.positional() {
 				// The position of the value, which the key still tells apart.
 				key = append(key, fmt.Sprintf("%s=#${index(%s, c[%d]) + 1}", a.Name, lists[i], i))
 			} else {
@@ -629,7 +636,7 @@ func (q Query) HCL(limit int) []byte {
 		for _, combo := range product(q.Args) {
 			var key, fields []string
 			for i, a := range q.Args {
-				if a.Secret() {
+				if a.positional() {
 					key = append(key, fmt.Sprintf("%s=#%d", a.Name, slices.Index(a.Values, combo[i])+1))
 				} else {
 					key = append(key, a.Name+"="+combo[i])
@@ -672,7 +679,7 @@ func (p Plan) ProvidersHCL() []byte {
 }
 
 // KeyArgs returns the argument values of the list block instance with the
-// given for_each key. Values left out of the key (secret ones) are missing
+// given for_each key. Values left out of the key (see positional) are missing
 // from values; ok is false when the key does not read one way only.
 func (q Query) KeyArgs(key string) (values map[string]string, ok bool) {
 	var found []map[string]string
@@ -702,7 +709,7 @@ func (q Query) KeyArgs(key string) (values map[string]string, ok bool) {
 			return i+1 == len(q.Args) && r == "" || i+1 < len(q.Args) && strings.HasPrefix(r, ","+q.Args[i+1].Name+"=")
 		}
 		switch {
-		case a.Secret():
+		case a.positional():
 			n := 1
 			for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
 				n++
