@@ -242,6 +242,28 @@ func TestParseQueryStreamUnfinished(t *testing.T) {
 	}
 }
 
+// TestQueryNotStarted: after a failed run that one block explains, the
+// planned blocks that never started are failures, not passed checks.
+func TestQueryNotStarted(t *testing.T) {
+	in := `{"list_start":{"address":"list.fake_broken.b[\"k\"]","resource_type":"fake_broken"},"type":"list_start"}
+{"diagnostic":{"severity":"error","summary":"access denied","address":"list.fake_broken.b"},"type":"diagnostic"}
+{"list_start":{"address":"list.fake_zoned.z","resource_type":"fake_zoned"},"type":"list_start"}
+{"list_complete":{"address":"list.fake_zoned.z","resource_type":"fake_zoned","total":1},"type":"list_complete"}`
+	res, _, err := ParseQueryStream([]byte(in), "root", noKeys, func(string) int { return 100 })
+	if err != nil || !res.explained() {
+		t.Fatalf("err=%v explained=%v", err, res.explained())
+	}
+	res.notStarted([]string{"list.fake_broken.b", "list.fake_zoned.z", "list.fake_thing.t", "list.fake_thing.t"})
+	var got []string
+	for _, f := range res.Failed {
+		got = append(got, f.Address+" "+f.Type+": "+f.Message)
+	}
+	want := []string{`list.fake_broken.b fake_broken: access denied`, "list.fake_thing.t fake_thing: did not start: terraform query failed before it"}
+	if !slices.Equal(got, want) {
+		t.Errorf("failed = %q", got)
+	}
+}
+
 func TestParseQueryStreamConfigError(t *testing.T) {
 	in := `{"diagnostic":{"severity":"error","summary":"Missing config block","address":"list.fake_zoned.z"},"type":"diagnostic"}`
 	_, fatal, err := ParseQueryStream([]byte(in), "root", noKeys, func(string) int { return 100 })
