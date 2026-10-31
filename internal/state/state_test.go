@@ -798,3 +798,14 @@ func TestExplain(t *testing.T) {
 		})
 	}
 }
+
+// TestMatchMissingRequiredKey: a required key the live object does not
+// have at all confirms nothing, like an empty one.
+func TestMatchMissingRequiredKey(t *testing.T) {
+	ix := NewIndex()
+	ix.Add([]Instance{{Type: "t", Address: "t.a", Identity: map[string]any{"name": "a", "project": "p"}}})
+	r := model.Resource{Type: "t", RequiredKeys: []string{"name", "project"}, Identity: map[string]any{"project": "p"}}
+	if m := ix.Match(r); m.Managed {
+		t.Errorf("matched without its name: %+v", m)
+	}
+}

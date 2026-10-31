@@ -864,6 +864,16 @@ func compare(r model.Resource, in *Instance) (ok, verified bool, why string, mis
 	for _, k := range primary {
 		isPrimary[k] = true
 	}
+	// A key the match must rest on that the object does not have at all
+	// confirms nothing either (no source leaves one out today: terraform
+	// gives every identity attribute, plugins must give every key).
+	if strict {
+		for _, k := range required {
+			if _, ok := r.Identity[k]; !ok {
+				return false, false, k + " is missing here, which nothing can confirm", nil
+			}
+		}
+	}
 	equal, primaryEqual, primaryEmpty, absent := 0, 0, 0, 0
 	for k, want := range r.Identity {
 		w, ok := model.Canonical(want)

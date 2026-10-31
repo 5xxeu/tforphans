@@ -49,6 +49,13 @@ func referenceCompare(r model.Resource, in Instance, required, primary []string)
 	if len(src) == 0 {
 		src, strict = in.Attributes, false
 	}
+	if strict {
+		for _, k := range required {
+			if _, ok := r.Identity[k]; !ok {
+				return false, false
+			}
+		}
+	}
 	unsure, equal := false, 0
 	primaryEqual, primaryLeft := 0, len(primary)
 	for k, v := range r.Identity {
