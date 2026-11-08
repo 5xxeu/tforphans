@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
@@ -399,10 +400,10 @@ func TestIntegrationProxmox(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "pve.tfstate")
 	write(t, statePath, string(st))
 
-	if code, _, stderr := runTool("-no-query", "-scan", "proxmox", "-state", statePath); code != exitError || !strings.Contains(stderr, "-allow-unpinned") {
+	if code, _, stderr := runToolRetry("-no-query", "-scan", "proxmox", "-state", statePath); code != exitError || !strings.Contains(stderr, "-allow-unpinned") {
 		t.Fatalf("scan without a pinned provider: exit %d\n%s", code, stderr)
 	}
-	code, stdout, stderr := runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned")
+	code, stdout, stderr := runToolRetry("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned")
 	if code != exitOrphans {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
@@ -449,7 +450,7 @@ func TestIntegrationProxmox(t *testing.T) {
 	if out.Summary.Live != 16 || out.Summary.Managed != 0 || out.Summary.Uncertain != 5 {
 		t.Errorf("summary %+v", out.Summary)
 	}
-	code, stdout, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict")
+	code, stdout, stderr = runToolRetry("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict")
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil || code != exitOrphans || out.Summary.Managed != 5 || out.Summary.Uncertain != 0 {
 		t.Errorf("with -proxmox-cluster-states: exit %d %+v %v\n%s", code, out.Summary, err, stderr)
 	}
@@ -467,7 +468,7 @@ func TestIntegrationProxmox(t *testing.T) {
 	}
 	write(t, filepath.Join(pinned, "versions.tf"), "terraform {\n  required_providers {\n    pve = { source = \"bpg/proxmox\" }\n  }\n}\n")
 	terraform(t, pinned, "init", "-no-color")
-	code, stdout, stderr = runTool("adopt", "-no-query", "-scan", "proxmox", "-state", statePath, pinned)
+	code, stdout, stderr = runToolRetry("adopt", "-no-query", "-scan", "proxmox", "-state", statePath, pinned)
 	if code != exitOK || !strings.Contains(stdout, "to = proxmox_virtual_environment_vm.forgotten\n  provider = pve\n  # found with the proxmox provider configured from the environment;\n") {
 		t.Errorf("adopt with a pinned root: exit %d\n%s\n%s", code, stdout, stderr)
 	}
@@ -476,7 +477,7 @@ func TestIntegrationProxmox(t *testing.T) {
 	mu.Lock()
 	fail["/api2/json/cluster/ha/groups/"] = "500 ha groups have been migrated to rules"
 	mu.Unlock()
-	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict", "-v")
+	code, _, stderr = runToolRetry("-no-query", "-scan", "proxmox", "-state", statePath, "-format", "json", "-allow-unpinned", "-proxmox-cluster-states", "-strict", "-v")
 	if code != exitOrphans || !strings.Contains(stderr, "coverage: complete") || !strings.Contains(stderr, "HA rules instead of HA groups") {
 		t.Errorf("PVE 9 HA groups: exit %d\n%s", code, stderr)
 	}
@@ -485,7 +486,7 @@ func TestIntegrationProxmox(t *testing.T) {
 	fail[""] = "401 invalid token value!"
 	requests = 0
 	mu.Unlock()
-	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-allow-unpinned")
+	code, _, stderr = runToolRetry("-no-query", "-scan", "proxmox", "-state", statePath, "-allow-unpinned")
 	mu.Lock()
 	n := requests
 	mu.Unlock()
@@ -501,7 +502,7 @@ func TestIntegrationProxmox(t *testing.T) {
 	fail[""] = "401 authentication failure"
 	requests = 0
 	mu.Unlock()
-	code, _, stderr = runTool("-no-query", "-scan", "proxmox", "-state", statePath, "-allow-unpinned")
+	code, _, stderr = runToolRetry("-no-query", "-scan", "proxmox", "-state", statePath, "-allow-unpinned")
 	mu.Lock()
 	n = requests
 	mu.Unlock()
@@ -610,6 +611,19 @@ func runTool(args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
+// runToolRetry is runTool for tests that download a provider: github.com
+// outages fail terraform init with "Failed to install provider", which says
+// nothing about the code under test, so only that failure is retried.
+func runToolRetry(args ...string) (int, string, string) {
+	for attempt := 1; ; attempt++ {
+		code, stdout, stderr := runTool(args...)
+		if attempt == 4 || !strings.Contains(stderr, "Failed to install provider") {
+			return code, stdout, stderr
+		}
+		time.Sleep(time.Duration(attempt) * 10 * time.Second)
+	}
+}
+
 // before116 reports a Terraform older than 1.16 on PATH.
 func before116(t *testing.T) bool {
 	t.Helper()
@@ -630,10 +644,18 @@ func before116(t *testing.T) bool {
 
 func terraform(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("terraform", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("terraform %v: %v\n%s", args, err, tail(string(out)))
+	// Only a failed provider download is retried, as in runToolRetry.
+	for attempt := 1; ; attempt++ {
+		cmd := exec.Command("terraform", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return
+		}
+		if attempt == 4 || !strings.Contains(string(out), "Failed to install provider") {
+			t.Fatalf("terraform %v: %v\n%s", args, err, tail(string(out)))
+		}
+		time.Sleep(time.Duration(attempt) * 10 * time.Second)
 	}
 }
 
