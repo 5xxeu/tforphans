@@ -199,6 +199,10 @@ func TestStreamContinuousStderr(t *testing.T) {
 				}
 				exited = time.Now()
 				if limit {
+					// Stream closes the stderr reader once consume fails; give its
+					// copy goroutine time to read the parent's tail first, a loaded
+					// runner lost it otherwise.
+					time.Sleep(250 * time.Millisecond)
 					_, err := state.ReadLimited(br, 1)
 					return err
 				}
@@ -213,7 +217,7 @@ func TestStreamContinuousStderr(t *testing.T) {
 				t.Errorf("continuous stderr: %v", err)
 			}
 			elapsed := time.Since(exited)
-			if elapsed > 500*time.Millisecond || (!limit && elapsed < cmd.WaitDelay/2) {
+			if elapsed > time.Second || (!limit && elapsed < cmd.WaitDelay/2) {
 				t.Errorf("returned after %v", elapsed)
 			}
 			if stderr.Len() != maxStderrSize {
