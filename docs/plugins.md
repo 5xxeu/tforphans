@@ -40,7 +40,9 @@ in case (`"type"` and `"Type"`): JSON readers disagree on which copy wins.
   name, path or query make the plugin fail. With `-baseline`, a finding of
   another target is never known, and findings of the old target that this run
   did not look at are not resolved (`target_changed`). `vault.sh` fills it
-  from `VAULT_ADDR`.
+  from `VAULT_ADDR`, and adds `_ns_<hex of the name>` for `VAULT_NAMESPACE`
+  (the vault CLI reads one namespace per run; the same policy name in two
+  namespaces of one server is two objects).
 - `unverified`: optional, `true` when state cannot confirm where the object
   lives (Vault state does not record the Vault address, so a policy `ci`
   in state of another Vault would match). Such objects match only as
@@ -68,6 +70,9 @@ no list queries; it needs at least one `-scan` or `-plugin`. [examples/plugins/v
 covers Vault auth methods, roles, secret engines and policies with the
 `vault` CLI and `jq`, and marks every object `unverified`: scan one Vault
 per run with its own states and `-plugin-cluster-states`.
+
+The plugin's stderr is passed on to yours as it comes, up to 4 MiB; the rest
+is dropped, with one line saying so.
 
 ## Junos
 

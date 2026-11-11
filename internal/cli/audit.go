@@ -407,7 +407,9 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 		default:
 			from, truncated := report.ScopesOfListings(previous.Summary.Listings)
 			if truncated {
-				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: the baseline holds more than %d scopes (or very long ones): only the first are expected", report.MaxExpected))
+				// A warning, not a note: scopes that are not expected cannot
+				// show that they went missing, so the run is not complete.
+				sum.Warnings = append(sum.Warnings, fmt.Sprintf("-expect-from-baseline: the baseline holds more than %d scopes (or very long ones): only the first are expected", report.MaxExpected))
 			}
 			if len(from) == 0 {
 				sum.Notes = append(sum.Notes, "-expect-from-baseline: no listing of the baseline checked a scope to the end, so nothing is expected (sources that do not say where they look have none)")
@@ -423,7 +425,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 			var dropped int
 			want, dropped = mergeScopes(want, from)
 			if dropped > 0 {
-				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: %d scopes of the baseline were left out (with -expect, more than %d scopes): they are not expected", dropped, report.MaxExpected))
+				sum.Warnings = append(sum.Warnings, fmt.Sprintf("-expect-from-baseline: %d scopes of the baseline were left out (with -expect, more than %d scopes): they are not expected", dropped, report.MaxExpected))
 			}
 		}
 	}
