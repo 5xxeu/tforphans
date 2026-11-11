@@ -559,3 +559,26 @@ func TestBaselineTarget(t *testing.T) {
 		t.Fatalf("bad target: exit %d\n%s", code, stderr)
 	}
 }
+
+// TestExpectFromBaseline: a scope the baseline checked to the end, which
+// this run does not, makes coverage incomplete.
+func TestExpectFromBaseline(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listings := []report.Listing{{Source: "list.aws", Address: "list.aws_instance.a", Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": "111"}}}
+	saveReportTest(t, "old.json", nil, report.Summary{Listings: listings})
+	base := []string{"-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", `printf '%s\n' '{"done":true}'`, "-baseline", "old.json", "-format", "json"}
+	code, out, stderr := runReportTest(t, append(base, "-expect-from-baseline", "-strict")...)
+	if code != exitError || !strings.Contains(out, `"expected_scope_missing"`) || !strings.Contains(out, `"account_id": "111"`) {
+		t.Fatalf("expected scope missing: exit %d\n%s\n%s", code, out, stderr)
+	}
+	// Without the flag the missing scope goes unnoticed, as before.
+	if code, out, stderr := runReportTest(t, append(base, "-strict")...); code != exitOK || strings.Contains(out, "expected_scope_missing") {
+		t.Fatalf("without the flag: exit %d\n%s\n%s", code, out, stderr)
+	}
+	if code, _, stderr := runReportTest(t, "-no-config", "-expect-from-baseline"); code != exitError || !strings.Contains(stderr, "-expect-from-baseline needs -baseline") {
+		t.Fatalf("without -baseline: exit %d\n%s", code, stderr)
+	}
+}

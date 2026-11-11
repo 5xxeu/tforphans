@@ -88,8 +88,18 @@ func (r Runner) ExecLimited(ctx context.Context, maxSize int64, args ...string) 
 	return out, stderr, err
 }
 
+// run is a command whose output is read whole, such as version or providers
+// schema: bounded by DefaultMaxQuerySize whatever -max-query-size says (a
+// schema is far larger than most queries), so that a terraform or provider
+// that never stops printing cannot fill the memory.
 func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error) {
-	return r.runLimited(ctx, 0, args...)
+	max := DefaultMaxQuerySize
+	out, stderr, err := r.runLimited(ctx, max, args...)
+	var tooLarge *state.TooLargeError
+	if errors.As(err, &tooLarge) {
+		return nil, stderr, &OutputTooLargeError{Command: args[0], Max: max}
+	}
+	return out, stderr, err
 }
 
 func (r Runner) stateSize() int64 {

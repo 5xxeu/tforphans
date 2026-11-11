@@ -399,7 +399,31 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	}
 	// An account or project left out of the configuration lists nothing
 	// and fails nothing: only an expectation shows it is missing.
-	expected, unknownKeys := report.CheckExpected(o.audit.expect, sum.Listings)
+	want := o.audit.expect
+	if o.audit.expectFromBaseline && previous != nil {
+		switch {
+		case previous.Summary.Environment != o.audit.environment:
+			sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: the baseline is from environment %q, this run is %q: its scopes are not expected", previous.Summary.Environment, o.audit.environment))
+		default:
+			from, truncated := report.ScopesOfListings(previous.Summary.Listings)
+			if truncated {
+				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: the baseline holds more than %d scopes (or very long ones): only the first are expected", report.MaxExpected))
+			}
+			if len(from) == 0 {
+				sum.Notes = append(sum.Notes, "-expect-from-baseline: no listing of the baseline checked a scope to the end, so nothing is expected (sources that do not say where they look have none)")
+			}
+			have, _ := report.ScopesOfListings(sum.Listings)
+			if added := report.NewScopes(have, from); len(added) > 0 && len(from) > 0 {
+				var text []string
+				for _, s := range firstNScopes(added, 5) {
+					text = append(text, report.ScopeText(s))
+				}
+				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: %d scopes checked now were not in the baseline (%s); write a new baseline to expect them", len(added), strings.Join(text, "; ")))
+			}
+			want = mergeScopes(want, from)
+		}
+	}
+	expected, unknownKeys := report.CheckExpected(want, sum.Listings)
 	sum.Expected = expected
 	if len(unknownKeys) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-expect: no listing of this run reports scope %s (a typo, or sources that do not say where they look: plugins, -scan blocks without a parent, user list blocks with references)", strings.Join(unknownKeys, ", ")))

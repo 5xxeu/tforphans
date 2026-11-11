@@ -174,6 +174,50 @@ func CheckExpected(want []map[string]string, listings []Listing) (out []Expected
 	return out, unknownKeys
 }
 
+// ScopesOfListings are the distinct scopes of the listings that ran to the
+// end, in the order first seen: what an earlier run is known to have
+// checked. A report may come with someone else's repository, so the count
+// and the size of the values are bounded; truncated tells that some were
+// left out.
+func ScopesOfListings(listings []Listing) (scopes []map[string]string, truncated bool) {
+	seen := map[string]bool{}
+	total := 0
+	for _, l := range listings {
+		if !l.Complete || len(l.Scope) == 0 || len(l.Scope) > maxExpectKeys {
+			continue
+		}
+		skip := false
+		for k, v := range l.Scope {
+			if !expectKey.MatchString(k) || v == "" || len(v) > maxExpectValue {
+				skip = true
+			}
+		}
+		text := ScopeText(l.Scope)
+		if skip || seen[text] {
+			continue
+		}
+		if len(scopes) == MaxExpected || total+len(text) > maxExpectBytes {
+			truncated = true
+			continue
+		}
+		seen[text] = true
+		total += len(text)
+		scopes = append(scopes, maps.Clone(l.Scope))
+	}
+	return scopes, truncated
+}
+
+// NewScopes are the scopes of current that no scope of old holds.
+func NewScopes(current, old []map[string]string) []map[string]string {
+	var out []map[string]string
+	for _, c := range current {
+		if !slices.ContainsFunc(old, func(o map[string]string) bool { return holds(c, o) || holds(o, c) }) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func holds(have, want map[string]string) bool {
 	for k, v := range want {
 		if have[k] != v {

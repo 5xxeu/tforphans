@@ -73,9 +73,14 @@ raise the limit, pass it on the command line or via `-config FILE`.
 are dropped from each object right away. `-max-query-size` (1 GiB by
 default, same rules for config files) bounds the output of one query, and
 one query may return at most 1,000,000 objects. `-timeout 30m` stops the
-whole run; `-source-timeout 10m` gives up on one root, `-scan` or plugin
-and goes on with the others (waiting for the turn to run `terraform init`,
-which runs one root at a time, does not count).
+whole run; `-source-timeout` (30 minutes by default, `0` for no limit) gives
+up on one root, `-scan` or plugin and goes on with the others (waiting for the
+turn to run `terraform init`, which runs one root at a time, does not count).
+A source that gives up is a failed source: coverage is incomplete and the exit
+status is `1`. A config file found on its own may shorten `source-timeout`
+but not lift it; that takes the command line or `-config`. A `-refresh` or
+`-scan` of a very large estate that needs longer raises it, and a CI job
+sets `-timeout` for the whole run as well.
 
 When one root, `-scan` or plugin fails as a whole (a query over the limit,
 a plugin that exits with an error or runs out of time), the run goes on with
@@ -202,6 +207,17 @@ output has an `Expected scopes` block before `Coverage`, the JSON report
 references report no scope and confirm nothing; a key that no listing of
 the run reports gets a note, since it is usually a typo. An automatic
 `.tforphans.yaml` may set `expect` (it only makes the check stricter).
+
+`-expect-from-baseline` (with `-baseline`) takes the scopes from the baseline
+instead of typing them: every scope (account, project, region, zone) that a
+listing of the baseline checked to the end is expected, together with any
+`-expect`. A project, region or alias that disappeared from the configuration
+then makes coverage incomplete (`expected_scope_missing`) instead of passing
+unnoticed; `-strict` fails. Scopes that are new are only named in a note.
+To accept a change of scopes, write a new baseline. A baseline of another
+`-environment` expects nothing (a note says so), and sources without scopes
+add none. The flag only makes a run stricter, so an automatic `.tforphans.yaml`
+may set it.
 
 Before the slow part,
 a `plan:` line says what the run checks: which roots are queried, how many

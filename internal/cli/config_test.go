@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/state"
 )
@@ -323,5 +324,36 @@ func TestConfigArgCombinations(t *testing.T) {
 	}
 	if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "combinations") {
 		t.Fatalf("error %v", err)
+	}
+}
+
+// TestSourceTimeoutDefault: one source is bounded by default, and a config
+// file found on its own cannot lift the bound (it may come with someone
+// else's repository), but may shorten it.
+func TestSourceTimeoutDefault(t *testing.T) {
+	t.Chdir(t.TempDir())
+	o, err := parseFlags(nil, io.Discard)
+	if err != nil || o.src.sourceTimeout != defaultSourceTimeout {
+		t.Fatalf("default: %v, %v", o.src.sourceTimeout, err)
+	}
+	if o, err = parseFlags([]string{"-source-timeout", "0"}, io.Discard); err != nil || o.src.sourceTimeout != 0 {
+		t.Fatalf("-source-timeout 0: %v, %v", o.src.sourceTimeout, err)
+	}
+	for _, v := range []string{"0", "2h"} {
+		if err := os.WriteFile(defaultConfigFile, []byte("source-timeout: "+v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parseFlags(nil, io.Discard); err == nil || !strings.Contains(err.Error(), "source-timeout") || !strings.Contains(err.Error(), "command line or via -config") {
+			t.Errorf("%s from an automatic config: %v", v, err)
+		}
+		if o, err := parseFlags([]string{"-config", defaultConfigFile}, io.Discard); err != nil || o.src.sourceTimeout == defaultSourceTimeout {
+			t.Errorf("%s via -config: %v, %v", v, o, err)
+		}
+	}
+	if err := os.WriteFile(defaultConfigFile, []byte("source-timeout: 5m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if o, err := parseFlags(nil, io.Discard); err != nil || o.src.sourceTimeout != 5*time.Minute {
+		t.Errorf("shorter: %v, %v", o, err)
 	}
 }
