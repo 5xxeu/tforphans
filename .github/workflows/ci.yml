@@ -102,9 +102,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1.14 is not here: its init ignores dev_overrides for providers that
-        # only child modules declare, which the tests' fake provider needs.
-        terraform: ["1.15.9", "1.16.5"]
+        terraform: ["1.14.9", "1.15.9", "1.16.5"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

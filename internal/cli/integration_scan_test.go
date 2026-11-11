@@ -3,15 +3,18 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/5xxeu/tforphans/internal/dsource"
+	"github.com/5xxeu/tforphans/internal/tf"
 )
 
 // fakeAdapter scans the fake provider's data sources the way Cloudflare is
@@ -42,7 +45,40 @@ func scanSetup(t *testing.T) (root string) {
 	}
 	sources["fake"] = fakeAdapter
 	t.Cleanup(func() { delete(sources, "fake") })
+	pinFake(t, root)
 	return root
+}
+
+// pinFake installs the fake provider into the root's .terraform/providers
+// and pins it in the lock file, as init does for a real root. -scan reads
+// the provider from there: Terraform 1.14 ignores dev_overrides in the
+// temporary root's init.
+func pinFake(t *testing.T, root string) {
+	t.Helper()
+	plugins := filepath.Join(root, ".terraform", "providers")
+	installed := filepath.Join(plugins, fakeAdapter.Provider, "1.0.0", runtime.GOOS+"_"+runtime.GOARCH)
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(filepath.Join(filepath.Dir(root), "bin", "terraform-provider-fake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "terraform-provider-fake_v1.0.0"), binary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "zz_pin.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\", version = \"1.0.0\" }\n  }\n}\n")
+	// Like a real root: the provider comes from .terraform, not dev_overrides,
+	// which Terraform 1.15 rejects with -lockfile=readonly.
+	write(t, os.Getenv("TF_CLI_CONFIG_FILE"), "")
+	r := tf.Runner{Bin: "terraform", Dir: root}
+	if _, _, err := r.Exec(context.Background(), "providers", "lock", "-fs-mirror="+plugins); err != nil {
+		t.Fatalf("lock the fake provider: %v", err)
+	}
+	// The root itself must not declare the provider: some tests check that.
+	if err := os.Remove(filepath.Join(root, "zz_pin.tf")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type scanOutput struct {
@@ -72,7 +108,7 @@ type scanOutput struct {
 
 func scanJSON(t *testing.T, args ...string) (int, scanOutput, string) {
 	t.Helper()
-	code, stdout, stderr := runTool(append([]string{"-no-query", "-scan", "fake", "-allow-unpinned", "-format", "json"}, args...)...)
+	code, stdout, stderr := runTool(append(append([]string{"-no-query", "-scan", "fake", "-format", "json"}, args...), ".")...)
 	var out scanOutput
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		t.Fatalf("exit %d, %v\n%s\n%s", code, err, stdout, stderr)
@@ -119,7 +155,7 @@ func TestIntegrationScanCrash(t *testing.T) {
 	if want := []string{"zone z1.name complete [] 2", "zone z2.name complete [] 1", "zone z3.name incomplete [crashed] 0", "zone z4.name complete [] 1"}; out.Summary.Complete || !slices.Equal(cov, want) {
 		t.Errorf("coverage %q, want %q", cov, want)
 	}
-	if code, _, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-strict"); code != exitError {
+	if code, _, _ := runTool("-no-query", "-scan", "fake", "-strict", "."); code != exitError {
 		t.Errorf("-strict with a crashed zone: exit %d", code)
 	}
 }
@@ -211,13 +247,13 @@ func TestIntegrationScanProbe(t *testing.T) {
 	sources["fake"] = a
 
 	t.Setenv("FAKE_FAIL", "zone:HTTP 401 authentication failure")
-	code, _, stderr := runTool("-no-query", "-scan", "fake", "-allow-unpinned")
+	code, _, stderr := runTool("-no-query", "-scan", "fake", ".")
 	if code != exitError || !strings.Contains(stderr, "authentication failed") || strings.Contains(stderr, "not fully listed") {
 		t.Errorf("401: exit %d\n%s", code, stderr)
 	}
 	// The mark past the length messages are cut to for reports.
 	t.Setenv("FAKE_FAIL", "zone:"+strings.Repeat("x", 300)+" HTTP 401")
-	if code, _, stderr := runTool("-no-query", "-scan", "fake", "-allow-unpinned"); code != exitError || !strings.Contains(stderr, "authentication failed") {
+	if code, _, stderr := runTool("-no-query", "-scan", "fake", "."); code != exitError || !strings.Contains(stderr, "authentication failed") {
 		t.Errorf("401 after a long message: exit %d\n%s", code, stderr)
 	}
 	t.Setenv("FAKE_FAIL", "zone:HTTP 403 forbidden")
@@ -260,13 +296,13 @@ func TestIntegrationScanScope(t *testing.T) {
 			ByScope map[string]struct{ Live, Managed int } `json:"by_scope"`
 		} `json:"summary"`
 	}
-	_, stdout, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-format", "json", "-scan-scope", "state", "-state", statePath)
+	_, stdout, _ := runTool("-no-query", "-scan", "fake", "-format", "json", "-scan-scope", "state", "-state", statePath, ".")
 	if err := json.Unmarshal([]byte(stdout), &raw); err != nil || len(raw.Orphans) != 1 || raw.Orphans[0].Scope != "zone z4.name" || raw.Summary.ByScope["zone z4.name"].Managed != 1 {
 		t.Errorf("scope names: %v\n%s", err, stdout)
 	}
 	// Without a limit and without -state-roots the scan says it covers the
 	// whole account.
-	if _, _, stderr := runTool("-no-query", "-scan", "fake", "-allow-unpinned"); !strings.Contains(stderr, "-scan lists whole accounts") {
+	if _, _, stderr := runTool("-no-query", "-scan", "fake", "."); !strings.Contains(stderr, "-scan lists whole accounts") {
 		t.Errorf("no hint:\n%s", stderr)
 	}
 	// A zone that does not exist is a gap, not an empty zone.
@@ -274,7 +310,7 @@ func TestIntegrationScanScope(t *testing.T) {
 	if code != exitOK || len(out.Summary.Failed) != 1 || out.Summary.Failed[0].Category != "not found" || !strings.Contains(out.Summary.Failed[0].Address, "typo.example") {
 		t.Errorf("unknown zone: exit %d %+v\n%s", code, out.Summary.Failed, stderr)
 	}
-	if code, _, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-scan-scope", "zone_id=typo.example", "-strict"); code != exitError {
+	if code, _, _ := runTool("-no-query", "-scan", "fake", "-scan-scope", "zone_id=typo.example", "-strict", "."); code != exitError {
 		t.Errorf("unknown zone with -strict: exit %d", code)
 	}
 	// No value: that scope is not read (its types are skipped), and no
@@ -283,7 +319,7 @@ func TestIntegrationScanScope(t *testing.T) {
 	if got := importIDs(out); code != exitOK || len(got) != 0 || !strings.Contains(stderr, "skipped fake_record: -scan-scope names no zone_id") {
 		t.Errorf("zone_id=: exit %d, orphans %v\n%s", code, got, stderr)
 	}
-	if code, _, _ := runTool("-no-query", "-scan", "fake", "-allow-unpinned", "-scan-scope", "region=x"); code != exitError {
+	if code, _, _ := runTool("-no-query", "-scan", "fake", "-scan-scope", "region=x", "."); code != exitError {
 		t.Errorf("unknown scope argument: exit %d", code)
 	}
 }

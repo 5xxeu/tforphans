@@ -405,16 +405,21 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 		case previous.Summary.Environment != o.audit.environment:
 			sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: the baseline is from environment %q, this run is %q: its scopes are not expected", previous.Summary.Environment, o.audit.environment))
 		default:
-			from, truncated := report.ScopesOfListings(previous.Summary.Listings)
+			from, truncated, invalid := report.ScopesOfListings(previous.Summary.Listings)
 			if truncated {
 				// A warning, not a note: scopes that are not expected cannot
 				// show that they went missing, so the run is not complete.
 				sum.Warnings = append(sum.Warnings, fmt.Sprintf("-expect-from-baseline: the baseline holds more than %d scopes (or very long ones): only the first are expected", report.MaxExpected))
 			}
+			if invalid > 0 {
+				// Same reasoning: a scope that cannot be written as an
+				// expectation cannot be shown missing either.
+				sum.Warnings = append(sum.Warnings, fmt.Sprintf("-expect-from-baseline: %d listings of the baseline have a scope that cannot be expected (an empty or over-long value, a malformed key, or too many keys): they are not expected", invalid))
+			}
 			if len(from) == 0 {
 				sum.Notes = append(sum.Notes, "-expect-from-baseline: no listing of the baseline checked a scope to the end, so nothing is expected (sources that do not say where they look have none)")
 			}
-			have, _ := report.ScopesOfListings(sum.Listings)
+			have, _, _ := report.ScopesOfListings(sum.Listings)
 			if added := report.NewScopes(have, from); len(added) > 0 && len(from) > 0 {
 				var text []string
 				for _, s := range firstNScopes(added, 5) {

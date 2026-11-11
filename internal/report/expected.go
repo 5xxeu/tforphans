@@ -179,21 +179,28 @@ func CheckExpected(want []map[string]string, listings []Listing) (out []Expected
 // checked. A report may come with someone else's repository, so the count
 // and the size of the values are bounded; truncated tells that some were
 // left out.
-func ScopesOfListings(listings []Listing) (scopes []map[string]string, truncated bool) {
+func ScopesOfListings(listings []Listing) (scopes []map[string]string, truncated bool, invalid int) {
 	seen := map[string]bool{}
 	total := 0
 	for _, l := range listings {
-		if !l.Complete || len(l.Scope) == 0 || len(l.Scope) > maxExpectKeys {
+		if !l.Complete || len(l.Scope) == 0 {
 			continue
 		}
-		skip := false
+		skip := len(l.Scope) > maxExpectKeys
 		for k, v := range l.Scope {
+			if skip {
+				break // too many keys: do not walk them all
+			}
 			if !expectKey.MatchString(k) || v == "" || len(v) > maxExpectValue {
 				skip = true
 			}
 		}
+		if skip {
+			invalid++
+			continue
+		}
 		text := ScopeText(l.Scope)
-		if skip || seen[text] {
+		if seen[text] {
 			continue
 		}
 		if len(scopes) == MaxExpected || total+len(text) > maxExpectBytes {
@@ -204,7 +211,7 @@ func ScopesOfListings(listings []Listing) (scopes []map[string]string, truncated
 		total += len(text)
 		scopes = append(scopes, maps.Clone(l.Scope))
 	}
-	return scopes, truncated
+	return scopes, truncated, invalid
 }
 
 // NewScopes are the scopes of current that no scope of old holds.

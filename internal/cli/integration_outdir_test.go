@@ -64,7 +64,7 @@ func TestIntegrationAdoptOutDirScan(t *testing.T) {
 	write(t, filepath.Join(parent, "named", "main.tf"), "terraform {\n  required_providers {\n    fk = { source = \"example.com/fake/fake\" }\n  }\n}\n")
 	t.Chdir(parent)
 
-	if code, stdout, stderr := runTool("adopt", "-no-config", "-no-query", "-scan", "fake", "-allow-unpinned", "-out-dir", "out", "-adopt-root", "fake=named"); code != exitOK || stdout != "" {
+	if code, stdout, stderr := runTool("adopt", "-no-config", "-no-query", "-scan", "fake", "-out-dir", "out", "-adopt-root", "fake=named", "root"); code != exitOK || stdout != "" {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	got, err := os.ReadFile(filepath.Join("out", "named", "imports.tf"))
@@ -75,7 +75,7 @@ func TestIntegrationAdoptOutDirScan(t *testing.T) {
 		t.Errorf("named/imports.tf:\n%s", got)
 	}
 
-	if code, stdout, stderr := runTool("adopt", "-no-config", "-no-query", "-scan", "fake", "-allow-unpinned", "-out-dir", "out2", "-adopt-root", "fake=root"); code != exitOK || stdout != "" {
+	if code, stdout, stderr := runTool("adopt", "-no-config", "-no-query", "-scan", "fake", "-out-dir", "out2", "-adopt-root", "fake=root", "root"); code != exitOK || stdout != "" {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	got, err = os.ReadFile(filepath.Join("out2", "root", "imports.tf"))

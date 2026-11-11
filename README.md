@@ -192,9 +192,9 @@ Terraform in `PATH` (or `-terraform /path/to/bin`):
 | Listing with `terraform query` (the default) | 1.14 or newer; tforphans checks and says so |
 | Matching by resource identity | state written by 1.12 or newer with a provider that records identities; older state is matched by attributes (less certain, see [`-refresh`](docs/how-it-works.md)) |
 | `adopt` import blocks with `identity` | 1.12; with `id` 1.5 |
-| `-no-query` with `-state`, `-state-roots`, `-scan`, `-plugin` | no query needed; tested only with 1.15 and 1.16 so far |
+| `-no-query` with `-state`, `-state-roots`, `-scan`, `-plugin` | no query needed; tested with 1.14, 1.15 and 1.16 |
 
-The tests run against 1.15 and 1.16. Roots that are queried must allow 1.14
+The tests run against 1.14, 1.15 and 1.16. Roots that are queried must allow 1.14
 in their `required_version` (`-ignore-required-version` overrides it for
 the run); roots whose state is only read need not.
 
@@ -229,7 +229,7 @@ it, so `go install github.com/5xxeu/tforphans@latest` keeps working); the
 
 CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, the unit tests with
 the race detector, golangci-lint, govulncheck and the integration tests
-against Terraform 1.15 and 1.16. The integration tests use a fake provider
+against Terraform 1.14, 1.15 and 1.16. The integration tests use a fake provider
 (things are files in a temporary directory) that implements list resources
 and resource identity, and run the whole flow including the import round
 trip; the Proxmox test runs the real `bpg/proxmox` against a fake Proxmox VE
