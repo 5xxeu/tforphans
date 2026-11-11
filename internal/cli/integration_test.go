@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -200,6 +201,23 @@ resource "fake_thing" "x" {
   name     = "inner-${var.idx}-${each.key}"
 }
 `)
+	// Terraform 1.14 ignores dev_overrides in init for a provider only a
+	// child module declares: install it from a mirror, as for a real root.
+	mirror := filepath.Join(filepath.Dir(root), "mirror")
+	dir := filepath.Join(mirror, "example.com", "fake", "fake", "1.0.0", runtime.GOOS+"_"+runtime.GOARCH)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(filepath.Join(filepath.Dir(root), "bin", "terraform-provider-fake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "terraform-provider-fake_v1.0.0"), binary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(filepath.Dir(root), "mirror.rc")
+	write(t, rc, fmt.Sprintf("provider_installation {\n  filesystem_mirror {\n    path    = %q\n    include = [\"example.com/*/*\"]\n  }\n  direct {\n    exclude = [\"example.com/*/*\"]\n  }\n}\n", mirror))
+	t.Setenv("TF_CLI_CONFIG_FILE", rc)
 	terraform(t, root, "init", "-no-color")
 	terraform(t, root, "apply", "-auto-approve", "-no-color")
 	write(t, filepath.Join(data, "thing", "hand-made"), "")

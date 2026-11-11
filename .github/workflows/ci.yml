@@ -102,9 +102,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1.14 runs without the tests that need dev_overrides for a provider
-        # only child modules or -scan declare: its init ignores them (a
-        # limit of the test harness, not of tforphans; checked by hand).
         terraform: ["1.14.9", "1.15.9", "1.16.5"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,7 +123,6 @@ jobs:
           echo "$TG_SHA256  $RUNNER_TEMP/terragrunt" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/terragrunt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - run: go test -tags integration -count=1 $RACE $SKIP ./internal/cli/
+      - run: go test -tags integration -count=1 $RACE ./internal/cli/
         env:
           RACE: ${{ github.event_name == 'schedule' && '-race' || '' }}
-          SKIP: ${{ startsWith(matrix.terraform, '1.14.') && '-skip ^(TestIntegrationAdoptOutDirScan|TestIntegrationScanCrash|TestIntegrationScanSplit|TestIntegrationScanProbe|TestIntegrationScanScope|TestIntegrationScanNoZones|TestIntegrationScanCrashOnce|TestIntegrationModuleOnlyProvider)$' || '' }}

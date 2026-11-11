@@ -194,9 +194,7 @@ Terraform in `PATH` (or `-terraform /path/to/bin`):
 | `adopt` import blocks with `identity` | 1.12; with `id` 1.5 |
 | `-no-query` with `-state`, `-state-roots`, `-scan`, `-plugin` | no query needed; tested with 1.14, 1.15 and 1.16 |
 
-The tests run against 1.14, 1.15 and 1.16 (on 1.14 without the few that need
-`dev_overrides` for a provider declared only by child modules or `-scan`: that
-version's `init` ignores them). Roots that are queried must allow 1.14
+The tests run against 1.14, 1.15 and 1.16. Roots that are queried must allow 1.14
 in their `required_version` (`-ignore-required-version` overrides it for
 the run); roots whose state is only read need not.
 
