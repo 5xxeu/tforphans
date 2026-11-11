@@ -68,6 +68,9 @@ func pinFake(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(root, "zz_pin.tf"), "terraform {\n  required_providers {\n    fake = { source = \"example.com/fake/fake\", version = \"1.0.0\" }\n  }\n}\n")
+	// Like a real root: the provider comes from .terraform, not dev_overrides,
+	// which Terraform 1.15 rejects with -lockfile=readonly.
+	write(t, os.Getenv("TF_CLI_CONFIG_FILE"), "")
 	r := tf.Runner{Bin: "terraform", Dir: root}
 	if _, _, err := r.Exec(context.Background(), "providers", "lock", "-fs-mirror="+plugins); err != nil {
 		t.Fatalf("lock the fake provider: %v", err)
