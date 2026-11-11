@@ -72,7 +72,7 @@ var flagGroups = []cliflag.Group{
 	{Title: "States that count as managed", Names: []string{"state-roots", "state", "current-workspace", "refresh", "init", "terragrunt", "terragrunt-unit", "terragrunt-parent", "allow-http", "max-roots", "state-parallelism", "max-state-size"}},
 	{Title: "What to list", Names: []string{"types", "exclude-types", "arg", "no-aliases", "scan", "scan-scope", "allow-unpinned", "plugin", "no-query", "include-attrs", "limit", "max-query-size", "ignore-required-version", "terraform"}},
 	{Title: "Ignoring and comparing", Names: []string{"ignore", "ignore-preset", "no-default-presets", "baseline", "environment"}},
-	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "fail-unverified", "strict-unlisted", "expect", "proxmox-cluster-states", "plugin-cluster-states"}},
+	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "fail-unverified", "strict-unlisted", "expect", "expect-from-baseline", "proxmox-cluster-states", "plugin-cluster-states"}},
 	{Title: "Import blocks", Names: []string{"o", "out-dir", "adopt-root", "allow-incomplete", "names-from-tags"}},
 	{Title: "Checks", Names: []string{"offline", "check-auth"}},
 	{Title: "Output", Names: []string{"format", "explain", "v", "quiet", "print-query"}},
@@ -209,9 +209,11 @@ type auditOptions struct {
 	explain         bool
 	strictOwnership bool
 	failUnverified  bool
-	strictUnlisted  bool
-	strictAPI       bool
-	strictIgnore    glob.List // -strict-ignore
+	// expectFromBaseline expects every scope the baseline checked to the end.
+	expectFromBaseline bool
+	strictUnlisted     bool
+	strictAPI          bool
+	strictIgnore       glob.List // -strict-ignore
 	// expect are the scopes some listing has to confirm (-expect).
 	expect []map[string]string
 }
@@ -337,6 +339,11 @@ func editDistance(a, b string) int {
 
 // parseFlags parses the command line of the audit, adopt or doctor. -h and
 // -version print to out.
+// defaultSourceTimeout bounds one root, -scan or plugin unless -source-timeout
+// says otherwise: a CI job should end, not hang on a stuck API or plugin. A
+// large -refresh or -scan that needs longer raises it.
+const defaultSourceTimeout = 30 * time.Minute
+
 func parseFlags(argv []string, out io.Writer) (*options, error) {
 	o := &options{src: sourceOptions{maxStateSize: state.DefaultMaxSize, maxQuerySize: tf.DefaultMaxQuerySize}}
 	name, help := "tforphans", usage
@@ -353,7 +360,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.Var(&o.src.states, "state", "extra state that manages resources in the same accounts: file, http(s) URL (uses TF_HTTP_USERNAME/TF_HTTP_PASSWORD), s3://BUCKET/KEY, s3://BUCKET/PREFIX/ for every .tfstate under it (AWS default credentials) or - for stdin; repeatable")
 	fs.IntVar(&o.src.stateParallelism, "state-parallelism", 8, "how many -state-roots states are read at the same time (1 to 64)")
 	fs.DurationVar(&o.timeout, "timeout", 0, "stop the whole run after this long, e.g. 30m (0: no limit)")
-	fs.DurationVar(&o.src.sourceTimeout, "source-timeout", 0, "give up on one root, -scan or plugin after this long and go on with the others, e.g. 10m (0: no limit)")
+	fs.DurationVar(&o.src.sourceTimeout, "source-timeout", defaultSourceTimeout, "give up on one root, -scan or plugin after this long (it counts as a failed source) and go on with the others, e.g. 10m (0: no limit)")
 	fs.Var((*sizeFlag)(&o.src.maxQuerySize), "max-query-size", "maximum bytes of one terraform query's output, read as it comes; accepts K, M or G suffixes")
 	fs.Var((*sizeFlag)(&o.src.maxStateSize), "max-state-size", "maximum bytes per state, including state pull and refresh output; accepts K, M or G suffixes (powers of 1024)")
 	fs.Var(&o.src.stateRoots, "state-roots", "directory tree whose root modules' states (all workspaces) count as managed, read with terraform state pull; repeatable")
@@ -394,6 +401,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
 	fs.BoolVar(&o.ignore.noDefaults, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
+	fs.BoolVar(&o.audit.expectFromBaseline, "expect-from-baseline", false, "with -baseline, expect every scope (account, project, region, zone) that a listing of the baseline checked to the end, as with -expect; one that this run does not confirm makes coverage incomplete. To accept a change of scopes, write a new baseline")
 	fs.BoolVar(&o.audit.strictUnlisted, "strict-unlisted", false, "exit 1 when the states hold resource types that were not checked: their provider cannot list them, or this run did not ask it (summary.unlisted_types, summary.unqueried_types)")
 	fs.BoolVar(&o.audit.failUnverified, "fail-unverified", false, "with -baseline, exit 1 when a finding of the baseline can be neither confirmed resolved nor still present (not verified)")
 	fs.BoolVar(&o.audit.strictOwnership, "strict-ownership", false, "exit 1 for confirmed duplicate state ownership or duplicate addresses within a state; possible ownership does not fail")
@@ -501,6 +509,9 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 		if n.neg {
 			return nil, fmt.Errorf("-%s must not be negative (0: no limit)", n.name)
 		}
+	}
+	if o.audit.expectFromBaseline && o.audit.baseline == "" {
+		return nil, errors.New("-expect-from-baseline needs -baseline")
 	}
 	if o.adopt != nil && o.audit.baseline != "" {
 		return nil, errors.New("-baseline is not supported with adopt")

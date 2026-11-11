@@ -500,3 +500,85 @@ func TestFailUnverified(t *testing.T) {
 		t.Fatalf("with the flag: exit %d\n%s", code, stderr)
 	}
 }
+
+// TestBaselineTarget: the same ID on another server is not known, and the
+// finding of the old server is not resolved; a baseline without targets
+// keeps working as before.
+func TestBaselineTarget(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := func(target string) string {
+		extra := ""
+		if target != "" {
+			extra = `,"target":"` + target + `"`
+		}
+		return `printf '%s\n' '{"type":"vault_policy","identity":{"id":"ci"}` + extra + `}' '{"done":true}'`
+	}
+	run := func(target string, extra ...string) (int, string, string) {
+		args := append([]string{"-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", plugin(target), "-format", "json"}, extra...)
+		return runReportTest(t, args...)
+	}
+	_, a, _ := run("vault-a.example:8200")
+	if err := os.WriteFile("a.json", []byte(a), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, none, _ := run("")
+	if err := os.WriteFile("none.json", []byte(none), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	decode := func(stdout string) (b report.Baseline, orphans int) {
+		var doc struct {
+			Orphans  []json.RawMessage `json:"orphans"`
+			Baseline report.Baseline   `json:"baseline"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+			t.Fatalf("%v\n%s", err, stdout)
+		}
+		return doc.Baseline, len(doc.Orphans)
+	}
+	// Same server: known.
+	code, out, stderr := run("vault-a.example:8200", "-baseline", "a.json")
+	if b, _ := decode(out); code != exitOK || b.Known != 1 || b.New != 0 {
+		t.Fatalf("same target: exit %d, %+v\n%s", code, b, stderr)
+	}
+	// Another server, same ID: new, and the old finding is not resolved.
+	code, out, stderr = run("vault-b.example:8200", "-baseline", "a.json")
+	b, shown := decode(out)
+	if code != exitOrphans || b.Known != 0 || b.New != 1 || shown != 1 || b.Resolved != 0 || b.Unverified != 1 || b.UnverifiedFindings[0].ReasonCode != "target_changed" {
+		t.Fatalf("other target: exit %d, %+v\n%s", code, b, stderr)
+	}
+	// A baseline from before targets cannot tell: as before.
+	code, out, stderr = run("vault-b.example:8200", "-baseline", "none.json")
+	if b, _ := decode(out); code != exitOK || b.Known != 1 {
+		t.Fatalf("baseline without target: exit %d, %+v\n%s", code, b, stderr)
+	}
+	// A plugin target that carries more than a host fails the plugin.
+	if code, _, stderr := run("https://user:pw@vault.example"); code == exitOK || !strings.Contains(stderr, `"target" must be`) {
+		t.Fatalf("bad target: exit %d\n%s", code, stderr)
+	}
+}
+
+// TestExpectFromBaseline: a scope the baseline checked to the end, which
+// this run does not, makes coverage incomplete.
+func TestExpectFromBaseline(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listings := []report.Listing{{Source: "list.aws", Address: "list.aws_instance.a", Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": "111"}}}
+	saveReportTest(t, "old.json", nil, report.Summary{Listings: listings})
+	base := []string{"-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", `printf '%s\n' '{"done":true}'`, "-baseline", "old.json", "-format", "json"}
+	code, out, stderr := runReportTest(t, append(base, "-expect-from-baseline", "-strict")...)
+	if code != exitError || !strings.Contains(out, `"expected_scope_missing"`) || !strings.Contains(out, `"account_id": "111"`) {
+		t.Fatalf("expected scope missing: exit %d\n%s\n%s", code, out, stderr)
+	}
+	// Without the flag the missing scope goes unnoticed, as before.
+	if code, out, stderr := runReportTest(t, append(base, "-strict")...); code != exitOK || strings.Contains(out, "expected_scope_missing") {
+		t.Fatalf("without the flag: exit %d\n%s\n%s", code, out, stderr)
+	}
+	if code, _, stderr := runReportTest(t, "-no-config", "-expect-from-baseline"); code != exitError || !strings.Contains(stderr, "-expect-from-baseline needs -baseline") {
+		t.Fatalf("without -baseline: exit %d\n%s", code, stderr)
+	}
+}

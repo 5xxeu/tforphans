@@ -49,6 +49,11 @@ type Adapter struct {
 	Name     string // -scan name and report source
 	Provider string // provider address
 	Target   string // what credentials point to, "account" or "cluster"
+	// Endpoint returns the address of the server the provider is
+	// configured for from the environment (getenv reads it), "" when the
+	// scope of the objects already says it. Only its host and port are
+	// kept (model.TargetOf).
+	Endpoint func(getenv func(string) string) string
 	Scopes   []Scope
 	// Skip maps resource types that are never reported to the reason.
 	Skip map[string]string

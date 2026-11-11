@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,7 @@ func TestVaultPlugin(t *testing.T) {
 		{"denied", []string{"approle", "auth/approle/role/ci", "gh", "ops"}, "read sys/mounts: Code: 403"},
 	} {
 		t.Setenv("VAULT_MODE", tc.mode)
+		t.Setenv("VAULT_ADDR", "https://tok:secret@Vault.Example.com:8200/v1?x=1")
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"-no-query", "-state", state, "-plugin", "sh ../../examples/plugins/vault.sh", "-format", "json", "-strict"}, &out, &errb)
 		var rep struct {
@@ -73,6 +75,7 @@ func TestVaultPlugin(t *testing.T) {
 			} `json:"summary"`
 			Orphans []struct {
 				Identity map[string]any `json:"identity"`
+				Target   string         `json:"target"`
 			} `json:"orphans"`
 		}
 		if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
@@ -81,6 +84,10 @@ func TestVaultPlugin(t *testing.T) {
 		var ids []string
 		for _, o := range rep.Orphans {
 			ids = append(ids, o.Identity["id"].(string))
+			// Host and port only: no scheme, user or path of VAULT_ADDR.
+			if o.Target != "vault.example.com:8200" {
+				t.Errorf("%q: target %q", tc.mode, o.Target)
+			}
 		}
 		slices.Sort(ids)
 		if !slices.Equal(ids, tc.ids) {
@@ -162,5 +169,27 @@ func TestVaultPluginDependencies(t *testing.T) {
 				t.Errorf("stdout: %s\nstderr: %s", &out, &errb)
 			}
 		})
+	}
+}
+
+// TestVaultPluginTargetIPv6: a bracketed IPv6 address keeps its host and
+// port as the target.
+func TestVaultPluginTargetIPv6(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not in PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vault"), []byte(fakeVault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAULT_ADDR", "https://[FD00::1]:8200/")
+	cmd := exec.Command("sh", "../../examples/plugins/vault.sh")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"target":"[fd00::1]:8200"`) {
+		t.Errorf("no IPv6 target in:\n%s", out)
 	}
 }

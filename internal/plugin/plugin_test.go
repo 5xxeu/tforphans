@@ -345,3 +345,11 @@ func TestParseDone(t *testing.T) {
 		})
 	}
 }
+
+// A host name differing only in case is the same server.
+func TestParseTargetLowercase(t *testing.T) {
+	res, _, _, err := Parse([]byte(`{"type":"vault_policy","identity":{"id":"ci"},"target":"Vault.Example:8200"}`), "plugin1")
+	if err != nil || len(res) != 1 || res[0].Target != "vault.example:8200" {
+		t.Errorf("%+v %v", res, err)
+	}
+}

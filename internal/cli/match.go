@@ -41,10 +41,7 @@ func dedupeMembers(rs []model.Resource) ([]model.Resource, map[string][]model.Re
 	slots := map[string]map[string]*slot{}
 	var keys []string
 	for i, r := range rs {
-		k := r.Key()
-		if state.UnknownLocation(r.Identity) {
-			k += "\x00" + r.Source + "\x00" + r.ListAddress
-		}
+		k := originKey(r)
 		family := ""
 		if r.ProviderSource != "" {
 			family = model.ProviderFamily(r.ProviderSource)
@@ -98,10 +95,15 @@ func memberKey(r model.Resource) string {
 // originKey keys the listings of an object as dedupe's slots: with an
 // unknown location, only the same listing is the same object.
 func originKey(r model.Resource) string {
-	if state.UnknownLocation(r.Identity) {
-		return r.Key() + "\x00" + r.Source + "\x00" + r.ListAddress
+	k := r.Key()
+	// The same ID on two servers (Target) is two objects.
+	if r.Target != "" {
+		k += "\x00target=" + r.Target
 	}
-	return r.Key()
+	if state.UnknownLocation(r.Identity) {
+		k += "\x00" + r.Source + "\x00" + r.ListAddress
+	}
+	return k
 }
 
 // classified is what classify sorts the live objects into.

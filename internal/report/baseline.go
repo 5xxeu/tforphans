@@ -66,6 +66,7 @@ type Finding struct {
 	Type           string         `json:"type"`
 	Identity       map[string]any `json:"identity"`
 	Scope          string         `json:"scope,omitempty"`
+	Target         string         `json:"target,omitempty"`
 	ProviderSource string         `json:"provider_source"`
 	DisplayName    string         `json:"display_name"`
 	ImportID       string         `json:"import_id"`
@@ -81,7 +82,7 @@ type Finding struct {
 }
 
 func finding(r model.Resource, reason string) Finding {
-	return Finding{Type: r.Type, Identity: r.Identity, Scope: r.ScopeName, ProviderSource: r.ProviderSource, DisplayName: r.DisplayName,
+	return Finding{Type: r.Type, Identity: r.Identity, Scope: r.ScopeName, Target: r.Target, ProviderSource: r.ProviderSource, DisplayName: r.DisplayName,
 		ImportID: r.ImportID, Source: r.Source, ListAddress: r.ListAddress, Reason: reason}
 }
 
@@ -163,11 +164,16 @@ func keyFinding(r model.Resource) (findingKey, bool) {
 	return findingKey{r.Type, identity, r.ScopeName}, true
 }
 
-// findingProviders holds the provider families seen for one key; repeated
-// keys from a crafted report must not make each lookup scan a long list.
+// findingProviders holds the (provider family, target) pairs seen for one
+// key; repeated keys from a crafted report must not make each lookup scan a
+// long list. A pair must match as a whole: provider P on server A and
+// provider Q on server B do not confirm P on B. "" on either side of a pair
+// is unknown (a plugin without provider_source, an older report or a source
+// without target) and matches anything on that side.
 type findingProviders struct {
-	unknown  bool
-	families map[string]bool
+	pairs    map[[2]string]bool
+	families map[string]bool // any target
+	targets  map[string]bool // any provider
 }
 
 type findingIndex map[findingKey]*findingProviders
@@ -181,19 +187,23 @@ func indexFindings(rs []model.Resource) findingIndex {
 		}
 		p := idx[k]
 		if p == nil {
-			p = &findingProviders{families: map[string]bool{}}
+			p = &findingProviders{pairs: map[[2]string]bool{}, families: map[string]bool{}, targets: map[string]bool{}}
 			idx[k] = p
 		}
-		if r.ProviderSource == "" {
-			p.unknown = true
-		} else {
-			p.families[model.ProviderFamily(r.ProviderSource)] = true
+		family := ""
+		if r.ProviderSource != "" {
+			family = model.ProviderFamily(r.ProviderSource)
 		}
+		p.pairs[[2]string{family, r.Target}] = true
+		p.families[family] = true
+		p.targets[r.Target] = true
 	}
 	return idx
 }
 
-// contains follows model.SameProvider: an unknown provider matches any.
+// contains follows model.SameProvider: an unknown provider matches any. The
+// same ID on another server is another object; a side that names no target
+// (older report, source without one) cannot tell.
 func (idx findingIndex) contains(r model.Resource) bool {
 	k, ok := keyFinding(r)
 	if !ok {
@@ -203,7 +213,42 @@ func (idx findingIndex) contains(r model.Resource) bool {
 	if p == nil {
 		return false
 	}
-	return r.ProviderSource == "" || p.unknown || p.families[model.ProviderFamily(r.ProviderSource)]
+	family := ""
+	if r.ProviderSource != "" {
+		family = model.ProviderFamily(r.ProviderSource)
+	}
+	switch {
+	case family == "" && r.Target == "":
+		return true
+	case family == "":
+		return p.targets[r.Target] || p.targets[""]
+	case r.Target == "":
+		return p.families[family] || p.families[""]
+	}
+	return p.pairs[[2]string{family, r.Target}] || p.pairs[[2]string{"", r.Target}] ||
+		p.pairs[[2]string{family, ""}] || p.pairs[[2]string{"", ""}]
+}
+
+// targetsBySource are the targets the current run's objects came from,
+// per source (plugin1, -scan proxmox).
+func targetsBySource(current []model.Resource, seen []Seen) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	add := func(r model.Resource) {
+		if r.Target == "" {
+			return
+		}
+		if out[r.Source] == nil {
+			out[r.Source] = map[string]bool{}
+		}
+		out[r.Source][r.Target] = true
+	}
+	for _, r := range current {
+		add(r)
+	}
+	for _, s := range seen {
+		add(s.Resource)
+	}
+	return out
 }
 
 type Baseline struct {
@@ -262,6 +307,7 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 		}
 		marked[i] = r
 	}
+	targets := targetsBySource(current, seen)
 	oldListings := indexListings(oldSummary.Listings)
 	newListings := indexListings(currentSummary.Listings)
 	for _, r := range old {
@@ -274,6 +320,12 @@ func compare(old, current []model.Resource, oldSummary, currentSummary Summary, 
 			continue
 		}
 		if now.contains(r) {
+			continue
+		}
+		// This source now reads another server: the object may well exist
+		// on the old one, which this run did not look at.
+		if t := targets[r.Source]; r.Target != "" && len(t) > 0 && !t[r.Target] {
+			b.UnverifiedFindings = append(b.UnverifiedFindings, unverifiedFinding(r, "the source now reads another target ("+r.Target+" before)", "target_changed"))
 			continue
 		}
 		if filtered != nil && filtered(r.Type) {

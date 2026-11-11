@@ -125,3 +125,23 @@ func TestCheckExpected(t *testing.T) {
 		}
 	}
 }
+
+func TestScopesOfListings(t *testing.T) {
+	ls := []Listing{
+		{Complete: true, Scope: map[string]string{"account_id": "1", "region": "a"}},
+		{Complete: true, Scope: map[string]string{"region": "a", "account_id": "1"}}, // same scope
+		{Complete: false, Scope: map[string]string{"account_id": "2"}},               // not to the end
+		{Complete: true}, // no scope
+		{Complete: true, Scope: map[string]string{"Bad Key": "x"}},
+		{Complete: true, Scope: map[string]string{"zone_id": strings.Repeat("z", maxExpectValue+1)}},
+		{Complete: true, Scope: map[string]string{"account_id": "3"}},
+	}
+	got, truncated := ScopesOfListings(ls)
+	if truncated || len(got) != 2 || ScopeText(got[0]) != "account_id=1 region=a" || ScopeText(got[1]) != "account_id=3" {
+		t.Fatalf("%v, truncated %v", got, truncated)
+	}
+	added := NewScopes([]map[string]string{{"account_id": "1", "region": "a"}, {"account_id": "9"}}, got)
+	if len(added) != 1 || added[0]["account_id"] != "9" {
+		t.Fatalf("new scopes %v", added)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -281,6 +282,9 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 			}
 			// The scan cannot tell which account or cluster the root's own
 			// provider block points to.
+			if a.Endpoint != nil {
+				r.Target = model.TargetOf(a.Endpoint(os.Getenv))
+			}
 			r.ImportNote = "found with the " + a.Name + " provider configured from the environment;\ncheck that this root's provider points to the same " + a.Target
 		}
 		live = append(live, res.Resources...)
@@ -395,7 +399,35 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	}
 	// An account or project left out of the configuration lists nothing
 	// and fails nothing: only an expectation shows it is missing.
-	expected, unknownKeys := report.CheckExpected(o.audit.expect, sum.Listings)
+	want := o.audit.expect
+	if o.audit.expectFromBaseline && previous != nil {
+		switch {
+		case previous.Summary.Environment != o.audit.environment:
+			sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: the baseline is from environment %q, this run is %q: its scopes are not expected", previous.Summary.Environment, o.audit.environment))
+		default:
+			from, truncated := report.ScopesOfListings(previous.Summary.Listings)
+			if truncated {
+				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: the baseline holds more than %d scopes (or very long ones): only the first are expected", report.MaxExpected))
+			}
+			if len(from) == 0 {
+				sum.Notes = append(sum.Notes, "-expect-from-baseline: no listing of the baseline checked a scope to the end, so nothing is expected (sources that do not say where they look have none)")
+			}
+			have, _ := report.ScopesOfListings(sum.Listings)
+			if added := report.NewScopes(have, from); len(added) > 0 && len(from) > 0 {
+				var text []string
+				for _, s := range firstNScopes(added, 5) {
+					text = append(text, report.ScopeText(s))
+				}
+				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: %d scopes checked now were not in the baseline (%s); write a new baseline to expect them", len(added), strings.Join(text, "; ")))
+			}
+			var dropped int
+			want, dropped = mergeScopes(want, from)
+			if dropped > 0 {
+				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: %d scopes of the baseline were left out (with -expect, more than %d scopes): they are not expected", dropped, report.MaxExpected))
+			}
+		}
+	}
+	expected, unknownKeys := report.CheckExpected(want, sum.Listings)
 	sum.Expected = expected
 	if len(unknownKeys) > 0 {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-expect: no listing of this run reports scope %s (a typo, or sources that do not say where they look: plugins, -scan blocks without a parent, user list blocks with references)", strings.Join(unknownKeys, ", ")))

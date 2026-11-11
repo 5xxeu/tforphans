@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/5xxeu/tforphans/internal/tf"
@@ -155,6 +156,17 @@ func applyConfig(fs *flag.FlagSet, o *options, path string, explicit bool) error
 				}
 				if int64(size) > limit {
 					return fmt.Errorf("%s: %s above %d bytes is accepted only on the command line or via -config, since this file is read on its own and could come with someone else's repository", path, key, limit)
+				}
+			}
+		}
+		if key == "source-timeout" && !explicit {
+			for _, v := range vals {
+				d, err := time.ParseDuration(v)
+				if err != nil {
+					return fmt.Errorf("%s: %s: %w", path, key, err)
+				}
+				if d <= 0 || d > defaultSourceTimeout {
+					return fmt.Errorf("%s: source-timeout of no limit or above %s is accepted only on the command line or via -config, since this file is read on its own and could come with someone else's repository", path, defaultSourceTimeout)
 				}
 			}
 		}

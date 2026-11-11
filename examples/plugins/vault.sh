@@ -27,9 +27,22 @@ err=$(mktemp) || exit 1
 trap 'rm -f "$err"' EXIT
 trap 'exit 1' HUP INT TERM
 
+# target: host and port of VAULT_ADDR, nothing else (no scheme, user, path or
+# query). A baseline then does not take a policy "ci" of another Vault for
+# the one it knew.
+target=$(printf '%s' "${VAULT_ADDR:-}" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s#^[^@/]*@##; s#[/?\#].*$##' | tr 'A-Z' 'a-z')
+printf '%s' "$target" | grep -Eq '^[]a-z0-9._:[-]+$' || target=
+
+# withtarget: add "target" to every JSON line on stdin.
+withtarget() {
+	jq -c --arg tg "$target" 'if $tg != "" then .target = $tg else . end'
+}
+
 # resource TYPE ID: one resource line.
 resource() {
-	jq -nc --arg t "$1" --arg id "$2" '{type: $t, identity: {id: $id}, display_name: $id, import_id: $id, unverified: true}'
+	# Captured first: sh has no pipefail, and set -e must see a jq failure.
+	line=$(jq -nc --arg t "$1" --arg id "$2" '{type: $t, identity: {id: $id}, display_name: $id, import_id: $id, unverified: true}')
+	printf '%s\n' "$line" | withtarget
 }
 
 fail() {
@@ -43,7 +56,7 @@ emit() {
 	what=$1 in=$2
 	shift 2
 	if lines=$(printf '%s' "$in" | jq -c "$@" 2>"$err"); then
-		[ -z "$lines" ] || printf '%s\n' "$lines"
+		[ -z "$lines" ] || printf '%s\n' "$lines" | withtarget
 	else
 		fail "$what: unexpected output: $(cat "$err")"
 	fi

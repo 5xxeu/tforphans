@@ -64,9 +64,15 @@ func (r Runner) Exec(ctx context.Context, args ...string) ([]byte, []byte, error
 type OutputTooLargeError struct {
 	Command string
 	Max     int64
+	// Fixed: the limit is not -max-query-size (commands read whole, such as
+	// providers schema), so raising that flag changes nothing.
+	Fixed bool
 }
 
 func (e *OutputTooLargeError) Error() string {
+	if e.Fixed {
+		return fmt.Sprintf("terraform %s: output is larger than %d bytes", e.Command, e.Max)
+	}
 	return fmt.Sprintf("terraform %s: output is larger than %d bytes; raise -max-query-size", e.Command, e.Max)
 }
 
@@ -88,8 +94,18 @@ func (r Runner) ExecLimited(ctx context.Context, maxSize int64, args ...string) 
 	return out, stderr, err
 }
 
+// run is a command whose output is read whole, such as version or providers
+// schema: bounded by DefaultMaxQuerySize whatever -max-query-size says (a
+// schema is far larger than most queries), so that a terraform or provider
+// that never stops printing cannot fill the memory.
 func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error) {
-	return r.runLimited(ctx, 0, args...)
+	max := DefaultMaxQuerySize
+	out, stderr, err := r.runLimited(ctx, max, args...)
+	var tooLarge *state.TooLargeError
+	if errors.As(err, &tooLarge) {
+		return nil, stderr, &OutputTooLargeError{Command: args[0], Max: max, Fixed: true}
+	}
+	return out, stderr, err
 }
 
 func (r Runner) stateSize() int64 {

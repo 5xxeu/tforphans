@@ -67,6 +67,12 @@ Results may be truncated. `action: raise_limit`: raise the relevant list limit o
 
 The baseline and current report have different environment labels. Choose reports for the same environment.
 
+<a id="target_changed"></a>
+
+## target_changed
+
+The source (a plugin, or `-scan proxmox`) read another server than in the baseline (the `target` host differs), so the finding may still exist on the old one. Compare runs against the same server, or accept the change with a new baseline.
+
 <a id="type_filtered"></a>
 
 ## type_filtered
