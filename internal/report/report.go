@@ -356,6 +356,10 @@ type Summary struct {
 	// UnlistedTypes are types in the states that their provider cannot
 	// list: objects of them are never checked.
 	UnlistedTypes []UnlistedType `json:"unlisted_types,omitempty"`
+	// UnqueriedTypes are types in the states whose provider this run never
+	// asked at all, so no coverage of them is known (-types and
+	// -exclude-types left out are not listed).
+	UnqueriedTypes []UnlistedType `json:"unqueried_types,omitempty"`
 	// Listable holds the types, with their provider family, that a provider
 	// schema read, a scan or a plugin can list; QueriedFamilies the provider
 	// families asked at all. See AddListable.

@@ -389,6 +389,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	}
 	sum.Coverage = report.BuildCoverage(c.byTypeScope, checks, skipped, counting)
 	sum.UnlistedTypes = unlistedTypes(&o.src, idx.TypeCounts(), *sum)
+	sum.UnqueriedTypes = unqueriedTypes(&o.src, idx.TypeCounts(), *sum)
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
 	}
@@ -407,7 +408,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	switch {
 	case nothingChecked(&o.src, *sum):
 		sum.CoverageLevel = "unsupported"
-	case sum.Complete && len(sum.UnlistedTypes) == 0:
+	case sum.Complete && len(sum.UnlistedTypes) == 0 && len(sum.UnqueriedTypes) == 0:
 		sum.CoverageLevel = "full"
 	default:
 		sum.CoverageLevel = "partial"
@@ -630,8 +631,8 @@ func exitStatus(o *options, sum report.Summary, shown []model.Resource, baseline
 	case o.audit.failUnverified && baseline != nil && baseline.Unverified > 0:
 		fmt.Fprintf(stderr, "error: -fail-unverified: %d findings of the baseline could not be confirmed resolved or still present (see baseline.unverified_findings)\n", baseline.Unverified)
 		return exitCode(exitError)
-	case o.audit.strictUnlisted && len(sum.UnlistedTypes) > 0:
-		fmt.Fprintf(stderr, "error: -strict-unlisted: %d resource types of the states cannot be listed by their provider, so objects of them were not checked (summary.unlisted_types)\n", len(sum.UnlistedTypes))
+	case o.audit.strictUnlisted && len(sum.UnlistedTypes)+len(sum.UnqueriedTypes) > 0:
+		fmt.Fprintf(stderr, "error: -strict-unlisted: %d resource types of the states cannot be listed by their provider and %d belong to a provider this run did not ask, so objects of them were not checked (summary.unlisted_types, summary.unqueried_types)\n", len(sum.UnlistedTypes), len(sum.UnqueriedTypes))
 		return exitCode(exitError)
 	case o.audit.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)

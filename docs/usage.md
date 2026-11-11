@@ -110,9 +110,10 @@ possible ownership alone never fails it. The flag only makes a run stricter,
 so automatic `.tforphans.yaml` files may set `strict-ownership: true`.
 Import blocks from `adopt` are unchanged.
 
-`-strict-unlisted` exits `1` while the states hold resource types their
-provider cannot list (`summary.unlisted_types`): `complete` says nothing about
-them, and `summary.coverage_level` reports `partial` for such a run. Like
+`-strict-unlisted` exits `1` while the states hold resource types that were
+not checked: their provider cannot list them (`summary.unlisted_types`), or
+this run did not ask that provider at all (`summary.unqueried_types`):
+`complete` says nothing about them, and `summary.coverage_level` reports `partial` for such a run. Like
 `-fail-unverified` it only makes a run stricter, so automatic `.tforphans.yaml`
 files may set it.
 

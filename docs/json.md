@@ -273,8 +273,10 @@ only `states_complete`. Both are always present. `summary.complete` retains its
 meaning: both state reading and discovery were complete.
 `summary.coverage_level` is always present: `full` (complete and every resource
 type of the states can be listed), `partial` (anything less, including unlisted
-types), or `unsupported` (nothing could be listed). `-strict-unlisted` exits `1`
-while `summary.unlisted_types` is not empty.
+types or types of a provider this run did not ask: `summary.unqueried_types`,
+omitted when empty), or `unsupported` (nothing could be listed).
+`-strict-unlisted` exits `1` while `summary.unlisted_types` or
+`summary.unqueried_types` is not empty.
 `summary.unclassified_terragrunt`, omitted when empty, lists terragrunt.hcl files
 taken for shared configuration that were not confirmed with `-terragrunt-parent`;
 discovery is then not complete.

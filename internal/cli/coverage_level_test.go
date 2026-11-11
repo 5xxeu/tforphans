@@ -42,4 +42,11 @@ func TestCoverageLevelAndStrictUnlisted(t *testing.T) {
 	if code != exitError || !strings.Contains(stderr, "-strict-unlisted: 1 resource types") {
 		t.Fatalf("-strict-unlisted: exit %d\n%s", code, stderr)
 	}
+	// A plugin that returned nothing did not ask its provider: the type of
+	// the state has no known coverage, which is not "full" either.
+	empty := `printf '%s\n' '{"done":true}'`
+	code, stdout, stderr := runReportTest(t, "-no-config", "-no-query", "-plugin", empty, "-state", "mount.tfstate", "-format", "json", "-strict-unlisted")
+	if code != exitError || !strings.Contains(stdout, `"coverage_level": "partial"`) || !strings.Contains(stdout, `"unqueried_types"`) {
+		t.Fatalf("-strict-unlisted: exit %d\n%s", code, stderr)
+	}
 }
