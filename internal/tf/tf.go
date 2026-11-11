@@ -64,9 +64,15 @@ func (r Runner) Exec(ctx context.Context, args ...string) ([]byte, []byte, error
 type OutputTooLargeError struct {
 	Command string
 	Max     int64
+	// Fixed: the limit is not -max-query-size (commands read whole, such as
+	// providers schema), so raising that flag changes nothing.
+	Fixed bool
 }
 
 func (e *OutputTooLargeError) Error() string {
+	if e.Fixed {
+		return fmt.Sprintf("terraform %s: output is larger than %d bytes", e.Command, e.Max)
+	}
 	return fmt.Sprintf("terraform %s: output is larger than %d bytes; raise -max-query-size", e.Command, e.Max)
 }
 
@@ -97,7 +103,7 @@ func (r Runner) run(ctx context.Context, args ...string) ([]byte, []byte, error)
 	out, stderr, err := r.runLimited(ctx, max, args...)
 	var tooLarge *state.TooLargeError
 	if errors.As(err, &tooLarge) {
-		return nil, stderr, &OutputTooLargeError{Command: args[0], Max: max}
+		return nil, stderr, &OutputTooLargeError{Command: args[0], Max: max, Fixed: true}
 	}
 	return out, stderr, err
 }

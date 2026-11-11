@@ -177,6 +177,8 @@ func parseReader(out io.Reader, source string) ([]model.Resource, []error, bool,
 		if l.Target != "" && !model.ValidTarget(l.Target) {
 			return nil, nil, false, fmt.Errorf("%s line %d: %w", source, n, errors.New(`"target" must be a host name or address with an optional port, nothing else`))
 		}
+		// Host names are case-insensitive: one server must be one target.
+		l.Resource.Target = strings.ToLower(l.Target)
 		l.Resource.Source = source
 		if l.Unverified {
 			l.Resource.Scope = &model.Scope{Unverifiable: true}

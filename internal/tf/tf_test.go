@@ -1254,3 +1254,11 @@ provider "awseu" {
 		}
 	}
 }
+
+func TestOutputTooLargeErrorFixed(t *testing.T) {
+	fixed := (&OutputTooLargeError{Command: "providers", Max: 10, Fixed: true}).Error()
+	flag := (&OutputTooLargeError{Command: "apply", Max: 10}).Error()
+	if strings.Contains(fixed, "-max-query-size") || !strings.Contains(flag, "-max-query-size") {
+		t.Errorf("%q / %q", fixed, flag)
+	}
+}
