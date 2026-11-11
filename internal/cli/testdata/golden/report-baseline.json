@@ -47,6 +47,7 @@
     "complete": true,
     "states_complete": true,
     "discovery_complete": true,
+    "coverage_level": "full",
     "notes": [
       "1 of 3 state instances have no resource identity (state before Terraform 1.12): matched by attributes instead; -refresh reads identities (slow, see README)"
     ],

@@ -389,6 +389,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 	}
 	sum.Coverage = report.BuildCoverage(c.byTypeScope, checks, skipped, counting)
 	sum.UnlistedTypes = unlistedTypes(&o.src, idx.TypeCounts(), *sum)
+	sum.UnqueriedTypes = unqueriedTypes(&o.src, idx.TypeCounts(), *sum)
 	if n := len(sum.UnlistedTypes); n > 0 {
 		sum.Notes = append(sum.Notes, unlistedNote(sum.UnlistedTypes))
 	}
@@ -400,10 +401,18 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-expect: no listing of this run reports scope %s (a typo, or sources that do not say where they look: plugins, -scan blocks without a parent, user list blocks with references)", strings.Join(unknownKeys, ", ")))
 	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
-	sum.DiscoveryComplete = !nothingChecked(&o.src, *sum) && len(sum.UnqueriedRoots) == 0 && len(sum.RefreshFailed) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
+	sum.DiscoveryComplete = !nothingChecked(&o.src, *sum) && len(sum.UnqueriedRoots) == 0 && len(sum.RefreshFailed) == 0 && len(sum.UnclassifiedTerragrunt) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete }) &&
 		!slices.ContainsFunc(sum.Expected, func(e report.Expected) bool { return e.Status != report.ExpectConfirmed })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
+	switch {
+	case nothingChecked(&o.src, *sum):
+		sum.CoverageLevel = "unsupported"
+	case sum.Complete && len(sum.UnlistedTypes) == 0 && len(sum.UnqueriedTypes) == 0:
+		sum.CoverageLevel = "full"
+	default:
+		sum.CoverageLevel = "partial"
+	}
 	sum.Environment = o.audit.environment
 	var baseline *report.Baseline
 	shown := orphans
@@ -541,6 +550,12 @@ func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs [
 		}
 		return fmt.Errorf("not writing import blocks: the state of %s could not be read, and its objects would be imported a second time; fix access, or pass -allow-incomplete", strings.Join(roots, ", "))
 	}
+	if len(sum.RefreshFailed) > 0 && !o.adopt.allowIncomplete {
+		if err := printSummary(stderr, o, *sum, nil); err != nil {
+			return err
+		}
+		return fmt.Errorf("not writing import blocks: -refresh failed for %s and the stored state was read, so object identities were not refreshed and a managed object could show as unmanaged; fix the refresh, or pass -allow-incomplete", strings.Join(sum.RefreshFailed, ", "))
+	}
 	orphans := out.orphans
 	reserved := maps.Clone(idx.RootAddresses())
 	var imports []tf.Import
@@ -615,6 +630,9 @@ func exitStatus(o *options, sum report.Summary, shown []model.Resource, baseline
 		return exitCode(exitError)
 	case o.audit.failUnverified && baseline != nil && baseline.Unverified > 0:
 		fmt.Fprintf(stderr, "error: -fail-unverified: %d findings of the baseline could not be confirmed resolved or still present (see baseline.unverified_findings)\n", baseline.Unverified)
+		return exitCode(exitError)
+	case o.audit.strictUnlisted && len(sum.UnlistedTypes)+len(sum.UnqueriedTypes) > 0:
+		fmt.Fprintf(stderr, "error: -strict-unlisted: %d resource types of the states cannot be listed by their provider and %d belong to a provider this run did not ask, so objects of them were not checked (summary.unlisted_types, summary.unqueried_types)\n", len(sum.UnlistedTypes), len(sum.UnqueriedTypes))
 		return exitCode(exitError)
 	case o.audit.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)

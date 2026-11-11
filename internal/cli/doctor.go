@@ -31,7 +31,7 @@ provider processes; use a network sandbox when network isolation is required.
 
 func doctorFlags(all *flag.FlagSet, o *options) *flag.FlagSet {
 	fs := flag.NewFlagSet("tforphans doctor", flag.ContinueOnError)
-	allowed := strings.Fields("config no-config terraform state state-roots current-workspace terragrunt terragrunt-unit types exclude-types arg no-aliases scan scan-scope no-query format v quiet timeout source-timeout max-state-size state-parallelism max-roots plugin")
+	allowed := strings.Fields("config no-config terraform state state-roots current-workspace terragrunt terragrunt-unit terragrunt-parent types exclude-types arg no-aliases scan scan-scope no-query format v quiet timeout source-timeout max-state-size state-parallelism max-roots plugin")
 	o.doctor.configFlags = map[string]bool{}
 	o.doctor.ignoreFlags = all
 	all.VisitAll(func(f *flag.Flag) {

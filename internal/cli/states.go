@@ -253,7 +253,7 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 			skip[abs] = true
 		}
 	}
-	var dirs, skipped []string
+	var dirs, skipped, unclassified []string
 	for _, tree := range o.src.stateRoots {
 		found, unread, parents, err := tf.FindRoots(tree, o.src.terragrunt)
 		if err != nil {
@@ -262,6 +262,9 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 		for _, p := range parents {
 			if !slices.ContainsFunc(o.src.tgUnits, func(u string) bool { return sameDir(u, p.Dir) }) {
 				skipped = append(skipped, fmt.Sprintf("%s (by %s)", p.Dir, p.By))
+				if !slices.ContainsFunc(o.src.tgParents, func(u string) bool { return sameDir(u, p.Dir) }) {
+					unclassified = append(unclassified, p.Dir)
+				}
 			}
 		}
 		// A root there may manage what is found: like an unread state
@@ -296,8 +299,12 @@ func discoverStateRoots(o *options, sum *report.Summary) ([]string, error) {
 			dirs = append(dirs, u)
 		}
 	}
+	if len(unclassified) > 0 {
+		slices.Sort(unclassified)
+		sum.UnclassifiedTerragrunt = slices.Compact(unclassified)
+	}
 	if len(skipped) > 0 {
-		sum.Notes = append(sum.Notes, fmt.Sprintf("%d terragrunt.hcl taken for shared configuration, since units include them, and not read as units: %s; -terragrunt-unit DIR reads one as a unit", len(skipped), strings.Join(firstN(skipped, 5), ", ")))
+		sum.Notes = append(sum.Notes, fmt.Sprintf("%d terragrunt.hcl taken for shared configuration, since units include them, and not read as units: %s; -terragrunt-unit DIR reads one as a unit, -terragrunt-parent DIR confirms it is shared configuration (until then discovery is incomplete)", len(skipped), strings.Join(firstN(skipped, 5), ", ")))
 	}
 
 	// A path that is wrong (.. from the wrong directory) can reach a whole

@@ -66,6 +66,7 @@
     "complete": false,
     "states_complete": true,
     "discovery_complete": false,
+    "coverage_level": "partial",
     "warnings": [
       "plugin1: cannot list auth backends: permission denied",
       "plugin2 failed: plugin2: exit status 3"

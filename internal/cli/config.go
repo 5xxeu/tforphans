@@ -54,7 +54,7 @@ func readConfig(path string) ([]byte, error) {
 // or overwrite any file (adopt -o). Config files live in repositories and
 // change in pull requests that a CI job then runs; such a change has to show in the
 // command itself.
-var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o", "out-dir", "adopt-root", "check-auth"}
+var commandLineOnly = []string{"plugin", "terraform", "terragrunt", "allow-http", "o", "out-dir", "adopt-root", "check-auth", "terragrunt-parent"}
 
 // configOnlyExplicit are keys a config file found on its own may not set,
 // one given with -config may: they run the root's data sources (refresh

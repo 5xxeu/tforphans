@@ -279,9 +279,20 @@ func mergeResult(kept *model.Resource, r model.Resource) {
 // provider cannot list: tforphans never checks objects of them. Types left
 // out with -types or -exclude-types are the user's choice and not reported.
 func unlistedTypes(src *sourceOptions, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
+	return stateTypesNotListed(src, counts, sum, true)
+}
+
+// unqueriedTypes are the types in the states whose provider this run never
+// asked (no list query, scan or plugin result for it): nothing says whether
+// objects of them exist outside the states.
+func unqueriedTypes(src *sourceOptions, counts map[state.TypeKey]int, sum report.Summary) []report.UnlistedType {
+	return stateTypesNotListed(src, counts, sum, false)
+}
+
+func stateTypesNotListed(src *sourceOptions, counts map[state.TypeKey]int, sum report.Summary, queried bool) []report.UnlistedType {
 	var out []report.UnlistedType
 	for k, n := range counts {
-		if !sum.QueriedFamilies[k.Provider] || sum.CanList(k.Type, k.Provider) || len(src.include) > 0 && !src.include.Match(k.Type) || src.exclude.Match(k.Type) {
+		if sum.QueriedFamilies[k.Provider] != queried || sum.CanList(k.Type, k.Provider) || len(src.include) > 0 && !src.include.Match(k.Type) || src.exclude.Match(k.Type) {
 			continue
 		}
 		out = append(out, report.UnlistedType{Type: k.Type, Provider: k.Provider, Instances: n})
