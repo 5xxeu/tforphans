@@ -348,6 +348,11 @@ resource "fake_thing" "a" { name = "a" }
 	if code != exitError {
 		t.Errorf("-refresh fallback with -strict: exit %d\n%s", code, stderr)
 	}
+	// adopt would import what the unrefreshed state may already manage.
+	code, _, stderr = runTool("adopt", "-types", "fake_thing", "-refresh", "-terraform", wrapper)
+	if code != exitError || !strings.Contains(stderr, "not writing import blocks: -refresh failed") {
+		t.Errorf("adopt after a -refresh fallback: exit %d\n%s", code, stderr)
+	}
 }
 
 // TestIntegrationScanNoZones: with no zone listed, records were not read in

@@ -25,7 +25,7 @@ left out, so a consumer can read every key without checking for it.
   `uncertain`, `ignored`, `orphans`, `states`, `queried_types`,
   `api_not_enabled`, `strict_ignored`, `duplicate_ownership`,
   `possible_duplicate_ownership`, `duplicate_in_state`), `complete`,
-  `states_complete`, `discovery_complete`, `unread_states`
+  `states_complete`, `discovery_complete`, `coverage_level`, `unread_states`
   (`[{root, error}]`), `failed_sources` (`[{source, error}]`: a root,
   `-scan NAME` or `pluginN` that failed as a whole; the run exits 1 and
   its `listings` are marked incomplete; this includes a plugin that
@@ -271,6 +271,13 @@ whose query did not run and a block with no started instances have no records.
 root queries that could not start. With `-no-query`, an unread state affects
 only `states_complete`. Both are always present. `summary.complete` retains its
 meaning: both state reading and discovery were complete.
+`summary.coverage_level` is always present: `full` (complete and every resource
+type of the states can be listed), `partial` (anything less, including unlisted
+types), or `unsupported` (nothing could be listed). `-strict-unlisted` exits `1`
+while `summary.unlisted_types` is not empty.
+`summary.unclassified_terragrunt`, omitted when empty, lists terragrunt.hcl files
+taken for shared configuration that were not confirmed with `-terragrunt-parent`;
+discovery is then not complete.
 `summary.refresh_failed`, omitted when empty, lists the states whose `-refresh`
 failed and whose stored state was read instead (identities not refreshed);
 discovery is then not complete. Uncertain matches

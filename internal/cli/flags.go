@@ -69,10 +69,10 @@ Exit status: 0 on success, whether or not anything was found; 1 on error
 // flagGroups orders -h of the audit, adopt and doctor; each lists only the
 // flags it defines.
 var flagGroups = []cliflag.Group{
-	{Title: "States that count as managed", Names: []string{"state-roots", "state", "current-workspace", "refresh", "init", "terragrunt", "terragrunt-unit", "allow-http", "max-roots", "state-parallelism", "max-state-size"}},
+	{Title: "States that count as managed", Names: []string{"state-roots", "state", "current-workspace", "refresh", "init", "terragrunt", "terragrunt-unit", "terragrunt-parent", "allow-http", "max-roots", "state-parallelism", "max-state-size"}},
 	{Title: "What to list", Names: []string{"types", "exclude-types", "arg", "no-aliases", "scan", "scan-scope", "allow-unpinned", "plugin", "no-query", "include-attrs", "limit", "max-query-size", "ignore-required-version", "terraform"}},
 	{Title: "Ignoring and comparing", Names: []string{"ignore", "ignore-preset", "no-default-presets", "baseline", "environment"}},
-	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "fail-unverified", "expect", "proxmox-cluster-states", "plugin-cluster-states"}},
+	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "fail-unverified", "strict-unlisted", "expect", "proxmox-cluster-states", "plugin-cluster-states"}},
 	{Title: "Import blocks", Names: []string{"o", "out-dir", "adopt-root", "allow-incomplete", "names-from-tags"}},
 	{Title: "Checks", Names: []string{"offline", "check-auth"}},
 	{Title: "Output", Names: []string{"format", "explain", "v", "quiet", "print-query"}},
@@ -190,6 +190,7 @@ type sourceOptions struct {
 	stateParallelism int
 	terragrunt       bool
 	tgUnits          listFlag // -terragrunt-unit
+	tgParents        listFlag // -terragrunt-parent
 }
 
 // ignoreOptions say which ignore rules apply. Audit, adopt and doctor.
@@ -208,6 +209,7 @@ type auditOptions struct {
 	explain         bool
 	strictOwnership bool
 	failUnverified  bool
+	strictUnlisted  bool
 	strictAPI       bool
 	strictIgnore    glob.List // -strict-ignore
 	// expect are the scopes some listing has to confirm (-expect).
@@ -367,6 +369,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.Var(&expect, "expect", "scopes this run must check, e.g. \"account_id=111,222 region=eu-west-1\" (every combination) or project=a,b; one that no complete listing confirms makes coverage incomplete; keys are those of the JSON listings' scope (account_id, region, project, subscription_id, zone_id); repeatable")
 	fs.IntVar(&o.src.maxRoots, "max-roots", 200, "stop when -state-roots finds more root modules, or an s3:// -state prefix more states, than this, before any is read (0: no limit)")
 	fs.BoolVar(&o.src.terragrunt, "terragrunt", false, "with -state-roots, also read Terragrunt units (directories with a terragrunt.hcl, except parents that units include) through terragrunt in PATH; terragrunt initializes them (.terragrunt-cache)")
+	fs.Var(&o.src.tgParents, "terragrunt-parent", "with -terragrunt, confirm that DIR is shared configuration, not a unit with generated configuration; until then a terragrunt.hcl that units include is an unclassified gap (discovery incomplete, -strict fails); repeatable")
 	fs.Var(&o.src.tgUnits, "terragrunt-unit", "with -terragrunt, read DIR as a Terragrunt unit even though units include its terragrunt.hcl (taken for shared configuration otherwise); repeatable")
 	fs.BoolVar(&o.src.init, "init", false, "run terraform init in root modules that are not initialized (creates .terraform there)")
 	fs.Var(&scans, "scan", "list a provider without list resources through its plural data sources: cloudflare, proxmox; credentials from the provider's environment variables (CLOUDFLARE_API_TOKEN, PROXMOX_VE_*), not from the root's provider block; repeatable")
@@ -380,7 +383,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 		fs.StringVar(&o.adopt.out, "o", "", "write the import blocks to this new file instead of stdout")
 		fs.StringVar(&o.adopt.outDir, "out-dir", "", "write the import blocks to this new directory, one imports.tf per root module at its path from the current directory")
 		fs.Var(&adoptRoots, "adopt-root", "with -out-dir: put what a -scan provider or plugin found into this root module's file, e.g. cloudflare=zones/example.com or plugin1=vault; without it they go to _unassigned/NAME.tf; repeatable")
-		fs.BoolVar(&o.adopt.allowIncomplete, "allow-incomplete", false, "write import blocks even when a state could not be read (its objects would be imported a second time)")
+		fs.BoolVar(&o.adopt.allowIncomplete, "allow-incomplete", false, "write import blocks even when a state could not be read or a -refresh fell back to the stored state (its objects could be imported a second time)")
 		fs.BoolVar(&o.adopt.namesFromTags, "names-from-tags", false, "name the resources after their Name tag where the type has tags (slower: terraform query returns whole objects for those types)")
 	} else {
 		fs.StringVar(&o.format, "format", "text", "output format: text, json, or summary (counts per type)")
@@ -391,6 +394,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
 	fs.BoolVar(&o.ignore.noDefaults, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
+	fs.BoolVar(&o.audit.strictUnlisted, "strict-unlisted", false, "exit 1 when the states hold resource types their provider cannot list (summary.unlisted_types): objects of them are never checked")
 	fs.BoolVar(&o.audit.failUnverified, "fail-unverified", false, "with -baseline, exit 1 when a finding of the baseline can be neither confirmed resolved nor still present (not verified)")
 	fs.BoolVar(&o.audit.strictOwnership, "strict-ownership", false, "exit 1 for confirmed duplicate state ownership or duplicate addresses within a state; possible ownership does not fail")
 	fs.BoolVar(&o.audit.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
@@ -459,7 +463,10 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	if len(o.src.tgUnits) > 0 && !o.src.terragrunt {
 		return nil, errors.New("-terragrunt-unit needs -terragrunt")
 	}
-	for _, list := range [][]string{o.src.roots, o.src.stateRoots, o.src.tgUnits} {
+	if len(o.src.tgParents) > 0 && !o.src.terragrunt {
+		return nil, errors.New("-terragrunt-parent needs -terragrunt")
+	}
+	for _, list := range [][]string{o.src.roots, o.src.stateRoots, o.src.tgUnits, o.src.tgParents} {
 		for i, p := range list {
 			if real, err := filepath.EvalSymlinks(p); err == nil {
 				list[i] = real

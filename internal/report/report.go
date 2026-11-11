@@ -307,6 +307,11 @@ type Summary struct {
 	// UnreadStates are root modules whose state could not be read in full:
 	// their objects may show as unmanaged.
 	UnreadStates []UnreadState `json:"unread_states,omitempty"`
+	// UnclassifiedTerragrunt are terragrunt.hcl files taken for shared
+	// configuration because units include them, though one of them may be a
+	// unit with generated configuration whose state was not read. Confirm
+	// with -terragrunt-parent, or read it with -terragrunt-unit.
+	UnclassifiedTerragrunt []string `json:"unclassified_terragrunt,omitempty"`
 	// FailedSources are roots, scans and plugins that failed as a whole:
 	// the run went on with the others, and exits 1 after the report.
 	FailedSources []FailedSource `json:"failed_sources,omitempty"`
@@ -339,6 +344,10 @@ type Summary struct {
 	Environment       string `json:"environment,omitempty"`
 	StatesComplete    bool   `json:"states_complete"`
 	DiscoveryComplete bool   `json:"discovery_complete"`
+	// CoverageLevel is "full" when the run is complete and no resource type
+	// of the states is unlisted (see UnlistedTypes), "partial" otherwise,
+	// "unsupported" when nothing could be listed at all.
+	CoverageLevel string `json:"coverage_level"`
 	// RefreshFailed are the states (root, workspace) whose -refresh failed
 	// and whose stored state was read instead: resource identities were
 	// not refreshed, so discovery is not complete.
