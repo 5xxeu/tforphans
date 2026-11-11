@@ -188,6 +188,9 @@ func ScopesOfListings(listings []Listing) (scopes []map[string]string, truncated
 		}
 		skip := len(l.Scope) > maxExpectKeys
 		for k, v := range l.Scope {
+			if skip {
+				break // too many keys: do not walk them all
+			}
 			if !expectKey.MatchString(k) || v == "" || len(v) > maxExpectValue {
 				skip = true
 			}
