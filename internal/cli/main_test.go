@@ -1190,3 +1190,32 @@ func TestPluginEmptyCoverage(t *testing.T) {
 		})
 	}
 }
+
+// TestDedupeTarget: the same ID on two servers is two objects, in either
+// order of the sources.
+func TestDedupeTarget(t *testing.T) {
+	id := map[string]any{"id": "ci"}
+	a := model.Resource{Type: "vault_policy", Identity: id, Source: "plugin1", Target: "vault-a:8200"}
+	b := model.Resource{Type: "vault_policy", Identity: id, Source: "plugin2", Target: "vault-b:8200"}
+	for _, rs := range [][]model.Resource{{a, b}, {b, a}, {a, b, a}} {
+		got := dedupe(rs)
+		if len(got) != 2 || got[0].Target == got[1].Target {
+			t.Errorf("%v: got %+v", rs, got)
+		}
+	}
+	if got := dedupe([]model.Resource{a, a}); len(got) != 1 {
+		t.Errorf("same server twice: %+v", got)
+	}
+}
+
+func TestMergeScopesOverflow(t *testing.T) {
+	var a, b []map[string]string
+	for i := 0; i < report.MaxExpected; i++ {
+		a = append(a, map[string]string{"project": fmt.Sprint(i)})
+	}
+	b = append(b, map[string]string{"project": "0"}, map[string]string{"project": "extra"})
+	got, dropped := mergeScopes(a, b)
+	if len(got) != report.MaxExpected || dropped != 1 {
+		t.Errorf("got %d scopes, dropped %d", len(got), dropped)
+	}
+}

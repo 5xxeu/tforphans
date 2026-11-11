@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +169,27 @@ func TestVaultPluginDependencies(t *testing.T) {
 				t.Errorf("stdout: %s\nstderr: %s", &out, &errb)
 			}
 		})
+	}
+}
+
+// TestVaultPluginTargetIPv6: a bracketed IPv6 address keeps its host and
+// port as the target.
+func TestVaultPluginTargetIPv6(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not in PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vault"), []byte(fakeVault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAULT_ADDR", "https://[FD00::1]:8200/")
+	cmd := exec.Command("sh", "../../examples/plugins/vault.sh")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"target":"[fd00::1]:8200"`) {
+		t.Errorf("no IPv6 target in:\n%s", out)
 	}
 }

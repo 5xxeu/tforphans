@@ -31,7 +31,7 @@ trap 'exit 1' HUP INT TERM
 # query). A baseline then does not take a policy "ci" of another Vault for
 # the one it knew.
 target=$(printf '%s' "${VAULT_ADDR:-}" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s#^[^@/]*@##; s#[/?\#].*$##' | tr 'A-Z' 'a-z')
-printf '%s' "$target" | grep -Eq '^[a-z0-9._:\[-]+\]?$' || target=
+printf '%s' "$target" | grep -Eq '^[]a-z0-9._:[-]+$' || target=
 
 # withtarget: add "target" to every JSON line on stdin.
 withtarget() {

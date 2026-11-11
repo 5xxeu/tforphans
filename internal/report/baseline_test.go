@@ -395,3 +395,35 @@ func TestBaselineTransitionUnknownLocation(t *testing.T) {
 		}
 	}
 }
+
+// TestFindingIndexPairs: provider and target must come from one finding.
+func TestFindingIndexPairs(t *testing.T) {
+	id := map[string]any{"id": "ci"}
+	mk := func(provider, target string) model.Resource {
+		return model.Resource{Type: "vault_policy", Identity: id, ProviderSource: provider, Target: target}
+	}
+	idx := indexFindings([]model.Resource{mk("registry.terraform.io/acme/p", "a:1"), mk("registry.terraform.io/acme/q", "b:2")})
+	for _, tc := range []struct {
+		r    model.Resource
+		want bool
+	}{
+		{mk("registry.terraform.io/acme/p", "a:1"), true},
+		{mk("registry.terraform.io/acme/q", "b:2"), true},
+		{mk("registry.terraform.io/acme/p", "b:2"), false},
+		{mk("registry.terraform.io/acme/q", "a:1"), false},
+		{mk("", "b:2"), true},
+		{mk("", "c:3"), false},
+		{mk("registry.terraform.io/acme/p", ""), true},
+		{mk("registry.terraform.io/acme/z", ""), false},
+		{mk("", ""), true},
+	} {
+		if got := idx.contains(tc.r); got != tc.want {
+			t.Errorf("%s %s: %v, want %v", tc.r.ProviderSource, tc.r.Target, got, tc.want)
+		}
+	}
+	// A baseline without a target (older report) cannot tell servers apart.
+	old := indexFindings([]model.Resource{mk("registry.terraform.io/acme/p", "")})
+	if !old.contains(mk("registry.terraform.io/acme/p", "b:2")) || old.contains(mk("registry.terraform.io/acme/q", "b:2")) {
+		t.Error("old baseline")
+	}
+}

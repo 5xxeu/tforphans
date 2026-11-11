@@ -420,7 +420,11 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 				}
 				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: %d scopes checked now were not in the baseline (%s); write a new baseline to expect them", len(added), strings.Join(text, "; ")))
 			}
-			want = mergeScopes(want, from)
+			var dropped int
+			want, dropped = mergeScopes(want, from)
+			if dropped > 0 {
+				sum.Notes = append(sum.Notes, fmt.Sprintf("-expect-from-baseline: %d scopes of the baseline were left out (with -expect, more than %d scopes): they are not expected", dropped, report.MaxExpected))
+			}
 		}
 	}
 	expected, unknownKeys := report.CheckExpected(want, sum.Listings)
