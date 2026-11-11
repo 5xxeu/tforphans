@@ -270,7 +270,10 @@ whose query did not run and a block with no started instances have no records.
 `summary.discovery_complete` describes listing coverage, including requested
 root queries that could not start. With `-no-query`, an unread state affects
 only `states_complete`. Both are always present. `summary.complete` retains its
-meaning: both state reading and discovery were complete. Uncertain matches
+meaning: both state reading and discovery were complete.
+`summary.refresh_failed`, omitted when empty, lists the states whose `-refresh`
+failed and whose stored state was read instead (identities not refreshed);
+discovery is then not complete. Uncertain matches
 still fail `-strict` independently.
 
 ## Expected scopes

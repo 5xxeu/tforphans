@@ -65,6 +65,7 @@ func pullRootCount(ctx context.Context, o *options, dir string, total *int) ([]s
 			}
 			o.run.mu.Lock()
 			o.run.stateNotes = append(o.run.stateNotes, fmt.Sprintf("%s: -refresh failed, the stored state was read instead: %v", dir, inWorkspace(ws, err)))
+			o.run.refreshFailed = append(o.run.refreshFailed, inWorkspaceName(dir, ws))
 			o.run.mu.Unlock()
 		}
 		raw, err := r.StatePull(ctx)

@@ -90,6 +90,8 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	}
 	countOwnership(idx, &sum)
 	sum.Notes = append(sum.Notes, o.run.stateNotes...)
+	sum.RefreshFailed = append(sum.RefreshFailed, o.run.refreshFailed...)
+	slices.Sort(sum.RefreshFailed)
 	if len(o.src.scans) > 0 && len(o.src.stateRoots) == 0 && o.src.scanScope == nil && !o.src.scopeState {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-scan lists whole accounts, but only %d states were read: objects that other root modules manage show up as unmanaged. Read every root's state with -state-roots DIR, or narrow the scan with -scan-scope zone_id=ID_OR_NAME or -scan-scope state.", sum.States))
 	}
@@ -121,7 +123,7 @@ func execute(ctx context.Context, o *options, stdout, stderr io.Writer) error {
 	if err := writeReport(ctx, o, idx, stateDirs, out, &sum, stdout, stderr); err != nil {
 		return err
 	}
-	return exitStatus(o, sum, out.shown, stderr)
+	return exitStatus(o, sum, out.shown, out.baseline, stderr)
 }
 
 // readStates adds the states given with -state to idx.
@@ -225,6 +227,8 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 				AllowUnpinned: o.src.allowUnpinned,
 				Progress:      progress,
 				Scope:         scope,
+				MaxOutputSize: o.src.maxQuerySize,
+				MaxStateSize:  o.src.maxStateSize,
 			})
 		})
 		if err != nil {
@@ -396,7 +400,7 @@ func conclude(o *options, idx *state.Index, live []model.Resource, previous *rep
 		sum.Notes = append(sum.Notes, fmt.Sprintf("-expect: no listing of this run reports scope %s (a typo, or sources that do not say where they look: plugins, -scan blocks without a parent, user list blocks with references)", strings.Join(unknownKeys, ", ")))
 	}
 	sum.StatesComplete = len(sum.UnreadStates) == 0
-	sum.DiscoveryComplete = !nothingChecked(&o.src, *sum) && len(sum.UnqueriedRoots) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
+	sum.DiscoveryComplete = !nothingChecked(&o.src, *sum) && len(sum.UnqueriedRoots) == 0 && len(sum.RefreshFailed) == 0 && len(counting) == 0 && len(sum.Warnings) == 0 &&
 		!slices.ContainsFunc(sum.Coverage, func(c report.Coverage) bool { return c.Status == report.Incomplete }) &&
 		!slices.ContainsFunc(sum.Expected, func(e report.Expected) bool { return e.Status != report.ExpectConfirmed })
 	sum.Complete = sum.StatesComplete && sum.DiscoveryComplete
@@ -580,7 +584,7 @@ func writeImports(ctx context.Context, o *options, idx *state.Index, stateDirs [
 
 // exitStatus is the error execute returns for a finished audit: an
 // exitCode, or nil for exit status 0.
-func exitStatus(o *options, sum report.Summary, shown []model.Resource, stderr io.Writer) error {
+func exitStatus(o *options, sum report.Summary, shown []model.Resource, baseline *report.Baseline, stderr io.Writer) error {
 	if nothingChecked(&o.src, sum) {
 		msg := "no resource types were queried, so nothing could be found"
 		if n := len(sum.Failed); n > 0 {
@@ -608,6 +612,9 @@ func exitStatus(o *options, sum report.Summary, shown []model.Resource, stderr i
 	case len(sum.FailedSources) > 0:
 		return exitCode(exitError)
 	case o.audit.strictOwnership && (sum.DuplicateOwnership > 0 || sum.DuplicateInState > 0):
+		return exitCode(exitError)
+	case o.audit.failUnverified && baseline != nil && baseline.Unverified > 0:
+		fmt.Fprintf(stderr, "error: -fail-unverified: %d findings of the baseline could not be confirmed resolved or still present (see baseline.unverified_findings)\n", baseline.Unverified)
 		return exitCode(exitError)
 	case o.audit.strict && (!sum.Complete || sum.Uncertain > 0):
 		return exitCode(exitError)

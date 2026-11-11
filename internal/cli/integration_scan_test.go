@@ -343,6 +343,11 @@ resource "fake_thing" "a" { name = "a" }
 	if code != exitOrphans || !strings.Contains(stderr, "-refresh failed, the stored state was read instead") {
 		t.Errorf("-refresh fallback: exit %d\n%s", code, stderr)
 	}
+	// The identities were not refreshed: -strict does not call that complete.
+	code, _, stderr = runTool("-types", "fake_thing", "-refresh", "-terraform", wrapper, "-strict", "-format", "json")
+	if code != exitError {
+		t.Errorf("-refresh fallback with -strict: exit %d\n%s", code, stderr)
+	}
 }
 
 // TestIntegrationScanNoZones: with no zone listed, records were not read in
