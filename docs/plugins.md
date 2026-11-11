@@ -35,6 +35,12 @@ in case (`"type"` and `"Type"`): JSON readers disagree on which copy wins.
 - `{"done": true}` confirms that the check finished, including when it found
   no objects. This object must contain only `done`, with the value `true`.
   It may appear anywhere in the output and may be repeated.
+- `target`: optional, the host (and port) of the server the object was found
+  on, such as `vault.example.com:8200`, with nothing else: a scheme, user
+  name, path or query make the plugin fail. With `-baseline`, a finding of
+  another target is never known, and findings of the old target that this run
+  did not look at are not resolved (`target_changed`). `vault.sh` fills it
+  from `VAULT_ADDR`.
 - `unverified`: optional, `true` when state cannot confirm where the object
   lives (Vault state does not record the Vault address, so a policy `ci`
   in state of another Vault would match). Such objects match only as

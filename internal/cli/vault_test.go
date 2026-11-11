@@ -65,6 +65,7 @@ func TestVaultPlugin(t *testing.T) {
 		{"denied", []string{"approle", "auth/approle/role/ci", "gh", "ops"}, "read sys/mounts: Code: 403"},
 	} {
 		t.Setenv("VAULT_MODE", tc.mode)
+		t.Setenv("VAULT_ADDR", "https://tok:secret@Vault.Example.com:8200/v1?x=1")
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"-no-query", "-state", state, "-plugin", "sh ../../examples/plugins/vault.sh", "-format", "json", "-strict"}, &out, &errb)
 		var rep struct {
@@ -73,6 +74,7 @@ func TestVaultPlugin(t *testing.T) {
 			} `json:"summary"`
 			Orphans []struct {
 				Identity map[string]any `json:"identity"`
+				Target   string         `json:"target"`
 			} `json:"orphans"`
 		}
 		if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
@@ -81,6 +83,10 @@ func TestVaultPlugin(t *testing.T) {
 		var ids []string
 		for _, o := range rep.Orphans {
 			ids = append(ids, o.Identity["id"].(string))
+			// Host and port only: no scheme, user or path of VAULT_ADDR.
+			if o.Target != "vault.example.com:8200" {
+				t.Errorf("%q: target %q", tc.mode, o.Target)
+			}
 		}
 		slices.Sort(ids)
 		if !slices.Equal(ids, tc.ids) {

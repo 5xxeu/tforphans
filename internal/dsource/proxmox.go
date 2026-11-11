@@ -23,6 +23,7 @@ var Proxmox = Adapter{
 	Name:     "proxmox",
 	Provider: "registry.terraform.io/bpg/proxmox",
 	Target:   "cluster",
+	Endpoint: func(getenv func(string) string) string { return getenv("PROXMOX_VE_ENDPOINT") },
 	Lists: map[string]ListSpec{
 		"proxmox_virtual_environment_vms":           {Items: "vms", Field: "vm_id", Key: "vm_id"},
 		"proxmox_virtual_environment_containers":    {Items: "containers", Field: "vm_id", Key: "vm_id"},

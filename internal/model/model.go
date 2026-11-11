@@ -36,6 +36,11 @@ type Resource struct {
 	// ScopeName says for people where the object lives: "zone example.com",
 	// "project my-project".
 	ScopeName string `json:"scope,omitempty"`
+	// Target says, without secrets, where the object was found when the
+	// source has no scope of its own: the host (and port) of the Vault or
+	// Proxmox server. A baseline never calls a finding known when it came
+	// from another target.
+	Target string `json:"target,omitempty"`
 	// ImportID is an optional legacy import ID. When set, generated import
 	// blocks use `id` instead of `identity`.
 	ImportID string `json:"import_id"`

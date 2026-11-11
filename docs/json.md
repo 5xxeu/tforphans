@@ -15,7 +15,9 @@ left out, so a consumer can read every key without checking for it.
 
 - `orphans`, `uncertain`: objects with `type`, `identity` (the keys state is
   matched on), `display_name`, `scope` (where it lives, `-scan` and some
-  list resources), `import_id`, `provider` (local name in the root),
+  list resources), `target` (omitted when empty: host and port of the
+  server a plugin or `-scan proxmox` read; a baseline never calls a finding
+  of another target known), `import_id`, `provider` (local name in the root),
   `provider_source`, `undeclared_provider` (the provider address when
   only child modules declare it, not the root module; empty otherwise),
   `list_address`, `source` (root, `-scan NAME` or

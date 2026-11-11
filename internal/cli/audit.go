@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -281,6 +282,9 @@ func runScans(ctx context.Context, o *options, idx *state.Index, stateDirs []str
 			}
 			// The scan cannot tell which account or cluster the root's own
 			// provider block points to.
+			if a.Endpoint != nil {
+				r.Target = model.TargetOf(a.Endpoint(os.Getenv))
+			}
 			r.ImportNote = "found with the " + a.Name + " provider configured from the environment;\ncheck that this root's provider points to the same " + a.Target
 		}
 		live = append(live, res.Resources...)
