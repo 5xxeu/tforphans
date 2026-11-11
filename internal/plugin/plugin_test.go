@@ -368,3 +368,17 @@ func TestForwardStderr(t *testing.T) {
 		t.Errorf("%q", w.String())
 	}
 }
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// A destination that fails must not stop the reading: the plugin would
+// block on a full pipe.
+func TestForwardStderrFailingWriter(t *testing.T) {
+	r := strings.NewReader(strings.Repeat("x", 1<<20))
+	forwardStderr(failWriter{}, r, 10, "plugin1")
+	if r.Len() != 0 {
+		t.Errorf("%d bytes left unread", r.Len())
+	}
+}

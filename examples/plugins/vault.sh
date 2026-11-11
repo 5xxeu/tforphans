@@ -43,7 +43,7 @@ if [ -n "$target" ] && [ -n "$ns" ]; then
 	hex=$(printf '%s' "$ns" | od -An -v -tx1 | tr -d ' \n')
 	candidate="${target}_ns_$hex"
 	# 260 characters is the longest target tforphans accepts.
-	if [ "${#candidate}" -le 250 ]; then target=$candidate; else target=; fi
+	if [ "${#candidate}" -le 260 ]; then target=$candidate; else target=; fi
 fi
 
 # withtarget: add "target" to every JSON line on stdin.

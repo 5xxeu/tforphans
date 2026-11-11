@@ -113,7 +113,13 @@ const maxStderrBytes = 4 << 20
 // forwardStderr copies r to w up to limit bytes, then reads and drops the
 // rest (so the plugin never blocks on a full pipe) and says so once.
 func forwardStderr(w io.Writer, r io.Reader, limit int64, name string) {
-	n, _ := io.Copy(w, io.LimitReader(r, limit))
+	n, err := io.Copy(w, io.LimitReader(r, limit))
+	if err != nil {
+		// w cannot take more (a full disk, a closed pipe): keep reading, or
+		// the plugin would block on a full pipe.
+		io.Copy(io.Discard, r)
+		return
+	}
 	if n < limit {
 		return
 	}

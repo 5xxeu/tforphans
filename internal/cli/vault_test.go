@@ -231,3 +231,32 @@ func TestVaultPluginTargetNamespace(t *testing.T) {
 		}
 	}
 }
+
+// The longest target tforphans accepts is 260 characters: a namespace that
+// fills it exactly is kept, one more byte leaves the target empty.
+func TestVaultPluginTargetNamespaceLength(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not in PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vault"), []byte(fakeVault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAULT_ADDR", "https://ab")
+	for n, wantTarget := range map[int]bool{127: true, 128: false} {
+		t.Setenv("VAULT_NAMESPACE", strings.Repeat("n", n))
+		out, err := exec.Command("sh", "../../examples/plugins/vault.sh").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, _, _ := strings.Cut(string(out), "\n")
+		res, _, _, err := plugin.Parse([]byte(line), "plugin1")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("%d: %v %s", n, err, out)
+		}
+		if got := res[0].Target != ""; got != wantTarget || (got && len(res[0].Target) != 260) {
+			t.Errorf("namespace of %d bytes: target %q", n, res[0].Target)
+		}
+	}
+}
