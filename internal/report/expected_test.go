@@ -136,7 +136,10 @@ func TestScopesOfListings(t *testing.T) {
 		{Complete: true, Scope: map[string]string{"zone_id": strings.Repeat("z", maxExpectValue+1)}},
 		{Complete: true, Scope: map[string]string{"account_id": "3"}},
 	}
-	got, truncated := ScopesOfListings(ls)
+	got, truncated, invalid := ScopesOfListings(ls)
+	if invalid != 2 {
+		t.Fatalf("invalid %d, want 2", invalid)
+	}
 	if truncated || len(got) != 2 || ScopeText(got[0]) != "account_id=1 region=a" || ScopeText(got[1]) != "account_id=3" {
 		t.Fatalf("%v, truncated %v", got, truncated)
 	}

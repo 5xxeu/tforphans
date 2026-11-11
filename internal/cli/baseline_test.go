@@ -612,3 +612,31 @@ func TestExpectFromBaselineTruncated(t *testing.T) {
 		t.Errorf("warnings %v, discovery_complete %v", doc.Summary.Warnings, doc.Summary.DiscoveryComplete)
 	}
 }
+
+func TestExpectFromBaselineInvalidScope(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listings := []report.Listing{
+		{Source: "list.aws", Address: "list.aws_instance.a", Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": "1"}},
+		{Source: "list.aws", Address: "list.aws_instance.b", Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": ""}},
+	}
+	saveReportTest(t, "old.json", nil, report.Summary{Listings: listings})
+	_, out, stderr := runReportTest(t, "-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", `printf '%s\n' '{"done":true}'`, "-baseline", "old.json", "-format", "json", "-expect-from-baseline")
+	var doc struct {
+		Summary struct {
+			Warnings          []string `json:"warnings"`
+			DiscoveryComplete bool     `json:"discovery_complete"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, stderr)
+	}
+	found := slices.ContainsFunc(doc.Summary.Warnings, func(w string) bool {
+		return strings.Contains(w, "1 listings of the baseline have a scope that cannot be expected")
+	})
+	if !found || doc.Summary.DiscoveryComplete {
+		t.Errorf("warnings %v, discovery_complete %v", doc.Summary.Warnings, doc.Summary.DiscoveryComplete)
+	}
+}
