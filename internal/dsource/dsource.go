@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/5xxeu/tforphans/internal/glob"
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/report"
+	"github.com/5xxeu/tforphans/internal/state"
 	"github.com/5xxeu/tforphans/internal/tf"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -175,6 +177,28 @@ type Options struct {
 	// IDs or names; an argument given with no values reads none of its
 	// scope. Parent objects themselves (zones) are limited the same way.
 	Scope map[string][]string
+	// MaxOutputSize bounds the output of one terraform apply, MaxStateSize
+	// the temporary state it writes; zero uses the defaults. A scan above
+	// either fails as a whole (a failed source), it is not read in part.
+	MaxOutputSize int64
+	MaxStateSize  int64
+}
+
+func (o Options) stateLimit() int64 {
+	if o.MaxStateSize <= 0 {
+		return state.DefaultMaxSize
+	}
+	return o.MaxStateSize
+}
+
+// readState reads the temporary state, refusing one above the limit.
+func readState(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return state.ReadLimited(f, max)
 }
 
 // Result of a scan.
@@ -252,9 +276,13 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 		if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 			return nil, nil, nil, err
 		}
-		out, stderr, runErr = r.Exec(ctx, "apply", "-refresh-only", "-auto-approve", "-input=false", "-no-color", "-json", "-lock=false")
+		out, stderr, runErr = r.ExecLimited(ctx, opt.MaxOutputSize, "apply", "-refresh-only", "-auto-approve", "-input=false", "-no-color", "-json", "-lock=false")
 		if ctx.Err() != nil {
 			return nil, nil, nil, ctx.Err()
+		}
+		var tooLarge *tf.OutputTooLargeError
+		if errors.As(runErr, &tooLarge) {
+			return nil, nil, nil, fmt.Errorf("%s: %w", a.Name, runErr)
 		}
 		return out, stderr, runErr, nil
 	}
@@ -267,7 +295,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 			if err != nil {
 				return false, nil, err
 			}
-			st, err := os.ReadFile(statePath)
+			st, err := readState(statePath, opt.stateLimit())
 			return false, st, err
 		}
 		errs, fatal := applyErrors(out)
@@ -372,7 +400,7 @@ func Run(ctx context.Context, a Adapter, opt Options) (*Result, error) {
 	var stateData []byte
 	if len(blocks) > 0 {
 		var err error
-		if stateData, err = os.ReadFile(statePath); err != nil {
+		if stateData, err = readState(statePath, opt.stateLimit()); err != nil {
 			return nil, fmt.Errorf("%s: read data sources: %w", a.Name, err)
 		}
 	}

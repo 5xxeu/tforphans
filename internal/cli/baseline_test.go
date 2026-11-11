@@ -481,3 +481,22 @@ func TestDiffSkipsConfig(t *testing.T) {
 		t.Fatalf("exit %d: %s%s", code, stdout, stderr)
 	}
 }
+
+// TestFailUnverified: -fail-unverified turns findings of the baseline that
+// could not be confirmed into exit 1; without it they only show in the report.
+func TestFailUnverified(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", `printf '%s\n' '{"done":true}'`, "-baseline", "staging.json"}
+	known := model.Resource{Type: "vault_policy", Identity: map[string]any{"id": "known"}, Source: "plugin1"}
+	saveReportTest(t, "staging.json", []model.Resource{known}, report.Summary{Environment: "staging"})
+	if code, _, stderr := runReportTest(t, append(base, "-environment", "prod")...); code != exitOK {
+		t.Fatalf("without the flag: exit %d\n%s", code, stderr)
+	}
+	code, _, stderr := runReportTest(t, append(base, "-environment", "prod", "-fail-unverified")...)
+	if code != exitError || !strings.Contains(stderr, "-fail-unverified: 1 findings") {
+		t.Fatalf("with the flag: exit %d\n%s", code, stderr)
+	}
+}

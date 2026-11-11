@@ -336,10 +336,14 @@ type Summary struct {
 	Complete bool `json:"complete"`
 	// Environment is the -environment label: a baseline from another
 	// environment proves nothing about this one.
-	Environment       string             `json:"environment,omitempty"`
-	StatesComplete    bool               `json:"states_complete"`
-	DiscoveryComplete bool               `json:"discovery_complete"`
-	Providers         []ProviderCoverage `json:"providers,omitempty"`
+	Environment       string `json:"environment,omitempty"`
+	StatesComplete    bool   `json:"states_complete"`
+	DiscoveryComplete bool   `json:"discovery_complete"`
+	// RefreshFailed are the states (root, workspace) whose -refresh failed
+	// and whose stored state was read instead: resource identities were
+	// not refreshed, so discovery is not complete.
+	RefreshFailed []string           `json:"refresh_failed,omitempty"`
+	Providers     []ProviderCoverage `json:"providers,omitempty"`
 	// UnlistedTypes are types in the states that their provider cannot
 	// list: objects of them are never checked.
 	UnlistedTypes []UnlistedType `json:"unlisted_types,omitempty"`

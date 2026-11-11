@@ -110,6 +110,11 @@ possible ownership alone never fails it. The flag only makes a run stricter,
 so automatic `.tforphans.yaml` files may set `strict-ownership: true`.
 Import blocks from `adopt` are unchanged.
 
+`-fail-unverified` (with `-baseline`) exits `1` while `baseline.unverified`
+is above zero: findings of the earlier report that this run could neither
+confirm resolved nor still present. Like `-strict-ownership` it only makes a
+run stricter, so automatic `.tforphans.yaml` files may set it.
+
 Queries that did not list everything are summed up by cause: crashed,
 missing argument, permission denied, truncated, not found, request rejected
 (often a feature the plan does not include), API retired, provider bug, API

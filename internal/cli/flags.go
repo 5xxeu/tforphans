@@ -72,7 +72,7 @@ var flagGroups = []cliflag.Group{
 	{Title: "States that count as managed", Names: []string{"state-roots", "state", "current-workspace", "refresh", "init", "terragrunt", "terragrunt-unit", "allow-http", "max-roots", "state-parallelism", "max-state-size"}},
 	{Title: "What to list", Names: []string{"types", "exclude-types", "arg", "no-aliases", "scan", "scan-scope", "allow-unpinned", "plugin", "no-query", "include-attrs", "limit", "max-query-size", "ignore-required-version", "terraform"}},
 	{Title: "Ignoring and comparing", Names: []string{"ignore", "ignore-preset", "no-default-presets", "baseline", "environment"}},
-	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "expect", "proxmox-cluster-states", "plugin-cluster-states"}},
+	{Title: "Strictness and trust", Names: []string{"strict", "strict-api", "strict-ignore", "strict-ownership", "fail-unverified", "expect", "proxmox-cluster-states", "plugin-cluster-states"}},
 	{Title: "Import blocks", Names: []string{"o", "out-dir", "adopt-root", "allow-incomplete", "names-from-tags"}},
 	{Title: "Checks", Names: []string{"offline", "check-auth"}},
 	{Title: "Output", Names: []string{"format", "explain", "v", "quiet", "print-query"}},
@@ -207,6 +207,7 @@ type auditOptions struct {
 	strict          bool
 	explain         bool
 	strictOwnership bool
+	failUnverified  bool
 	strictAPI       bool
 	strictIgnore    glob.List // -strict-ignore
 	// expect are the scopes some listing has to confirm (-expect).
@@ -248,9 +249,10 @@ type doctorOptions struct {
 
 // runState is not configuration: what a run collects as it goes.
 type runState struct {
-	mu         sync.Mutex
-	stateNotes []string  // notes of state reading, from several goroutines
-	progress   io.Writer // progress lines of long steps (stderr)
+	mu            sync.Mutex
+	refreshFailed []string  // roots whose -refresh fell back to the stored state
+	stateNotes    []string  // notes of state reading, from several goroutines
+	progress      io.Writer // progress lines of long steps (stderr)
 	// steps, when set, gets a line per root and data source scan, so that
 	// a long run does not look hung (stderr on a terminal, without -quiet).
 	steps  io.Writer
@@ -389,6 +391,7 @@ func parseFlags(argv []string, out io.Writer) (*options, error) {
 	fs.Var(&presets, "ignore-preset", "add built-in ignore rules: "+strings.Join(report.Presets(), ", ")+"; repeatable ("+strings.Join(report.DefaultPresets, ", ")+" are applied by default)")
 	fs.BoolVar(&o.ignore.noDefaults, "no-default-presets", false, "do not apply the default ignore presets ("+strings.Join(report.DefaultPresets, ", ")+"), which hide objects the cloud creates on its own")
 	fs.Var(&attrs, "include-attrs", "fetch these resource attributes with the list results and print them in -format json, e.g. labels,creation_timestamp (slower: terraform query returns whole objects)")
+	fs.BoolVar(&o.audit.failUnverified, "fail-unverified", false, "with -baseline, exit 1 when a finding of the baseline can be neither confirmed resolved nor still present (not verified)")
 	fs.BoolVar(&o.audit.strictOwnership, "strict-ownership", false, "exit 1 for confirmed duplicate state ownership or duplicate addresses within a state; possible ownership does not fail")
 	fs.BoolVar(&o.audit.strict, "strict", false, "exit 1 when coverage is incomplete: failed or truncated queries, unread states, plugin errors, types skipped for want of an argument or a default provider configuration, or uncertain matches (state without identity, Proxmox, plugin results marked unverified)")
 	fs.BoolVar(&o.src.noAliases, "no-aliases", false, "list resources only through each provider's default configuration, not through its aliases (provider \"aws\" { alias = \"prod\" }); the aliases' types then count as not checked")
