@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -580,5 +581,34 @@ func TestExpectFromBaseline(t *testing.T) {
 	}
 	if code, _, stderr := runReportTest(t, "-no-config", "-expect-from-baseline"); code != exitError || !strings.Contains(stderr, "-expect-from-baseline needs -baseline") {
 		t.Fatalf("without -baseline: exit %d\n%s", code, stderr)
+	}
+}
+
+// TestExpectFromBaselineTruncated: scopes of the baseline that did not fit
+// are a warning, so the run is not complete (a note would let -strict pass
+// when only those scopes went missing).
+func TestExpectFromBaselineTruncated(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("empty.tfstate", []byte(`{"version":4,"resources":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var listings []report.Listing
+	for i := 0; i <= report.MaxExpected; i++ {
+		listings = append(listings, report.Listing{Source: "list.aws", Address: fmt.Sprintf("list.aws_instance.a%d", i), Type: "aws_instance", Complete: true, Scope: map[string]string{"account_id": fmt.Sprint(i)}})
+	}
+	saveReportTest(t, "old.json", nil, report.Summary{Listings: listings})
+	_, out, stderr := runReportTest(t, "-no-config", "-no-query", "-state", "empty.tfstate", "-plugin", `printf '%s\n' '{"done":true}'`, "-baseline", "old.json", "-format", "json", "-expect-from-baseline")
+	var doc struct {
+		Summary struct {
+			Warnings          []string `json:"warnings"`
+			DiscoveryComplete bool     `json:"discovery_complete"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, stderr)
+	}
+	found := slices.ContainsFunc(doc.Summary.Warnings, func(w string) bool { return strings.Contains(w, "-expect-from-baseline: the baseline holds more than") })
+	if !found || doc.Summary.DiscoveryComplete {
+		t.Errorf("warnings %v, discovery_complete %v", doc.Summary.Warnings, doc.Summary.DiscoveryComplete)
 	}
 }

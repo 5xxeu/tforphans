@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/5xxeu/tforphans/internal/model"
 	"github.com/5xxeu/tforphans/internal/proc"
@@ -64,7 +65,28 @@ var (
 func Run(ctx context.Context, command, name string) ([]model.Resource, []error, bool, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	proc.Group(cmd)
-	cmd.Stderr = os.Stderr
+	// The plugin's stderr is passed on live, but only up to maxStderrBytes:
+	// a plugin that never stops printing must not fill a CI log. The pipe
+	// stays an *os.File, so proc.Stream does not hold the text back.
+	errRead, errWrite, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		return nil, nil, false, pipeErr
+	}
+	cmd.Stderr = errWrite
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		forwardStderr(os.Stderr, errRead, maxStderrBytes, name)
+	}()
+	defer func() {
+		errWrite.Close()
+		select {
+		case <-copied:
+		case <-time.After(2 * time.Second):
+			// A descendant still holds the pipe: stop reading.
+		}
+		errRead.Close()
+	}()
 	var res []model.Resource
 	var warns []error
 	var done bool
@@ -83,6 +105,27 @@ func Run(ctx context.Context, command, name string) ([]model.Resource, []error, 
 		return nil, nil, false, fmt.Errorf("%s: %w", name, err)
 	}
 	return res, warns, done, nil
+}
+
+// maxStderrBytes bounds the stderr of a plugin that is passed on.
+const maxStderrBytes = 4 << 20
+
+// forwardStderr copies r to w up to limit bytes, then reads and drops the
+// rest (so the plugin never blocks on a full pipe) and says so once.
+func forwardStderr(w io.Writer, r io.Reader, limit int64, name string) {
+	n, err := io.Copy(w, io.LimitReader(r, limit))
+	if err != nil {
+		// w cannot take more (a full disk, a closed pipe): keep reading, or
+		// the plugin would block on a full pipe.
+		_, _ = io.Copy(io.Discard, r)
+		return
+	}
+	if n < limit {
+		return
+	}
+	if dropped, _ := io.Copy(io.Discard, r); dropped > 0 {
+		fmt.Fprintf(w, "%s: stderr cut off after %d MiB (%d more bytes dropped)\n", name, limit>>20, dropped)
+	}
 }
 
 // typeName is a Terraform resource type name, providerRef a provider

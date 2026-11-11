@@ -33,6 +33,19 @@ trap 'exit 1' HUP INT TERM
 target=$(printf '%s' "${VAULT_ADDR:-}" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s#^[^@/]*@##; s#[/?\#].*$##' | tr 'A-Z' 'a-z')
 printf '%s' "$target" | grep -Eq '^[]a-z0-9._:[-]+$' || target=
 
+# VAULT_NAMESPACE: the vault CLI reads one namespace per run, and policy "ci"
+# of two namespaces of one server are two objects. It joins the target as
+# "_ns_<hex of the name>": hex keeps the case and any character, and the
+# result stays a valid target (no slash, no secret). The root namespace adds
+# nothing. A name too long for a target leaves the target empty.
+ns=$(printf '%s' "${VAULT_NAMESPACE:-}" | sed -E 's#^/+##; s#/+$##')
+if [ -n "$target" ] && [ -n "$ns" ]; then
+	hex=$(printf '%s' "$ns" | od -An -v -tx1 | tr -d ' \n')
+	candidate="${target}_ns_$hex"
+	# 260 characters is the longest target tforphans accepts.
+	if [ "${#candidate}" -le 260 ]; then target=$candidate; else target=; fi
+fi
+
 # withtarget: add "target" to every JSON line on stdin.
 withtarget() {
 	jq -c --arg tg "$target" 'if $tg != "" then .target = $tg else . end'

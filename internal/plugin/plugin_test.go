@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -351,5 +352,33 @@ func TestParseTargetLowercase(t *testing.T) {
 	res, _, _, err := Parse([]byte(`{"type":"vault_policy","identity":{"id":"ci"},"target":"Vault.Example:8200"}`), "plugin1")
 	if err != nil || len(res) != 1 || res[0].Target != "vault.example:8200" {
 		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestForwardStderr(t *testing.T) {
+	var w bytes.Buffer
+	forwardStderr(&w, strings.NewReader(strings.Repeat("x", 100)), 10, "plugin1")
+	got := w.String()
+	if !strings.HasPrefix(got, strings.Repeat("x", 10)+"plugin1: stderr cut off after") || !strings.Contains(got, "90 more bytes") {
+		t.Errorf("%q", got)
+	}
+	w.Reset()
+	forwardStderr(&w, strings.NewReader("short\n"), 10, "plugin1")
+	if w.String() != "short\n" {
+		t.Errorf("%q", w.String())
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// A destination that fails must not stop the reading: the plugin would
+// block on a full pipe.
+func TestForwardStderrFailingWriter(t *testing.T) {
+	r := strings.NewReader(strings.Repeat("x", 1<<20))
+	forwardStderr(failWriter{}, r, 10, "plugin1")
+	if r.Len() != 0 {
+		t.Errorf("%d bytes left unread", r.Len())
 	}
 }

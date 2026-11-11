@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/5xxeu/tforphans/internal/plugin"
 )
 
 // fakeVault answers the calls of vault.sh; VAULT_MODE breaks it:
@@ -191,5 +193,70 @@ func TestVaultPluginTargetIPv6(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `"target":"[fd00::1]:8200"`) {
 		t.Errorf("no IPv6 target in:\n%s", out)
+	}
+}
+
+// TestVaultPluginTargetNamespace: the namespace joins the target, case and
+// slashes intact (hex), and no namespace changes nothing.
+func TestVaultPluginTargetNamespace(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not in PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vault"), []byte(fakeVault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAULT_ADDR", "https://vault.example:8200")
+	for ns, want := range map[string]string{
+		"":       `"target":"vault.example:8200"`,
+		"/":      `"target":"vault.example:8200"`,
+		"Admin/": `"target":"vault.example:8200_ns_41646d696e"`,
+		"/a/B":   `"target":"vault.example:8200_ns_612f42"`,
+		"admin":  `"target":"vault.example:8200_ns_61646d696e"`,
+		"ADMIN":  `"target":"vault.example:8200_ns_41444d494e"`,
+	} {
+		t.Setenv("VAULT_NAMESPACE", ns)
+		out, err := exec.Command("sh", "../../examples/plugins/vault.sh").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), want) {
+			t.Errorf("namespace %q: want %s in\n%s", ns, want, out)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if _, _, _, err := plugin.Parse([]byte(line), "plugin1"); err != nil {
+				t.Errorf("namespace %q: %v: %s", ns, err, line)
+			}
+		}
+	}
+}
+
+// The longest target tforphans accepts is 260 characters: a namespace that
+// fills it exactly is kept, one more byte leaves the target empty.
+func TestVaultPluginTargetNamespaceLength(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not in PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vault"), []byte(fakeVault), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAULT_ADDR", "https://ab")
+	for n, wantTarget := range map[int]bool{127: true, 128: false} {
+		t.Setenv("VAULT_NAMESPACE", strings.Repeat("n", n))
+		out, err := exec.Command("sh", "../../examples/plugins/vault.sh").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, _, _ := strings.Cut(string(out), "\n")
+		res, _, _, err := plugin.Parse([]byte(line), "plugin1")
+		if err != nil || len(res) != 1 {
+			t.Fatalf("%d: %v %s", n, err, out)
+		}
+		if got := res[0].Target != ""; got != wantTarget || (got && len(res[0].Target) != 260) {
+			t.Errorf("namespace of %d bytes: target %q", n, res[0].Target)
+		}
 	}
 }
