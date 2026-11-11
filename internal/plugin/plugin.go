@@ -117,7 +117,7 @@ func forwardStderr(w io.Writer, r io.Reader, limit int64, name string) {
 	if err != nil {
 		// w cannot take more (a full disk, a closed pipe): keep reading, or
 		// the plugin would block on a full pipe.
-		io.Copy(io.Discard, r)
+		_, _ = io.Copy(io.Discard, r)
 		return
 	}
 	if n < limit {
